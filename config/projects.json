@@ -1,0 +1,32 @@
+[
+  {
+    "org": "vercel",
+    "repo": "next.js",
+    "url": "https://github.com/vercel/next.js",
+    "tags": ["frontend", "framework", "react"]
+  },
+  {
+    "org": "denoland",
+    "repo": "deno",
+    "url": "https://github.com/denoland/deno",
+    "tags": ["runtime", "typescript", "javascript"]
+  },
+  {
+    "org": "oven-sh",
+    "repo": "bun",
+    "url": "https://github.com/oven-sh/bun",
+    "tags": ["runtime", "javascript", "bundler"]
+  },
+  {
+    "org": "astral-sh",
+    "repo": "ruff",
+    "url": "https://github.com/astral-sh/ruff",
+    "tags": ["python", "linter", "tooling"]
+  },
+  {
+    "org": "pydantic",
+    "repo": "pydantic",
+    "url": "https://github.com/pydantic/pydantic",
+    "tags": ["python", "validation", "library"]
+  }
+]
