@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, constants } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
 import { MIGRATION_001 } from "./schema";
@@ -10,6 +10,7 @@ let db: Database | null = null;
 
 function applyPragmas(database: Database): void {
   database.exec("PRAGMA journal_mode=WAL");
+  database.exec("PRAGMA foreign_keys=ON");
   database.exec("PRAGMA temp_store=MEMORY");
   database.exec("PRAGMA cache_size=-64000");
   database.exec("PRAGMA mmap_size=268435456");
@@ -53,14 +54,12 @@ export function getDb(): Database {
 export function closeDb(): void {
   if (!db) return;
 
-  // macOS WAL cleanup: try fileControl first, fall back to checkpoint pragma
   try {
-    // SQLITE_FCNTL_PERSIST_WAL = 10
-    (db as any).fileControl(10, 0);
+    db.fileControl(constants.SQLITE_FCNTL_PERSIST_WAL, 0);
   } catch {
-    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    // fileControl not available on this platform — continue to checkpoint
   }
-
+  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   db.close();
   db = null;
 }
