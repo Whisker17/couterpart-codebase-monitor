@@ -1,9 +1,9 @@
 import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import { getDb } from "../../storage/db";
 import { getTrackedProjects } from "../../config/projects";
-import { fetchMergedPRs, fetchRepoMetadata } from "../../extensions/github-collector/fetcher";
+import { fetchMergedPRs, fetchRepoMetadata, fetchPRStats } from "../../extensions/github-collector/fetcher";
 import { fetchAndStoreDiff } from "../../extensions/github-collector/diff-fetcher";
-import type { PRData, RepoMetadata } from "../../extensions/github-collector/fetcher";
+import type { PRData, RepoMetadata, PRStats } from "../../extensions/github-collector/fetcher";
 import type { DiffResult } from "../../extensions/github-collector/diff-fetcher";
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -11,12 +11,14 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 export interface CollectDeps {
   fetchMergedPRs: (org: string, repo: string, since: Date) => Promise<PRData[]>;
   fetchRepoMetadata: (org: string, repo: string) => Promise<RepoMetadata>;
+  fetchPRStats: (org: string, repo: string, prNumber: number) => Promise<PRStats>;
   fetchAndStoreDiff: (org: string, repo: string, prNumber: number) => Promise<DiffResult>;
 }
 
 const defaultDeps: CollectDeps = {
   fetchMergedPRs,
   fetchRepoMetadata,
+  fetchPRStats,
   fetchAndStoreDiff,
 };
 
@@ -87,6 +89,17 @@ export async function execute(
       for (const pr of prs) {
         const mergedAtUnix = Math.floor(pr.merged_at.getTime() / 1000);
 
+        // Fetch per-PR stats (changed_files/additions/deletions) via pulls.get
+        // pulls.list omits these fields; one extra call per PR, ~50 calls/day total
+        let stats = { changed_files: 0, additions: 0, deletions: 0 };
+        try {
+          stats = await deps.fetchPRStats(project.org, project.repo, pr.number);
+        } catch (statsErr) {
+          console.warn(
+            `[Collect] Failed to fetch stats for ${pid}#${pr.number}: ${statsErr instanceof Error ? statsErr.message : String(statsErr)}`
+          );
+        }
+
         // INSERT OR IGNORE for idempotency
         db.run(
           `INSERT OR IGNORE INTO pull_requests
@@ -101,9 +114,9 @@ export async function execute(
             pr.body,
             pr.author,
             mergedAtUnix,
-            pr.changed_files,
-            pr.additions,
-            pr.deletions,
+            stats.changed_files,
+            stats.additions,
+            stats.deletions,
           ]
         );
 

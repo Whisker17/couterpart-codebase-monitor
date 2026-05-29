@@ -16,8 +16,19 @@ type MockRepoData = {
   topics: string[];
 };
 
+type MockPRDetail = {
+  changed_files: number;
+  additions: number;
+  deletions: number;
+};
+
 // Mock octokit module before importing fetcher
 const mockPullsList = mock(async (_opts: unknown): Promise<{ data: MockPR[] }> => ({ data: [] }));
+const mockPullsGet = mock(
+  async (_opts: unknown): Promise<{ data: MockPRDetail }> => ({
+    data: { changed_files: 0, additions: 0, deletions: 0 },
+  })
+);
 const mockReposGet = mock(
   async (_opts: unknown): Promise<{ data: MockRepoData }> => ({
     data: { description: null, language: null, topics: [] },
@@ -27,7 +38,7 @@ const mockReposGet = mock(
 mock.module("octokit", () => ({
   Octokit: class {
     rest = {
-      pulls: { list: mockPullsList },
+      pulls: { list: mockPullsList, get: mockPullsGet },
       repos: { get: mockReposGet },
     };
   },
@@ -38,7 +49,7 @@ mock.module("../../config/settings", () => ({
   getSettings: () => ({ github: { token: "test-token" } }),
 }));
 
-const { fetchMergedPRs, fetchRepoMetadata } = await import("./fetcher");
+const { fetchMergedPRs, fetchRepoMetadata, fetchPRStats } = await import("./fetcher");
 
 function makePR(overrides: {
   number: number;
@@ -59,6 +70,7 @@ function makePR(overrides: {
 
 beforeEach(() => {
   mockPullsList.mockClear();
+  mockPullsGet.mockClear();
   mockReposGet.mockClear();
 });
 
@@ -187,5 +199,30 @@ describe("fetchRepoMetadata", () => {
     expect(meta.description).toBeNull();
     expect(meta.language).toBeNull();
     expect(meta.topics).toEqual([]);
+  });
+});
+
+describe("fetchPRStats", () => {
+  it("returns changed_files, additions, deletions from pulls.get", async () => {
+    mockPullsGet.mockResolvedValueOnce({
+      data: { changed_files: 12, additions: 340, deletions: 55 },
+    });
+
+    const stats = await fetchPRStats("org", "repo", 42);
+    expect(stats.changed_files).toBe(12);
+    expect(stats.additions).toBe(340);
+    expect(stats.deletions).toBe(55);
+  });
+
+  it("calls pulls.get with the correct PR number", async () => {
+    mockPullsGet.mockResolvedValueOnce({
+      data: { changed_files: 1, additions: 10, deletions: 5 },
+    });
+
+    await fetchPRStats("org", "repo", 99);
+
+    expect(mockPullsGet.mock.calls).toHaveLength(1);
+    const callArgs = mockPullsGet.mock.calls[0]?.[0] as { pull_number: number };
+    expect(callArgs?.pull_number).toBe(99);
   });
 });

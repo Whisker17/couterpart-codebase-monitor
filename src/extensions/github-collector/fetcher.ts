@@ -13,6 +13,12 @@ export interface PRData {
   node_id: string;
 }
 
+export interface PRStats {
+  changed_files: number;
+  additions: number;
+  deletions: number;
+}
+
 export interface RepoMetadata {
   description: string | null;
   language: string | null;
@@ -63,7 +69,7 @@ export async function fetchMergedPRs(org: string, repo: string, since: Date): Pr
         body: pr.body ?? null,
         author: pr.user?.login ?? "unknown",
         merged_at: mergedAt,
-        // pulls.list doesn't return per-PR file stats; they'd require pulls.get
+        // stats filled in by fetchPRStats after initial list — pulls.list omits them
         changed_files: 0,
         additions: 0,
         deletions: 0,
@@ -76,6 +82,16 @@ export async function fetchMergedPRs(org: string, repo: string, since: Date): Pr
   }
 
   return results;
+}
+
+export async function fetchPRStats(org: string, repo: string, prNumber: number): Promise<PRStats> {
+  const octokit = getOctokit();
+  const response = await octokit.rest.pulls.get({ owner: org, repo, pull_number: prNumber });
+  return {
+    changed_files: response.data.changed_files,
+    additions: response.data.additions,
+    deletions: response.data.deletions,
+  };
 }
 
 export async function fetchRepoMetadata(org: string, repo: string): Promise<RepoMetadata> {

@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { rmSync } from "fs";
-import type { PRData, RepoMetadata } from "../../extensions/github-collector/fetcher";
+import type { PRData, RepoMetadata, PRStats } from "../../extensions/github-collector/fetcher";
 import type { DiffResult } from "../../extensions/github-collector/diff-fetcher";
 import type { CollectDeps } from "./collect";
 
@@ -16,6 +16,9 @@ const mockFetchRepoMetadata = mock(
     language: "TypeScript",
     topics: ["testing"],
   })
+);
+const mockFetchPRStats = mock(
+  async (): Promise<PRStats> => ({ changed_files: 0, additions: 0, deletions: 0 })
 );
 const mockFetchAndStoreDiff = mock(
   async (): Promise<DiffResult> => ({ status: "available", path: "data/diffs/org-repo/1.patch" })
@@ -41,6 +44,7 @@ function makeDeps(): CollectDeps {
   return {
     fetchMergedPRs: mockFetchMergedPRs,
     fetchRepoMetadata: mockFetchRepoMetadata,
+    fetchPRStats: mockFetchPRStats,
     fetchAndStoreDiff: mockFetchAndStoreDiff,
   };
 }
@@ -101,6 +105,7 @@ beforeEach(() => {
   testDb = makeDb();
   mockFetchMergedPRs.mockClear();
   mockFetchRepoMetadata.mockClear();
+  mockFetchPRStats.mockClear();
   mockFetchAndStoreDiff.mockClear();
 });
 
@@ -142,6 +147,23 @@ describe("collect stage", () => {
     expect(row).not.toBeNull();
     expect(row!.diff_status).toBe("available");
     expect(row!.diff_path).toBe("data/diffs/org-repo/42.patch");
+  });
+
+  it("writes non-zero changed_files/additions/deletions from fetchPRStats", async () => {
+    const pr = makePR({ number: 7, merged_at: new Date("2024-01-20T00:00:00Z") });
+    mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);
+    mockFetchPRStats.mockResolvedValueOnce({ changed_files: 8, additions: 200, deletions: 50 });
+    mockFetchAndStoreDiff.mockResolvedValueOnce({ status: "available", path: "p" });
+
+    await execute({ stageResults: new Map() }, makeDeps());
+
+    const row = testDb
+      .query("SELECT files_changed, additions, deletions FROM pull_requests WHERE pr_number = 7")
+      .get() as { files_changed: number; additions: number; deletions: number } | null;
+    expect(row).not.toBeNull();
+    expect(row!.files_changed).toBe(8);
+    expect(row!.additions).toBe(200);
+    expect(row!.deletions).toBe(50);
   });
 
   it("does not create duplicate PRs on second run (INSERT OR IGNORE)", async () => {
