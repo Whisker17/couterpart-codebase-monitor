@@ -1,0 +1,43 @@
+# dependencies
+node_modules/
+
+# project data (runtime, gitignored — keep .gitkeep to preserve dir in git)
+data/*
+!data/.gitkeep
+
+# sqlite
+*.db
+*.db-wal
+*.db-shm
+
+# dotenv
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# output
+out/
+dist/
+*.tgz
+
+# code coverage
+coverage/
+*.lcov
+
+# logs
+logs/
+*.log
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# OS
+.DS_Store
+
+# IntelliJ
+.idea/
