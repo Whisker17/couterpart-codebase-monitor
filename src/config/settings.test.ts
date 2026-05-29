@@ -1,40 +1,74 @@
 import { describe, it, expect, spyOn, beforeEach, afterEach } from "bun:test";
+import { getSettings, validateEnv, _resetSettingsCache } from "./settings.ts";
+
+beforeEach(() => {
+  _resetSettingsCache();
+});
 
 describe("getSettings", () => {
-  it("returns complete Settings object", async () => {
-    const { getSettings } = await import("./settings.ts");
-    const s = getSettings();
-
-    expect(typeof s.llm.model).toBe("string");
-    expect(s.llm.model.length).toBeGreaterThan(0);
-    expect(typeof s.llm.diffTokenBudget).toBe("number");
-    expect(s.llm.diffTokenBudget).toBeGreaterThan(0);
-    expect(typeof s.llm.maxManifestEntries).toBe("number");
-    expect(s.llm.maxManifestEntries).toBeGreaterThan(0);
-    expect(typeof s.llm.maxTokensPerCall).toBe("number");
-    expect(typeof s.lark.webhookUrlEnvVar).toBe("string");
-    expect(typeof s.github.tokenEnvVar).toBe("string");
-    expect(typeof s.schedule.dailyCron).toBe("string");
-    expect(typeof s.schedule.weeklyCron).toBe("string");
-    expect(typeof s.budget.monthlyCap).toBe("number");
-    expect(typeof s.budget.warningThreshold).toBe("number");
-    expect(typeof s.budget.cutoffThreshold).toBe("number");
+  beforeEach(() => {
+    process.env["LLM_BASE_URL"] = "https://example.com/v1";
+    process.env["LLM_API_KEY"] = "sk-test";
+    process.env["GITHUB_TOKEN"] = "ghp_test";
+    process.env["LARK_WEBHOOK_URL"] = "https://lark.example.com/hook";
   });
 
-  it("returns expected defaults", async () => {
-    const { getSettings } = await import("./settings.ts");
-    const s = getSettings();
+  afterEach(() => {
+    delete process.env["LLM_BASE_URL"];
+    delete process.env["LLM_API_KEY"];
+    delete process.env["GITHUB_TOKEN"];
+    delete process.env["LARK_WEBHOOK_URL"];
+    _resetSettingsCache();
+  });
 
+  it("returns complete Settings object with expected defaults", () => {
+    const s = getSettings();
     expect(s.llm.model).toBe("claude-sonnet-4-6");
     expect(s.llm.diffTokenBudget).toBe(8000);
     expect(s.llm.maxManifestEntries).toBe(100);
     expect(s.llm.maxTokensPerCall).toBe(4096);
     expect(s.budget.monthlyCap).toBe(80);
     expect(s.budget.warningThreshold).toBe(0.8);
+    expect(typeof s.schedule.dailyCron).toBe("string");
+    expect(typeof s.schedule.weeklyCron).toBe("string");
   });
 
-  it("returns the same reference on repeated calls (cached)", async () => {
-    const { getSettings } = await import("./settings.ts");
+  it("resolves llm.baseUrl from env var", () => {
+    process.env["LLM_BASE_URL"] = "https://my-gateway.example.com/v1";
+    _resetSettingsCache();
+    const s = getSettings();
+    expect(s.llm.baseUrl).toBe("https://my-gateway.example.com/v1");
+  });
+
+  it("resolves llm.apiKey from env var", () => {
+    process.env["LLM_API_KEY"] = "sk-override-key";
+    _resetSettingsCache();
+    const s = getSettings();
+    expect(s.llm.apiKey).toBe("sk-override-key");
+  });
+
+  it("resolves github.token from env var", () => {
+    process.env["GITHUB_TOKEN"] = "ghp_override-token";
+    _resetSettingsCache();
+    const s = getSettings();
+    expect(s.github.token).toBe("ghp_override-token");
+  });
+
+  it("resolves lark.webhookUrl from env var", () => {
+    process.env["LARK_WEBHOOK_URL"] = "https://open.larksuite.com/hook/abc";
+    _resetSettingsCache();
+    const s = getSettings();
+    expect(s.lark.webhookUrl).toBe("https://open.larksuite.com/hook/abc");
+  });
+
+  it("returns undefined for lark.webhookUrl when env var absent", () => {
+    delete process.env["LARK_WEBHOOK_URL"];
+    _resetSettingsCache();
+    const s = getSettings();
+    expect(s.lark.webhookUrl).toBeUndefined();
+  });
+
+  it("returns the same reference on repeated calls (cached)", () => {
     const a = getSettings();
     const b = getSettings();
     expect(a).toBe(b);
@@ -42,67 +76,57 @@ describe("getSettings", () => {
 });
 
 describe("validateEnv", () => {
-  const originalEnv = { ...process.env };
+  const savedEnv: Record<string, string | undefined> = {};
+  const keys = ["GITHUB_TOKEN", "LLM_BASE_URL", "LLM_API_KEY"];
+
+  beforeEach(() => {
+    for (const k of keys) savedEnv[k] = process.env[k];
+  });
 
   afterEach(() => {
-    // Restore env
-    for (const key of ["GITHUB_TOKEN", "LLM_BASE_URL", "LLM_API_KEY"]) {
-      if (key in originalEnv) {
-        process.env[key] = originalEnv[key];
-      } else {
-        delete process.env[key];
-      }
+    for (const k of keys) {
+      if (savedEnv[k] !== undefined) process.env[k] = savedEnv[k];
+      else delete process.env[k];
     }
   });
 
-  it("passes when all required vars are set", async () => {
+  it("passes when all required vars are set", () => {
     process.env["GITHUB_TOKEN"] = "test-token";
     process.env["LLM_BASE_URL"] = "https://example.com";
     process.env["LLM_API_KEY"] = "test-key";
-
-    const { validateEnv } = await import("./settings.ts");
     expect(() => validateEnv()).not.toThrow();
   });
 
-  it("calls process.exit(1) when GITHUB_TOKEN is missing", async () => {
+  it("calls process.exit(1) when GITHUB_TOKEN is missing", () => {
     delete process.env["GITHUB_TOKEN"];
     process.env["LLM_BASE_URL"] = "https://example.com";
     process.env["LLM_API_KEY"] = "test-key";
-
-    const exitSpy = spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called");
+    const spy = spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exit:1");
     }) as never);
-
-    const { validateEnv } = await import("./settings.ts");
-    expect(() => validateEnv()).toThrow("process.exit called");
-    exitSpy.mockRestore();
+    expect(() => validateEnv()).toThrow("exit:1");
+    spy.mockRestore();
   });
 
-  it("calls process.exit(1) when LLM_BASE_URL is missing", async () => {
+  it("calls process.exit(1) when LLM_BASE_URL is missing", () => {
     process.env["GITHUB_TOKEN"] = "test-token";
     delete process.env["LLM_BASE_URL"];
     process.env["LLM_API_KEY"] = "test-key";
-
-    const exitSpy = spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called");
+    const spy = spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exit:1");
     }) as never);
-
-    const { validateEnv } = await import("./settings.ts");
-    expect(() => validateEnv()).toThrow("process.exit called");
-    exitSpy.mockRestore();
+    expect(() => validateEnv()).toThrow("exit:1");
+    spy.mockRestore();
   });
 
-  it("calls process.exit(1) when LLM_API_KEY is missing", async () => {
+  it("calls process.exit(1) when LLM_API_KEY is missing", () => {
     process.env["GITHUB_TOKEN"] = "test-token";
     process.env["LLM_BASE_URL"] = "https://example.com";
     delete process.env["LLM_API_KEY"];
-
-    const exitSpy = spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit called");
+    const spy = spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exit:1");
     }) as never);
-
-    const { validateEnv } = await import("./settings.ts");
-    expect(() => validateEnv()).toThrow("process.exit called");
-    exitSpy.mockRestore();
+    expect(() => validateEnv()).toThrow("exit:1");
+    spy.mockRestore();
   });
 });

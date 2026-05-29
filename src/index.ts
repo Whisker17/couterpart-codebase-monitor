@@ -1,1 +1,3 @@
-// Counterpart Monitor — entry point
+import { validateEnv } from "./config/settings.ts";
+
+validateEnv();
