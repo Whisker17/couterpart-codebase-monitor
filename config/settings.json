@@ -1,0 +1,25 @@
+{
+  "llm": {
+    "model": "claude-sonnet-4-6",
+    "baseUrlEnvVar": "LLM_BASE_URL",
+    "apiKeyEnvVar": "LLM_API_KEY",
+    "maxTokensPerCall": 4096,
+    "diffTokenBudget": 8000,
+    "maxManifestEntries": 100
+  },
+  "lark": {
+    "webhookUrlEnvVar": "LARK_WEBHOOK_URL"
+  },
+  "github": {
+    "tokenEnvVar": "GITHUB_TOKEN"
+  },
+  "schedule": {
+    "dailyCron": "0 8 * * *",
+    "weeklyCron": "0 9 * * 1"
+  },
+  "budget": {
+    "monthlyCap": 80,
+    "warningThreshold": 0.8,
+    "cutoffThreshold": 1.0
+  }
+}
