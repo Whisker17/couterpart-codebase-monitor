@@ -16,5 +16,6 @@ const helloWorldTool: AgentTool = {
 };
 
 export function register(agent: Agent): void {
-  agent.state.tools = [...agent.state.tools, helloWorldTool];
+  agent.state.tools = (agent.state.tools ?? []).filter((t) => t.name !== helloWorldTool.name);
+  agent.state.tools.push(helloWorldTool);
 }

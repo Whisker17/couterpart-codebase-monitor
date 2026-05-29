@@ -7,11 +7,7 @@ import { register as registerHello } from "./extensions/hello/index.ts";
 function buildModel() {
   const baseModel = getModel("anthropic", "claude-sonnet-4-20250514");
   const baseUrl = process.env.LLM_BASE_URL;
-  const apiKey = process.env.LLM_API_KEY;
-  if (baseUrl) {
-    return { ...baseModel, baseUrl, ...(apiKey ? { headers: { "x-api-key": apiKey } } : {}) };
-  }
-  return baseModel;
+  return baseUrl ? { ...baseModel, baseUrl } : baseModel;
 }
 
 async function main() {
@@ -19,10 +15,18 @@ async function main() {
   getDb();
 
   const model = buildModel();
-  const agent = new Agent({ initialState: { model, systemPrompt: "Counterpart Monitor agent." } });
+  const agent = new Agent({
+    initialState: { model, systemPrompt: "Counterpart Monitor agent." },
+    getApiKey: () =>
+      process.env.LLM_BASE_URL && process.env.LLM_API_KEY ? process.env.LLM_API_KEY : undefined,
+  });
 
   // Load extensions. Each extension receives the agent and registers its tools.
   registerHello(agent);
+  registerHello(agent); // second call must not duplicate tools (hot-reload idempotency check)
+  if (agent.state.tools.filter((t) => t.name === "hello-world").length !== 1) {
+    throw new Error("register() idempotency check failed: duplicate tool entries");
+  }
 
   console.log("pi-agent initialized. Registered tools:", agent.state.tools.map((t) => t.name));
 
