@@ -1,0 +1,23 @@
+{
+  "name": "counterpart-monitor",
+  "version": "0.1.0",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.81",
+    "@earendil-works/pi-agent-core": "^0.77.0",
+    "ai": "^6.0.193",
+    "croner": "^10.0.1",
+    "octokit": "^5.0.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^6.0.3"
+  }
+}
