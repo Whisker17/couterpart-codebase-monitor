@@ -3,6 +3,7 @@ import { getModel } from "@earendil-works/pi-ai";
 import { validateEnv } from "./config/settings.ts";
 import { getDb } from "./storage/db";
 import { register as registerHello } from "./extensions/hello/index.ts";
+import { registerScheduler } from "./scheduler/cron";
 
 function buildModel() {
   const baseModel = getModel("anthropic", "claude-sonnet-4-20250514");
@@ -38,6 +39,8 @@ async function main() {
   console.log("hello-world result:", result.details);
 
   console.log("Session ready. Hot-reload: modify a handler and re-register the extension to pick up changes.");
+
+  registerScheduler();
 }
 
 main().catch((err) => {
