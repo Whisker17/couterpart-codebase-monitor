@@ -34,6 +34,19 @@ describe("runPipeline", () => {
     expect(results.get("dispatch")?.success).toBe(true);
   });
 
+  it("runner measures wall-clock durationMs, ignoring stage-returned 0", async () => {
+    const slowStage: PipelineStage = {
+      name: "slow",
+      execute: async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        return { success: true, itemsProcessed: 1, errors: [], durationMs: 0 };
+      },
+    };
+
+    const results = await runPipeline([slowStage]);
+    expect(results.get("slow")?.durationMs).toBeGreaterThanOrEqual(20);
+  });
+
   it("continues executing subsequent stages when one throws", async () => {
     const throwingStage: PipelineStage = {
       name: "analyze",

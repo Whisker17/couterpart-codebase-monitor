@@ -25,6 +25,7 @@ export async function runPipeline(stages: PipelineStage[]): Promise<Map<string, 
     let result: StageResult;
     try {
       result = await stage.execute(ctx);
+      result = { ...result, durationMs: Date.now() - start };
     } catch (err) {
       const durationMs = Date.now() - start;
       const error = err instanceof Error ? err.message : String(err);
