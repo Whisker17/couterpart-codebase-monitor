@@ -99,8 +99,8 @@ describe("buildDailyCard", () => {
     expect(panel).toBeDefined();
     expect(panel.expanded).toBe(false);
     expect(panel.header.title.content).toContain("Technical Details");
-    expect(panel.elements[0].content).toContain("org/repo-a");
-    expect(panel.elements[0].content).toContain("#101");
+    expect(panel.elements[0]!.content).toContain("org/repo-a");
+    expect(panel.elements[0]!.content).toContain("#101");
   });
 
   it("includes partial warning when partialWarning is provided", () => {

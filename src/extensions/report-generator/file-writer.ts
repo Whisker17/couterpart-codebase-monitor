@@ -17,7 +17,7 @@ export interface ReportFileContent {
 }
 
 export function writeReportFile(content: ReportFileContent): string {
-  const path = `${REPORTS_DIR}/daily-${content.date}.json`;
+  const path = `${REPORTS_DIR}/${content.date}.json`;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(content, null, 2), "utf-8");
   return path;
