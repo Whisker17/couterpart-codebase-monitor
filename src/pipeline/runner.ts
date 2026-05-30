@@ -10,6 +10,7 @@ export interface StageResult {
 
 export interface PipelineContext {
   stageResults: Map<string, StageResult>;
+  isWeeklyRun: boolean;
 }
 
 export interface PipelineStage {
@@ -17,8 +18,14 @@ export interface PipelineStage {
   execute: (ctx: PipelineContext) => Promise<StageResult>;
 }
 
-export async function runPipeline(stages: PipelineStage[]): Promise<Map<string, StageResult>> {
-  const ctx: PipelineContext = { stageResults: new Map() };
+export async function runPipeline(
+  stages: PipelineStage[],
+  options?: { isWeeklyRun?: boolean }
+): Promise<Map<string, StageResult>> {
+  const ctx: PipelineContext = {
+    stageResults: new Map(),
+    isWeeklyRun: options?.isWeeklyRun ?? false,
+  };
 
   for (const stage of stages) {
     console.log(`[Pipeline] Starting stage: ${stage.name}`);

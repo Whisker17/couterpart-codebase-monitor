@@ -113,7 +113,7 @@ describe("report stage", () => {
   });
 
   it("returns itemsProcessed=0 when no analyses exist", async () => {
-    const ctx = { stageResults: new Map() };
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
     const result = await execute(ctx);
     expect(result.success).toBe(true);
     expect(result.itemsProcessed).toBe(0);
@@ -121,7 +121,7 @@ describe("report stage", () => {
 
   it("returns itemsProcessed > 0 when analyses exist", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map() };
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
     const result = await execute(ctx);
     expect(result.success).toBe(true);
     expect(result.itemsProcessed).toBeGreaterThan(0);
@@ -129,7 +129,7 @@ describe("report stage", () => {
 
   it("writes the report row to the reports table", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map() };
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
     await execute(ctx);
     const row = testDb.query<{ id: number; type: string }, []>("SELECT * FROM reports").get();
     expect(row).toBeDefined();
@@ -138,7 +138,7 @@ describe("report stage", () => {
 
   it("is idempotent — running twice doesn't create duplicate rows", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map() };
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
     await execute(ctx);
     await execute(ctx);
     const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports").get()!;
@@ -147,7 +147,7 @@ describe("report stage", () => {
 
   it("calls writeReportFile when analyses exist", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map() };
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
     await execute(ctx);
     expect(mockWriteReportFile).toHaveBeenCalledTimes(1);
   });
@@ -158,6 +158,7 @@ describe("report stage", () => {
       stageResults: new Map([
         ["collect", { success: false, itemsProcessed: 0, errors: [], durationMs: 0, failedProjects: ["org/repo-b"] }],
       ]),
+      isWeeklyRun: false,
     };
     await execute(ctx);
     const row = testDb.query<{ content: string }, []>("SELECT content FROM reports").get()!;
@@ -169,7 +170,7 @@ describe("report stage", () => {
 
   it("completeness is stored in reports table", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map() };
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
     await execute(ctx);
     const row = testDb.query<{ completeness: string }, []>("SELECT completeness FROM reports").get()!;
     const completeness = JSON.parse(row.completeness);
@@ -180,7 +181,7 @@ describe("report stage", () => {
 
   it("upsert updates project_ids on re-run", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map() };
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
     await execute(ctx);
     const before = testDb.query<{ project_ids: string }, []>("SELECT project_ids FROM reports").get()!;
     await execute(ctx);
@@ -188,6 +189,39 @@ describe("report stage", () => {
     // project_ids should be set (not null) and unchanged across idempotent runs
     expect(before.project_ids).toBeDefined();
     expect(after.project_ids).toBe(before.project_ids);
+  });
+
+  it("does not write weekly report row when isWeeklyRun is false", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
+    await execute(ctx);
+    const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='weekly'").get()!;
+    expect(count.n).toBe(0);
+  });
+
+  it("writes weekly report row when isWeeklyRun is true", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), isWeeklyRun: true };
+    await execute(ctx);
+    const weeklyRow = testDb.query<{ type: string }, []>("SELECT type FROM reports WHERE type='weekly'").get();
+    expect(weeklyRow).toBeDefined();
+    expect(weeklyRow!.type).toBe("weekly");
+  });
+
+  it("weekly run calls writeReportFile twice (daily + weekly)", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), isWeeklyRun: true };
+    await execute(ctx);
+    expect(mockWriteReportFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("daily report still succeeds on weekly run", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), isWeeklyRun: true };
+    const result = await execute(ctx);
+    expect(result.success).toBe(true);
+    const dailyRow = testDb.query<{ type: string }, []>("SELECT type FROM reports WHERE type='daily'").get();
+    expect(dailyRow).toBeDefined();
   });
 });
 

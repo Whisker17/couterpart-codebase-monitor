@@ -18,7 +18,7 @@ export function registerScheduler(): void {
 
   new Cron(schedule.weeklyCron, async () => {
     console.log("[Scheduler] Weekly pipeline triggered");
-    await runPipeline(STAGES);
+    await runPipeline(STAGES, { isWeeklyRun: true });
   });
 
   console.log(

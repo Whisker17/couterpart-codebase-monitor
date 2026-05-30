@@ -163,7 +163,7 @@ afterEach(() => {
 describe("analyze stage", () => {
   it("processes pending PRs and marks them complete", async () => {
     insertPR();
-    const result = await execute({ stageResults: new Map() });
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
     expect(result.itemsProcessed).toBe(1);
 
     const pr = testDb.query<{ analysis_status: string }, []>("SELECT analysis_status FROM pull_requests LIMIT 1").get();
@@ -172,7 +172,7 @@ describe("analyze stage", () => {
 
   it("writes analyses and analysis_inputs rows", async () => {
     insertPR();
-    await execute({ stageResults: new Map() });
+    await execute({ stageResults: new Map(), isWeeklyRun: false });
 
     const analysis = testDb.query<{ summary: string; input_tokens: number }, []>("SELECT summary, input_tokens FROM analyses LIMIT 1").get();
     expect(analysis?.summary).toBe("Test summary");
@@ -189,7 +189,7 @@ describe("analyze stage", () => {
     insertPR();
     mockReviewPR.mockImplementation(async () => { throw new Error("API error"); });
 
-    const result = await execute({ stageResults: new Map() });
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
     expect(result.itemsProcessed).toBe(0);
     expect(result.errors.length).toBe(1);
 
@@ -203,7 +203,7 @@ describe("analyze stage", () => {
 
   it("retries failed PRs with retry_count < 3", async () => {
     insertPR({ analysis_status: "failed", retry_count: 1 });
-    const result = await execute({ stageResults: new Map() });
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
     expect(result.itemsProcessed).toBe(1);
 
     const pr = testDb.query<{ analysis_status: string }, []>("SELECT analysis_status FROM pull_requests LIMIT 1").get();
@@ -212,7 +212,7 @@ describe("analyze stage", () => {
 
   it("excludes failed PRs with retry_count >= 3", async () => {
     insertPR({ analysis_status: "failed", retry_count: 3 });
-    const result = await execute({ stageResults: new Map() });
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
     expect(result.itemsProcessed).toBe(0);
     expect(mockReviewPR).not.toHaveBeenCalled();
   });
@@ -240,7 +240,7 @@ describe("analyze stage", () => {
       };
     });
 
-    const result = await execute({ stageResults: new Map() });
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
     expect(result.itemsProcessed).toBe(1);
     expect(result.errors.length).toBe(1);
   });
@@ -254,7 +254,7 @@ describe("analyze stage", () => {
     insertPR();
     insertPR();
 
-    const result = await execute({ stageResults: new Map() });
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
     expect(result.budgetExhausted).toBe(true);
     expect((result.budgetSkippedCount ?? 0)).toBeGreaterThan(0);
     expect(mockReviewPR).not.toHaveBeenCalled();
@@ -262,7 +262,7 @@ describe("analyze stage", () => {
 
   it("uses metadata_only mode when diff_status is too_large", async () => {
     insertPR({ diff_status: "too_large" });
-    await execute({ stageResults: new Map() });
+    await execute({ stageResults: new Map(), isWeeklyRun: false });
 
     const inputs = testDb.query<{ input_quality: string }, []>(
       "SELECT input_quality FROM analysis_inputs LIMIT 1"
@@ -272,7 +272,7 @@ describe("analyze stage", () => {
 
   it("uses metadata_only mode when diff_status is missing", async () => {
     insertPR({ diff_status: "missing" });
-    await execute({ stageResults: new Map() });
+    await execute({ stageResults: new Map(), isWeeklyRun: false });
 
     const inputs = testDb.query<{ input_quality: string }, []>(
       "SELECT input_quality FROM analysis_inputs LIMIT 1"
