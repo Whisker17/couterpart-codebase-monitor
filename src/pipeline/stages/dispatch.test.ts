@@ -69,6 +69,11 @@ function insertReport(db: Database, content = '{"header":{}}'): number {
     [start, start + 86400, content]
   );
   const row = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+  // report_deliveries are created by report.ts; pre-create here to simulate that contract
+  db.run(
+    "INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)",
+    [row.id, content]
+  );
   return row.id;
 }
 
@@ -101,7 +106,7 @@ describe("dispatch stage", () => {
     expect(sendCardImpl).not.toHaveBeenCalled();
   });
 
-  it("creates delivery row and marks sent on success", async () => {
+  it("marks delivery sent on success and sets report.sent_at", async () => {
     const reportId = insertReport(testDb);
     const result = await execute(ctx);
 
@@ -196,8 +201,10 @@ describe("dispatch stage", () => {
     expect(sendCardImpl.mock.calls.length).toBe(callsAfterFirst);
   });
 
-  it("does not process reports that already have sent_at", async () => {
+  it("does not re-send deliveries that are already status=sent", async () => {
     const reportId = insertReport(testDb);
+    // Simulate a fully-sent state (consistent: delivery=sent + reports.sent_at set)
+    testDb.run("UPDATE report_deliveries SET status = 'sent' WHERE report_id = ?", [reportId]);
     testDb.run("UPDATE reports SET sent_at = 9999 WHERE id = ?", [reportId]);
 
     const result = await execute(ctx);
