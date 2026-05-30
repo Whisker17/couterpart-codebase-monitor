@@ -122,6 +122,48 @@ describe("dispatch stage", () => {
     expect(report.sent_at).not.toBeNull();
   });
 
+  it("marks delivery failed when sendCard throws (network error)", async () => {
+    sendCardImpl.mockImplementation(async () => { throw new Error("DNS resolution failed"); });
+    const reportId = insertReport(testDb);
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain("DNS resolution failed");
+
+    const delivery = testDb
+      .query<{ status: string }, [number]>(
+        "SELECT status FROM report_deliveries WHERE report_id = ?"
+      )
+      .get(reportId)!;
+    expect(delivery.status).toBe("failed");
+
+    const report = testDb
+      .query<{ sent_at: number | null }, [number]>("SELECT sent_at FROM reports WHERE id = ?")
+      .get(reportId)!;
+    expect(report.sent_at).toBeNull();
+  });
+
+  it("continues processing remaining deliveries after a network throw", async () => {
+    let callCount = 0;
+    sendCardImpl.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) throw new Error("timeout");
+      return { code: 0, msg: "success", data: { message_id: "msg-002" } };
+    });
+    const reportId1 = insertReport(testDb);
+    const reportId2 = insertReport(testDb);
+    const result = await execute(ctx);
+
+    // Second report's delivery should succeed despite first throwing
+    const d2 = testDb
+      .query<{ status: string }, [number]>(
+        "SELECT status FROM report_deliveries WHERE report_id = ?"
+      )
+      .get(reportId2)!;
+    expect(d2.status).toBe("sent");
+    expect(result.itemsProcessed).toBe(1);
+  });
+
   it("marks delivery failed and keeps report unsent on Lark error", async () => {
     sendCardImpl.mockImplementation(async () => ({ code: 99, msg: "webhook error" }));
     const reportId = insertReport(testDb);

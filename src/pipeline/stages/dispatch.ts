@@ -67,7 +67,16 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
         continue;
       }
 
-      const result = await sendCard(webhookUrl, card);
+      let result: Awaited<ReturnType<typeof sendCard>>;
+      try {
+        result = await sendCard(webhookUrl, card);
+      } catch (err) {
+        const msg = `delivery ${delivery.id}: ${err instanceof Error ? err.message : String(err)}`;
+        console.error(`[Dispatcher] ${msg}`);
+        errors.push(msg);
+        db.run("UPDATE report_deliveries SET status = 'failed' WHERE id = ?", [delivery.id]);
+        continue;
+      }
 
       if (result.code === 0) {
         db.run(
