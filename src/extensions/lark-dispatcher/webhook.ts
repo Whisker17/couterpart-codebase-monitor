@@ -4,7 +4,8 @@ export interface LarkWebhookResponse {
   data?: { message_id: string };
 }
 
-const RETRY_DELAY_MS = 2000;
+// Delays between retries: 2s → 4s → 8s (3 retries = 4 total attempts)
+const RETRY_DELAYS_MS = [2_000, 4_000, 8_000];
 
 async function doSend(webhookUrl: string, card: object): Promise<LarkWebhookResponse> {
   const resp = await fetch(webhookUrl, {
@@ -22,9 +23,14 @@ export async function sendCard(
   webhookUrl: string,
   card: object
 ): Promise<LarkWebhookResponse> {
-  const first = await doSend(webhookUrl, card);
-  if (first.code === 0) return first;
+  let last = await doSend(webhookUrl, card);
+  if (last.code === 0) return last;
 
-  await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-  return doSend(webhookUrl, card);
+  for (const delayMs of RETRY_DELAYS_MS) {
+    await new Promise((r) => setTimeout(r, delayMs));
+    last = await doSend(webhookUrl, card);
+    if (last.code === 0) return last;
+  }
+
+  return last;
 }

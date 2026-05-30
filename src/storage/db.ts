@@ -1,10 +1,9 @@
 import { Database, constants } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
-import { MIGRATION_001 } from "./schema";
+import { MIGRATION_001, MIGRATION_002 } from "./schema";
 
 const DB_PATH = "data/monitor.db";
-const MIGRATION_VERSION = "001_init";
 
 let db: Database | null = null;
 
@@ -31,11 +30,14 @@ function runMigrations(database: Database): void {
     .all()
     .map((r) => r.version);
 
-  if (!applied.includes(MIGRATION_VERSION)) {
+  if (!applied.includes("001_init")) {
     database.exec(MIGRATION_001);
-    database
-      .query("INSERT OR IGNORE INTO migrations (version) VALUES (?)")
-      .run(MIGRATION_VERSION);
+    database.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("001_init");
+  }
+
+  if (!applied.includes("002_add_active")) {
+    database.exec(MIGRATION_002);
+    database.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("002_add_active");
   }
 }
 
