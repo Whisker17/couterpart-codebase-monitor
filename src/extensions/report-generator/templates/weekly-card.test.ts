@@ -82,7 +82,7 @@ describe("buildWeeklyCard", () => {
 
   it("elements include Direction Changes markdown as first element", () => {
     const card = buildWeeklyCard("May 12–19", sampleData);
-    const first = card.elements[0];
+    const first = card.elements[0]!;
     expect(first.tag).toBe("markdown");
     const el = first as { tag: "markdown"; content: string };
     expect(el.content).toContain("Direction Changes This Week");
@@ -106,7 +106,7 @@ describe("buildWeeklyCard", () => {
 
   it("elements include an hr after direction changes", () => {
     const card = buildWeeklyCard("May 12–19", sampleData);
-    expect(card.elements[1].tag).toBe("hr");
+    expect(card.elements[1]!.tag).toBe("hr");
   });
 
   it("elements include Activity Summary markdown", () => {
@@ -122,7 +122,7 @@ describe("buildWeeklyCard", () => {
 
   it("elements include an hr before per-project highlights", () => {
     const card = buildWeeklyCard("May 12–19", sampleData);
-    expect(card.elements[3].tag).toBe("hr");
+    expect(card.elements[3]!.tag).toBe("hr");
   });
 
   it("per-project highlights are in a collapsed collapsible_panel", () => {
@@ -144,7 +144,7 @@ describe("buildWeeklyCard", () => {
       tag: "collapsible_panel";
       elements: Array<{ tag: string; content: string }>;
     };
-    const content = panel.elements[0].content;
+    const content = panel.elements[0]!.content;
     expect(content).toContain("org/repo-a");
     expect(content).toContain("#101");
     expect(content).toContain("org/repo-b");
@@ -156,7 +156,7 @@ describe("buildWeeklyCard", () => {
       tag: "collapsible_panel";
       elements: Array<{ tag: string; content: string }>;
     };
-    expect(panel.elements[0].content).toContain("DIRECTIONAL");
+    expect(panel.elements[0]!.content).toContain("DIRECTIONAL");
   });
 
   it("notable PRs show NOTABLE badge in highlights", () => {
@@ -165,7 +165,7 @@ describe("buildWeeklyCard", () => {
       tag: "collapsible_panel";
       elements: Array<{ tag: string; content: string }>;
     };
-    expect(panel.elements[0].content).toContain("NOTABLE");
+    expect(panel.elements[0]!.content).toContain("NOTABLE");
   });
 
   it("card has exactly 5 elements: direction, hr, activity, hr, highlights", () => {
