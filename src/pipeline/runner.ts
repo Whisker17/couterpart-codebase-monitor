@@ -4,6 +4,8 @@ export interface StageResult {
   errors: string[];
   durationMs: number;
   failedProjects?: string[];
+  budgetExhausted?: boolean;
+  budgetSkippedCount?: number;
 }
 
 export interface PipelineContext {
