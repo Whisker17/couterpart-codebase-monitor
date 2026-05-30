@@ -23,6 +23,11 @@ mock.module("../../extensions/report-generator/file-writer", () => ({
 
 const { execute, buildFinalCard } = await import("./report");
 
+function getTodayStartUtcUnix(): number {
+  const now = new Date();
+  return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000);
+}
+
 function applySchema(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -89,14 +94,39 @@ function applySchema(db: Database): void {
 }
 
 function insertTestData(db: Database): void {
-  db.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-a', 'org', 'repo-a', 'https://github.com/org/repo-a')`);
-  db.run(`INSERT INTO pull_requests (project_id, pr_number, title, analysis_status) VALUES ('org/repo-a', 1, 'Test PR', 'complete')`);
-  const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
   const now = Math.floor(Date.now() / 1000);
+  db.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-a', 'org', 'repo-a', 'https://github.com/org/repo-a')`);
+  db.run(
+    `INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status)
+     VALUES ('org/repo-a', 1, 'Test PR', ?, 'complete')`,
+    [now]
+  );
+  const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
   db.run(
     `INSERT INTO analyses (pr_id, project_id, summary, technical_detail, direction_signal, significance, analyzed_at)
      VALUES (?, 'org/repo-a', 'Test summary', 'Test detail', null, 'routine', ?)`,
     [pr.id, now]
+  );
+}
+
+function insertAnalyzedPr(
+  db: Database,
+  prNumber: number,
+  title: string,
+  mergedAt: number,
+  analyzedAt: number
+): void {
+  db.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-a', 'org', 'repo-a', 'https://github.com/org/repo-a')`);
+  db.run(
+    `INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status)
+     VALUES ('org/repo-a', ?, ?, ?, 'complete')`,
+    [prNumber, title, mergedAt]
+  );
+  const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+  db.run(
+    `INSERT INTO analyses (pr_id, project_id, summary, technical_detail, direction_signal, significance, analyzed_at)
+     VALUES (?, 'org/repo-a', ?, 'Test detail', null, 'routine', ?)`,
+    [pr.id, `${title} summary`, analyzedAt]
   );
 }
 
@@ -191,6 +221,20 @@ describe("report stage", () => {
     expect(after.project_ids).toBe(before.project_ids);
   });
 
+  it("daily report includes only PRs merged during the daily period", async () => {
+    const todayStart = getTodayStartUtcUnix();
+    const now = Math.floor(Date.now() / 1000);
+    insertAnalyzedPr(testDb, 1, "Today PR", todayStart + 3600, now);
+    insertAnalyzedPr(testDb, 2, "Backfilled PR", todayStart - 7 * 86400 + 3600, now);
+
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
+    await execute(ctx);
+
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
+    expect(row.content).toContain("Today PR");
+    expect(row.content).not.toContain("Backfilled PR");
+  });
+
   it("does not write weekly report row when isWeeklyRun is false", async () => {
     insertTestData(testDb);
     const ctx = { stageResults: new Map(), isWeeklyRun: false };
@@ -231,6 +275,21 @@ describe("report stage", () => {
     await execute(ctx);
     const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='weekly'").get()!;
     expect(count.n).toBe(1);
+  });
+
+  it("weekly report includes only PRs merged during the weekly period", async () => {
+    const todayStart = getTodayStartUtcUnix();
+    const weeklyStart = todayStart - 6 * 86400;
+    const now = Math.floor(Date.now() / 1000);
+    insertAnalyzedPr(testDb, 1, "This Week PR", todayStart + 3600, now);
+    insertAnalyzedPr(testDb, 2, "Older Than Week PR", weeklyStart - 86400 + 3600, now);
+
+    const ctx = { stageResults: new Map(), isWeeklyRun: true };
+    await execute(ctx);
+
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='weekly'").get()!;
+    expect(row.content).toContain("This Week PR");
+    expect(row.content).not.toContain("Older Than Week PR");
   });
 
   it("weekly errors do not affect daily success flag", async () => {

@@ -56,21 +56,22 @@ export function buildWeeklyReport(): WeeklyReportData {
   const periodEndUnix = periodStartUnix + 7 * 86400 - 1;
 
   const rows = db
-    .query<WeeklyAnalysisRow, [number]>(
+    .query<WeeklyAnalysisRow, [number, number]>(
       `SELECT a.id, a.pr_id, a.project_id, a.summary, a.technical_detail,
               a.direction_signal, a.significance,
               pr.title, pr.pr_number
        FROM analyses a
        JOIN pull_requests pr ON a.pr_id = pr.id
-       WHERE a.analyzed_at >= ?
+       WHERE pr.merged_at >= ? AND pr.merged_at <= ?
        ORDER BY a.project_id,
                 CASE a.significance
                   WHEN 'directional_shift' THEN 2
                   WHEN 'notable' THEN 1
                   ELSE 0
-                END DESC`
+                END DESC,
+                pr.merged_at DESC`
     )
-    .all(periodStartUnix);
+    .all(periodStartUnix, periodEndUnix);
 
   if (rows.length === 0) {
     return {
