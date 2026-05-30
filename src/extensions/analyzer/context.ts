@@ -1,4 +1,5 @@
 import type { TruncatedDiff } from "./diff-truncator";
+import { getTrackedProjects } from "../../config/projects";
 
 export interface ProjectContextLite {
   description: string | null;
@@ -16,6 +17,7 @@ export interface AnalysisContext {
 }
 
 export function buildProjectContext(row: {
+  project_id: string;
   description: string | null;
   language: string | null;
   topics: string | null;
@@ -30,11 +32,17 @@ export function buildProjectContext(row: {
     }
   }
 
+  // Resolve tags + notes from project config (project_id = "org/repo")
+  const [org, repo] = row.project_id.split("/");
+  const projectConfig = getTrackedProjects().find(
+    (p) => p.org === org && p.repo === repo
+  );
+
   return {
     description: row.description,
     language: row.language,
     topics,
-    tags: [],
-    notes: row.overview,
+    tags: projectConfig?.tags ?? [],
+    notes: projectConfig?.notes ?? row.overview,
   };
 }

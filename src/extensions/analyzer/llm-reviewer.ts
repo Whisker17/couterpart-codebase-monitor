@@ -1,4 +1,4 @@
-import { generateObject } from "ai";
+import { generateObject, NoObjectGeneratedError } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { getSettings } from "../../config/settings";
@@ -136,27 +136,30 @@ export async function reviewPR(ctx: AnalysisContext, pr: PRInfo): Promise<Review
     };
   }
 
-  // One retry on failure
-  try {
-    return await Promise.race([
-      callLLM(),
+  const withTimeout = (call: Promise<ReviewResult>) =>
+    Promise.race([
+      call,
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error("LLM call timed out after 60s")), 60_000)
       ),
     ]);
+
+  let firstErrMsg: string;
+  try {
+    return await withTimeout(callLLM());
   } catch (firstErr) {
-    // Single retry
-    try {
-      return await Promise.race([
-        callLLM(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("LLM call timed out after 60s")), 60_000)
-        ),
-      ]);
-    } catch (retryErr) {
-      const msg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-      throw new Error(`LLM analysis failed after retry: ${msg}`);
+    // Only retry on schema validation failure; all other errors propagate immediately
+    if (!(firstErr instanceof NoObjectGeneratedError)) {
+      throw firstErr;
     }
+    firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+  }
+
+  try {
+    return await withTimeout(callLLM());
+  } catch (retryErr) {
+    const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+    throw new Error(`LLM schema validation failed after retry. First: ${firstErrMsg}; Retry: ${retryMsg}`);
   }
 }
 

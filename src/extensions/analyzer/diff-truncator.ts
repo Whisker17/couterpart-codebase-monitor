@@ -133,6 +133,10 @@ function buildFileManifest(
   }
 
   const lines: string[] = [];
+  const skippedCount = byTier[0] ?? 0;
+  if (skippedCount > 0) {
+    lines.push(`  Skipped: ${skippedCount} files (lock/generated/binary)`);
+  }
   for (const [tier, count] of Object.entries(byTier).sort()) {
     const t = Number(tier);
     if (t === 0) continue;

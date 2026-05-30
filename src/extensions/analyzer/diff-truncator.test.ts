@@ -77,6 +77,21 @@ describe("truncateDiff", () => {
 
     const result = truncateDiff(manyFilesDiff, 8000, 2);
     expect(result.fileManifest).toContain("aggregated by tier");
+    // No lock files in this diff, so no skipped count line
+    expect(result.fileManifest).not.toContain("Skipped:");
+  });
+
+  it("includes skipped file count in aggregated manifest when lock files present", () => {
+    // Mix of source files (>maxEntries) and lock files
+    const mixedDiff =
+      Array.from({ length: 5 }, (_, i) =>
+        `diff --git a/src/file${i}.ts b/src/file${i}.ts\nindex abc..def 100644\n--- a/src/file${i}.ts\n+++ b/src/file${i}.ts\n@@ -1 +1 @@\n-old\n+new\n`
+      ).join("\n") +
+      "\ndiff --git a/yarn.lock b/yarn.lock\nindex abc..def 100644\n--- a/yarn.lock\n+++ b/yarn.lock\n@@ -1 +1 @@\n-old-dep@1.0.0\n+old-dep@2.0.0\n";
+
+    const result = truncateDiff(mixedDiff, 8000, 2);
+    expect(result.fileManifest).toContain("aggregated by tier");
+    expect(result.fileManifest).toContain("Skipped: 1 files (lock/generated/binary)");
   });
 
   it("returns metadata_only context when diff is empty", () => {

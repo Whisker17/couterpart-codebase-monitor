@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, mkdirSync, unlinkSync } from "fs";
+import { readFileSync, renameSync, mkdirSync, unlinkSync, readdirSync } from "fs";
 import { randomUUID } from "crypto";
 import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import { getDb } from "../../storage/db";
@@ -11,9 +11,9 @@ import type { AnalysisContext } from "../../extensions/analyzer/context";
 const TMP_DIR = "data/analysis-inputs/tmp";
 const FINAL_DIR = "data/analysis-inputs";
 
-function getMonthStart(): string {
+function getMonthStartUnix(): number {
   const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+  return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000);
 }
 
 interface PRRow {
@@ -72,6 +72,20 @@ export async function buildAnalysisContext(row: PRRow): Promise<AnalysisContext>
   }
 }
 
+function cleanupStaleTmpFiles(): void {
+  try {
+    const files = readdirSync(TMP_DIR).filter((f) => f.endsWith(".diff.tmp"));
+    for (const f of files) {
+      try { unlinkSync(`${TMP_DIR}/${f}`); } catch { /* ignore */ }
+    }
+    if (files.length > 0) {
+      console.warn(`[Analyze] Cleaned up ${files.length} stale tmp diff file(s) from previous run`);
+    }
+  } catch {
+    // TMP_DIR may not exist yet — that's fine
+  }
+}
+
 export async function execute(_ctx: PipelineContext): Promise<StageResult> {
   const db = getDb();
   const settings = getSettings();
@@ -82,6 +96,7 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
 
   mkdirSync(TMP_DIR, { recursive: true });
   mkdirSync(FINAL_DIR, { recursive: true });
+  cleanupStaleTmpFiles();
 
   const pendingPRs = db
     .query<PRRow, []>(
@@ -94,7 +109,7 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
 
   console.log(`[Analyze] Found ${pendingPRs.length} PRs to analyze`);
 
-  const monthStart = getMonthStart();
+  const monthStartUnix = getMonthStartUnix();
 
   let prIndex = 0;
   for (const pr of pendingPRs) {
@@ -102,10 +117,10 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
 
     // Budget check before each PR
     const budgetRow = db
-      .query<{ total_cost: number | null }, [string]>(
-        `SELECT SUM(estimated_cost_usd) as total_cost FROM analyses WHERE analyzed_at >= unixepoch(?)`
+      .query<{ total_cost: number | null }, [number]>(
+        `SELECT SUM(estimated_cost_usd) as total_cost FROM analyses WHERE analyzed_at >= ?`
       )
-      .get(monthStart);
+      .get(monthStartUnix);
     const monthlySpend = budgetRow?.total_cost ?? 0;
 
     if (monthlySpend >= settings.budget.monthlyCap) {
@@ -154,11 +169,11 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
         continue;
       }
 
-      // Step 3: Atomic DB transaction — insert analyses + analysis_inputs
+      // Step 3: Atomic DB transaction — insert analyses + analysis_inputs (truncated_diff_path NULL until rename succeeds)
       let analysisId: number;
+      let finalPath: string;
       try {
         const categoriesJson = JSON.stringify(reviewResult.output.categories);
-        const finalDiffPath = `${FINAL_DIR}/_PLACEHOLDER_.diff`; // replaced after we have analysis_id
 
         const insertResult = db.transaction(() => {
           db.run(
@@ -187,14 +202,13 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
             .get()!;
           const aid = inserted.id;
 
-          const diffPath = `${FINAL_DIR}/${aid}.diff`;
-
+          // Insert with truncated_diff_path = NULL; set after rename succeeds
           db.run(
             `INSERT INTO analysis_inputs
                (analysis_id, prompt_version, input_quality, rendered_project_context,
                 file_manifest, diff_included_files, diff_total_files, diff_truncated,
                 truncated_diff_path)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
             [
               aid,
               reviewResult.promptVersion,
@@ -204,26 +218,25 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
               reviewResult.diffIncludedFiles,
               reviewResult.diffTotalFiles,
               reviewResult.diffTruncated ? 1 : 0,
-              diffPath,
             ]
           );
 
-          return { aid, diffPath };
+          return { aid, diffPath: `${FINAL_DIR}/${aid}.diff` };
         })();
 
         analysisId = insertResult.aid;
-        const finalPath = insertResult.diffPath;
+        finalPath = insertResult.diffPath;
 
-        // Step 4: rename tmp → final
+        // Step 4: rename tmp → final, then update path in DB
         try {
           renameSync(tmpPath, finalPath);
-        } catch (renameErr) {
-          // Mark truncated_diff_path as NULL if rename fails
-          console.error(`[Analyze] PR ${pr.id}: rename failed: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`);
           db.run(
-            `UPDATE analysis_inputs SET truncated_diff_path = NULL WHERE analysis_id = ?`,
-            [analysisId]
+            `UPDATE analysis_inputs SET truncated_diff_path = ? WHERE analysis_id = ?`,
+            [finalPath, analysisId]
           );
+        } catch (renameErr) {
+          // rename failed — truncated_diff_path stays NULL, audit export marks this as snapshot_missing
+          console.error(`[Analyze] PR ${pr.id}: rename failed: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`);
         }
 
         db.run(`UPDATE pull_requests SET analysis_status = 'complete' WHERE id = ?`, [pr.id]);
