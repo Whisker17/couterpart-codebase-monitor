@@ -7,7 +7,7 @@ const REPORTS_DIR = "data/reports";
 
 export interface ReportFileContent {
   date: string;
-  card: LarkCard;
+  card: LarkCard | LarkCard[];
   analyses: GroupedAnalyses;
   completeness: {
     total: number;

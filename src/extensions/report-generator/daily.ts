@@ -18,12 +18,6 @@ function getTodayStartUtcUnix(): number {
   return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000);
 }
 
-function significanceRank(sig: string): number {
-  if (sig === "directional_shift") return 2;
-  if (sig === "notable") return 1;
-  return 0;
-}
-
 export interface DailyReportData {
   analyses: AnalysisRow[];
   grouped: GroupedAnalyses;
@@ -44,7 +38,12 @@ export function buildDailyReport(): DailyReportData {
        FROM analyses a
        JOIN pull_requests pr ON a.pr_id = pr.id
        WHERE a.analyzed_at >= ?
-       ORDER BY a.project_id, a.significance DESC`
+       ORDER BY a.project_id,
+                CASE a.significance
+                  WHEN 'directional_shift' THEN 2
+                  WHEN 'notable' THEN 1
+                  ELSE 0
+                END DESC`
     )
     .all(periodStartUnix);
 

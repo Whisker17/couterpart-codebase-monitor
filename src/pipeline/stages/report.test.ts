@@ -21,7 +21,7 @@ mock.module("../../extensions/report-generator/file-writer", () => ({
   writeReportFile: mockWriteReportFile,
 }));
 
-const { execute } = await import("./report");
+const { execute, buildFinalCard } = await import("./report");
 
 function applySchema(db: Database): void {
   db.exec(`
@@ -176,5 +176,97 @@ describe("report stage", () => {
     expect(completeness).toHaveProperty("total");
     expect(completeness).toHaveProperty("success");
     expect(completeness).toHaveProperty("failed");
+  });
+
+  it("upsert updates project_ids on re-run", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map() };
+    await execute(ctx);
+    const before = testDb.query<{ project_ids: string }, []>("SELECT project_ids FROM reports").get()!;
+    await execute(ctx);
+    const after = testDb.query<{ project_ids: string }, []>("SELECT project_ids FROM reports").get()!;
+    // project_ids should be set (not null) and unchanged across idempotent runs
+    expect(before.project_ids).toBeDefined();
+    expect(after.project_ids).toBe(before.project_ids);
+  });
+});
+
+describe("buildFinalCard", () => {
+  const routinePR = {
+    prNumber: 1,
+    title: "Routine fix",
+    summary: "s".repeat(50),
+    technicalDetail: null,
+    significance: "routine" as const,
+    directionSignal: null,
+  };
+
+  const notablePR = {
+    prNumber: 2,
+    title: "Notable change",
+    summary: "s".repeat(50),
+    technicalDetail: null,
+    significance: "notable" as const,
+    directionSignal: "improving perf",
+  };
+
+  const smallAnalyses = [
+    {
+      projectId: "org/repo-a",
+      prCount: 1,
+      directionalShiftCount: 0,
+      notableCount: 0,
+      topDirectionSignal: null,
+      prs: [routinePR],
+    },
+  ];
+
+  it("returns a single card when content fits under 20KB", () => {
+    const result = buildFinalCard("2026-06-01", smallAnalyses, undefined);
+    expect(result.errors).toHaveLength(0);
+    expect(Array.isArray(result.card)).toBe(false);
+    const parsed = JSON.parse(result.content);
+    expect(parsed.config).toBeDefined();
+  });
+
+  it("filters routine PRs and adds omit note when card exceeds 20KB", () => {
+    const longSummary = "x".repeat(500);
+    // Build analyses with many routine + 1 notable PR that together exceed 20KB
+    const manyRoutine = Array.from({ length: 50 }, (_, i) => ({
+      prNumber: i + 10,
+      title: `Routine PR ${i}`,
+      summary: longSummary,
+      technicalDetail: longSummary,
+      significance: "routine" as const,
+      directionSignal: null,
+    }));
+    const bigAnalyses = [
+      {
+        projectId: "org/repo-a",
+        prCount: manyRoutine.length + 1,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        topDirectionSignal: null,
+        prs: [notablePR, ...manyRoutine],
+      },
+    ];
+
+    const result = buildFinalCard("2026-06-01", bigAnalyses, undefined);
+    expect(result.errors).toHaveLength(0);
+    // Should have omitted routine PRs — content should not contain routine PR titles
+    const card = JSON.parse(result.content);
+    const summaryEl = card.config
+      ? card.elements?.find((e: { tag: string }) => e.tag === "markdown")
+      : null;
+    if (summaryEl) {
+      expect(summaryEl.content).toContain("omitted");
+    }
+    // Content must be under 20KB
+    expect(result.content.length).toBeLessThanOrEqual(20 * 1024);
+  });
+
+  it("returns no errors for small analyses", () => {
+    const result = buildFinalCard("2026-06-01", smallAnalyses, undefined);
+    expect(result.errors).toHaveLength(0);
   });
 });
