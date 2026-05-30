@@ -10,6 +10,7 @@ import { writeReportFile } from "../../extensions/report-generator/file-writer";
 
 const WARN_BYTES = 20 * 1024;
 const HARD_BYTES = 30 * 1024;
+const MAX_PRS_PER_PROJECT_CARD = 12;
 
 function filterRoutinePRs(analyses: GroupedAnalyses): { filtered: GroupedAnalyses; omittedCount: number } {
   let omittedCount = 0;
@@ -21,6 +22,30 @@ function filterRoutinePRs(analyses: GroupedAnalyses): { filtered: GroupedAnalyse
     })
     .filter((p) => p.prs.length > 0);
   return { filtered, omittedCount };
+}
+
+function truncateProjectToFit(
+  project: GroupedAnalyses[number],
+  date: string,
+  partialWarning: string | undefined
+): { card: LarkCard; oversized: boolean } {
+  // Step 1: remove routine PRs
+  const significant = project.prs.filter((pr) => pr.significance !== "routine");
+  const step1 = { ...project, prs: significant, prCount: project.prCount };
+  const step1Card = buildDailyCard(date, [step1], partialWarning);
+  if (JSON.stringify(step1Card).length <= HARD_BYTES) {
+    return { card: step1Card, oversized: false };
+  }
+
+  // Step 2: cap to MAX_PRS_PER_PROJECT_CARD most significant
+  const topPRs = significant.slice(0, MAX_PRS_PER_PROJECT_CARD);
+  const step2 = { ...project, prs: topPRs, prCount: project.prCount };
+  const step2Card = buildDailyCard(date, [step2], partialWarning);
+  const step2Json = JSON.stringify(step2Card);
+  console.warn(
+    `[Report] Project ${project.projectId}: truncated to ${topPRs.length} significant PRs (${step2Json.length} bytes)`
+  );
+  return { card: step2Card, oversized: step2Json.length > HARD_BYTES };
 }
 
 export interface FinalCardResult {
@@ -52,16 +77,20 @@ export function buildFinalCard(
     return { content: level1Json, card: level1Card, errors: [] };
   }
 
-  // Level 2: one card per project
+  // Level 2: one card per project, with per-project truncation if needed
   console.warn(`[Report] Card still ${level1Json.length} bytes after filtering — splitting per project`);
-  const perProjectCards = analyses.map((p) => buildDailyCard(date, [p], partialWarning));
   const errors: string[] = [];
-  for (const pc of perProjectCards) {
-    const pcJson = JSON.stringify(pc);
-    if (pcJson.length > HARD_BYTES) {
-      errors.push(`Card for "${(pc.header.title as { content: string }).content}" exceeds 30KB hard limit (${pcJson.length} bytes)`);
+  const perProjectCards = analyses.map((p) => {
+    const plain = buildDailyCard(date, [p], partialWarning);
+    if (JSON.stringify(plain).length <= HARD_BYTES) return plain;
+    const { card: truncated, oversized } = truncateProjectToFit(p, date, partialWarning);
+    if (oversized) {
+      errors.push(
+        `Project ${p.projectId}: card still oversized after max truncation — sent anyway`
+      );
     }
-  }
+    return truncated;
+  });
   return { content: JSON.stringify(perProjectCards), card: perProjectCards, errors };
 }
 
@@ -119,10 +148,10 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     reportData.grouped,
     partialWarning
   );
-  errors.push(...cardErrors);
-
+  // Card-size warnings are non-fatal: report is still written, just marked partial
   if (cardErrors.length > 0) {
-    return { success: false, itemsProcessed: 0, errors, durationMs: 0 };
+    for (const e of cardErrors) console.warn(`[Report] ⚠ ${e}`);
+    errors.push(...cardErrors);
   }
 
   const completenessJson = JSON.stringify(completeness);
