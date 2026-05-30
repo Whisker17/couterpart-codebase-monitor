@@ -1,11 +1,6 @@
 import type { LarkCard, LarkElement } from "./daily-card";
 import type { WeeklyReportData } from "../weekly";
 
-function formatUnixDate(unix: number): string {
-  const d = new Date(unix * 1000);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-}
-
 export function buildWeeklyCard(dateRange: string, data: WeeklyReportData): LarkCard {
   const elements: LarkElement[] = [];
 

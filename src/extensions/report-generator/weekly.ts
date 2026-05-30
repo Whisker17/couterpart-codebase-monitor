@@ -52,8 +52,8 @@ function getWeekStartUtcUnix(): number {
 
 export function buildWeeklyReport(): WeeklyReportData {
   const db = getDb();
-  const periodEndUnix = Math.floor(Date.now() / 1000);
   const periodStartUnix = getWeekStartUtcUnix();
+  const periodEndUnix = periodStartUnix + 7 * 86400 - 1;
 
   const rows = db
     .query<WeeklyAnalysisRow, [number]>(

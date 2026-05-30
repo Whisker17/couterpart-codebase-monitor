@@ -160,8 +160,11 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
 
   // Weekly report — only when this run was triggered by the weekly cron
   if (ctx.isWeeklyRun) {
-    const weeklyErrors = await generateWeeklyReport(db, completeness);
-    errors.push(...weeklyErrors);
+    const weeklyErrors = generateWeeklyReport(db, completeness);
+    // Weekly errors are non-fatal: they don't affect the daily success flag
+    if (weeklyErrors.length > 0) {
+      console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
+    }
   }
 
   return {
@@ -172,10 +175,10 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
   };
 }
 
-async function generateWeeklyReport(
+function generateWeeklyReport(
   db: Database,
   completeness: { total: number; success: number; failed: string[] }
-): Promise<string[]> {
+): string[] {
   const errors: string[] = [];
   const weeklyData = buildWeeklyReport();
 
