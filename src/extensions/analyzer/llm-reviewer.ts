@@ -4,7 +4,7 @@ import { z } from "zod";
 import { getSettings } from "../../config/settings";
 import type { AnalysisContext } from "./context";
 
-const PROMPT_VERSION = "v1";
+const PROMPT_VERSION = "v1.0-diff-aware";
 
 const AnalysisSchema = z.object({
   summary: z.string(),
