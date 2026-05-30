@@ -47,8 +47,12 @@ export function formatReport(
   // Level 2: notable/directional_shift only, append omit note
   const { filtered, omittedCount } = filterRoutinePRs(analyses);
   const trimmedCard = buildDailyCard(date, filtered, partialWarning);
-  const summaryEl = trimmedCard.elements[0] as { tag: "markdown"; content: string };
-  summaryEl.content += `\n_${omittedCount} routine PR${omittedCount !== 1 ? "s" : ""} omitted_`;
+  const summaryEl = trimmedCard.elements.find(
+    (el): el is { tag: "markdown"; content: string } => (el as { tag: string }).tag === "markdown"
+  );
+  if (summaryEl) {
+    summaryEl.content += `\n_${omittedCount} routine PR${omittedCount !== 1 ? "s" : ""} omitted_`;
+  }
   const trimmedSize = byteLength(JSON.stringify(trimmedCard));
   if (trimmedSize <= LEVEL2_BYTES) {
     console.warn(

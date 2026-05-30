@@ -97,8 +97,10 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     );
 
     const reportRow = db
-      .query<{ id: number }, []>("SELECT last_insert_rowid() AS id")
-      .get()!;
+      .query<{ id: number }, [string, number, number]>(
+        "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
+      )
+      .get("daily", reportData.periodStartUnix, reportData.periodEndUnix)!;
     for (let i = 0; i < cards.length; i++) {
       db.run(
         "INSERT OR IGNORE INTO report_deliveries (report_id, card_index, content) VALUES (?, ?, ?)",
@@ -187,6 +189,16 @@ function generateWeeklyReport(
         weeklyJson,
         weeklyCompletenessJson,
       ]
+    );
+
+    const weeklyRow = db
+      .query<{ id: number }, [string, number, number]>(
+        "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
+      )
+      .get("weekly", weeklyData.periodStartUnix, weeklyData.periodEndUnix)!;
+    db.run(
+      "INSERT OR IGNORE INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)",
+      [weeklyRow.id, weeklyJson]
     );
   } catch (err) {
     const msg = `Weekly DB upsert failed: ${err instanceof Error ? err.message : String(err)}`;

@@ -220,4 +220,54 @@ describe("dispatch stage", () => {
     expect(result.success).toBe(true);
     expect(result.itemsProcessed).toBe(2);
   });
+
+  it("partial multi-card failure: sent card stays sent, failed card keeps report unsent", async () => {
+    let callCount = 0;
+    sendCardImpl.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 2) return { code: 99, msg: "webhook error" };
+      return { code: 0, msg: "success", data: { message_id: `msg-00${callCount}` } };
+    });
+
+    // Insert a report with two delivery rows (simulating a split card scenario)
+    const start = ++reportCounter * 1000;
+    testDb.run(
+      "INSERT INTO reports (type, period_start, period_end, content) VALUES ('daily', ?, ?, ?)",
+      [start, start + 86400, '{"header":{}}']
+    );
+    const row = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+    const reportId = row.id;
+    testDb.run(
+      "INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)",
+      [reportId, '{"card":0}']
+    );
+    testDb.run(
+      "INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 1, ?)",
+      [reportId, '{"card":1}']
+    );
+
+    const result = await execute(ctx);
+
+    const d0 = testDb
+      .query<{ status: string }, [number, number]>(
+        "SELECT status FROM report_deliveries WHERE report_id = ? AND card_index = ?"
+      )
+      .get(reportId, 0)!;
+    const d1 = testDb
+      .query<{ status: string }, [number, number]>(
+        "SELECT status FROM report_deliveries WHERE report_id = ? AND card_index = ?"
+      )
+      .get(reportId, 1)!;
+
+    expect(d0.status).toBe("sent");
+    expect(d1.status).toBe("failed");
+
+    const report = testDb
+      .query<{ sent_at: number | null }, [number]>("SELECT sent_at FROM reports WHERE id = ?")
+      .get(reportId)!;
+    expect(report.sent_at).toBeNull();
+
+    expect(result.success).toBe(false);
+    expect(result.itemsProcessed).toBe(1);
+  });
 });
