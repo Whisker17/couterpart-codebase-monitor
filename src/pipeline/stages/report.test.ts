@@ -90,6 +90,16 @@ function applySchema(db: Database): void {
       created_at INTEGER DEFAULT (unixepoch()),
       UNIQUE(type, period_start, period_end)
     );
+    CREATE TABLE IF NOT EXISTS report_deliveries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      report_id INTEGER NOT NULL REFERENCES reports(id),
+      card_index INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      lark_message_id TEXT,
+      status TEXT DEFAULT 'pending',
+      sent_at INTEGER,
+      UNIQUE(report_id, card_index)
+    );
   `);
 }
 
@@ -301,6 +311,44 @@ describe("report stage", () => {
     // Daily succeeded — result.success must be true regardless of weekly outcome
     expect(result.success).toBe(true);
     expect(result.errors).toHaveLength(0);
+  });
+
+  it("creates at least one report_deliveries row after report insert", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
+    await execute(ctx);
+    const deliveries = testDb
+      .query<{ card_index: number; status: string }, []>(
+        "SELECT card_index, status FROM report_deliveries"
+      )
+      .all();
+    expect(deliveries.length).toBeGreaterThan(0);
+    expect(deliveries[0].card_index).toBe(0);
+    expect(deliveries[0].status).toBe("pending");
+  });
+
+  it("report_deliveries rows use INSERT OR IGNORE — re-run does not duplicate them", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
+    await execute(ctx);
+    await execute(ctx);
+    const count = testDb
+      .query<{ n: number }, []>("SELECT COUNT(*) as n FROM report_deliveries WHERE card_index = 0")
+      .get()!;
+    expect(count.n).toBe(1);
+  });
+
+  it("delivery content is valid JSON that parses to a LarkCard", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), isWeeklyRun: false };
+    await execute(ctx);
+    const delivery = testDb
+      .query<{ content: string }, []>("SELECT content FROM report_deliveries LIMIT 1")
+      .get()!;
+    const card = JSON.parse(delivery.content);
+    expect(card).toHaveProperty("config");
+    expect(card).toHaveProperty("header");
+    expect(card).toHaveProperty("elements");
   });
 });
 

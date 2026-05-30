@@ -69,6 +69,11 @@ function insertReport(db: Database, content = '{"header":{}}'): number {
     [start, start + 86400, content]
   );
   const row = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+  // report_deliveries are created by report.ts; pre-create here to simulate that contract
+  db.run(
+    "INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)",
+    [row.id, content]
+  );
   return row.id;
 }
 
@@ -101,7 +106,7 @@ describe("dispatch stage", () => {
     expect(sendCardImpl).not.toHaveBeenCalled();
   });
 
-  it("creates delivery row and marks sent on success", async () => {
+  it("marks delivery sent on success and sets report.sent_at", async () => {
     const reportId = insertReport(testDb);
     const result = await execute(ctx);
 
@@ -196,8 +201,10 @@ describe("dispatch stage", () => {
     expect(sendCardImpl.mock.calls.length).toBe(callsAfterFirst);
   });
 
-  it("does not process reports that already have sent_at", async () => {
+  it("does not re-send deliveries that are already status=sent", async () => {
     const reportId = insertReport(testDb);
+    // Simulate a fully-sent state (consistent: delivery=sent + reports.sent_at set)
+    testDb.run("UPDATE report_deliveries SET status = 'sent' WHERE report_id = ?", [reportId]);
     testDb.run("UPDATE reports SET sent_at = 9999 WHERE id = ?", [reportId]);
 
     const result = await execute(ctx);
@@ -212,5 +219,55 @@ describe("dispatch stage", () => {
 
     expect(result.success).toBe(true);
     expect(result.itemsProcessed).toBe(2);
+  });
+
+  it("partial multi-card failure: sent card stays sent, failed card keeps report unsent", async () => {
+    let callCount = 0;
+    sendCardImpl.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 2) return { code: 99, msg: "webhook error" };
+      return { code: 0, msg: "success", data: { message_id: `msg-00${callCount}` } };
+    });
+
+    // Insert a report with two delivery rows (simulating a split card scenario)
+    const start = ++reportCounter * 1000;
+    testDb.run(
+      "INSERT INTO reports (type, period_start, period_end, content) VALUES ('daily', ?, ?, ?)",
+      [start, start + 86400, '{"header":{}}']
+    );
+    const row = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+    const reportId = row.id;
+    testDb.run(
+      "INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)",
+      [reportId, '{"card":0}']
+    );
+    testDb.run(
+      "INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 1, ?)",
+      [reportId, '{"card":1}']
+    );
+
+    const result = await execute(ctx);
+
+    const d0 = testDb
+      .query<{ status: string }, [number, number]>(
+        "SELECT status FROM report_deliveries WHERE report_id = ? AND card_index = ?"
+      )
+      .get(reportId, 0)!;
+    const d1 = testDb
+      .query<{ status: string }, [number, number]>(
+        "SELECT status FROM report_deliveries WHERE report_id = ? AND card_index = ?"
+      )
+      .get(reportId, 1)!;
+
+    expect(d0.status).toBe("sent");
+    expect(d1.status).toBe("failed");
+
+    const report = testDb
+      .query<{ sent_at: number | null }, [number]>("SELECT sent_at FROM reports WHERE id = ?")
+      .get(reportId)!;
+    expect(report.sent_at).toBeNull();
+
+    expect(result.success).toBe(false);
+    expect(result.itemsProcessed).toBe(1);
   });
 });

@@ -3,50 +3,11 @@ import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import { getDb } from "../../storage/db";
 import { getTrackedProjects } from "../../config/projects";
 import { buildDailyReport } from "../../extensions/report-generator/daily";
-import { buildDailyCard, type GroupedAnalyses, type LarkCard } from "../../extensions/report-generator/templates/daily-card";
+import { type GroupedAnalyses, type LarkCard } from "../../extensions/report-generator/templates/daily-card";
 import { buildWeeklyReport } from "../../extensions/report-generator/weekly";
 import { buildWeeklyCard } from "../../extensions/report-generator/templates/weekly-card";
 import { writeReportFile } from "../../extensions/report-generator/file-writer";
-
-const WARN_BYTES = 20 * 1024;
-const HARD_BYTES = 30 * 1024;
-const MAX_PRS_PER_PROJECT_CARD = 12;
-
-function filterRoutinePRs(analyses: GroupedAnalyses): { filtered: GroupedAnalyses; omittedCount: number } {
-  let omittedCount = 0;
-  const filtered = analyses
-    .map((p) => {
-      const significant = p.prs.filter((pr) => pr.significance !== "routine");
-      omittedCount += p.prs.length - significant.length;
-      return { ...p, prs: significant, prCount: significant.length };
-    })
-    .filter((p) => p.prs.length > 0);
-  return { filtered, omittedCount };
-}
-
-function truncateProjectToFit(
-  project: GroupedAnalyses[number],
-  date: string,
-  partialWarning: string | undefined
-): { card: LarkCard; oversized: boolean } {
-  // Step 1: remove routine PRs
-  const significant = project.prs.filter((pr) => pr.significance !== "routine");
-  const step1 = { ...project, prs: significant, prCount: project.prCount };
-  const step1Card = buildDailyCard(date, [step1], partialWarning);
-  if (JSON.stringify(step1Card).length <= HARD_BYTES) {
-    return { card: step1Card, oversized: false };
-  }
-
-  // Step 2: cap to MAX_PRS_PER_PROJECT_CARD most significant
-  const topPRs = significant.slice(0, MAX_PRS_PER_PROJECT_CARD);
-  const step2 = { ...project, prs: topPRs, prCount: project.prCount };
-  const step2Card = buildDailyCard(date, [step2], partialWarning);
-  const step2Json = JSON.stringify(step2Card);
-  console.warn(
-    `[Report] Project ${project.projectId}: truncated to ${topPRs.length} significant PRs (${step2Json.length} bytes)`
-  );
-  return { card: step2Card, oversized: step2Json.length > HARD_BYTES };
-}
+import { formatReport } from "../../extensions/lark-dispatcher/formatter";
 
 export interface FinalCardResult {
   content: string;
@@ -59,39 +20,9 @@ export function buildFinalCard(
   analyses: GroupedAnalyses,
   partialWarning: string | undefined
 ): FinalCardResult {
-  // Level 0: full card
-  const card = buildDailyCard(date, analyses, partialWarning);
-  const cardJson = JSON.stringify(card);
-  if (cardJson.length <= WARN_BYTES) {
-    return { content: cardJson, card, errors: [] };
-  }
-
-  // Level 1: filter to notable/directional_shift only
-  const { filtered, omittedCount } = filterRoutinePRs(analyses);
-  const level1Card = buildDailyCard(date, filtered, partialWarning);
-  const summaryEl = level1Card.elements[0] as { tag: "markdown"; content: string };
-  summaryEl.content += `\n_${omittedCount} routine PR${omittedCount !== 1 ? "s" : ""} omitted_`;
-  const level1Json = JSON.stringify(level1Card);
-  if (level1Json.length <= WARN_BYTES) {
-    console.warn(`[Report] Card truncated to notable/directional PRs (${omittedCount} routine omitted)`);
-    return { content: level1Json, card: level1Card, errors: [] };
-  }
-
-  // Level 2: one card per project, with per-project truncation if needed
-  console.warn(`[Report] Card still ${level1Json.length} bytes after filtering — splitting per project`);
-  const errors: string[] = [];
-  const perProjectCards = analyses.map((p) => {
-    const plain = buildDailyCard(date, [p], partialWarning);
-    if (JSON.stringify(plain).length <= HARD_BYTES) return plain;
-    const { card: truncated, oversized } = truncateProjectToFit(p, date, partialWarning);
-    if (oversized) {
-      errors.push(
-        `Project ${p.projectId}: card still oversized after max truncation — sent anyway`
-      );
-    }
-    return truncated;
-  });
-  return { content: JSON.stringify(perProjectCards), card: perProjectCards, errors };
+  const { cards, errors } = formatReport(date, analyses, partialWarning);
+  const card = cards.length === 1 ? cards[0] : cards;
+  return { content: JSON.stringify(card), card, errors };
 }
 
 function formatDate(unixSeconds: number): string {
@@ -143,17 +74,14 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
       ? `Partial report: ${failedProjects.length} project(s) failed collection/analysis`
       : undefined;
 
-  const { content: cardContent, card: finalCard, errors: cardErrors } = buildFinalCard(
-    date,
-    reportData.grouped,
-    partialWarning
-  );
-  // Card-size warnings are non-fatal: report is still written, just marked partial
+  const { cards, errors: cardErrors } = formatReport(date, reportData.grouped, partialWarning);
   if (cardErrors.length > 0) {
     for (const e of cardErrors) console.warn(`[Report] ⚠ ${e}`);
     errors.push(...cardErrors);
   }
 
+  const finalCard = cards.length === 1 ? cards[0] : cards;
+  const cardContent = JSON.stringify(finalCard);
   const completenessJson = JSON.stringify(completeness);
   const projectIds = JSON.stringify(reportData.grouped.map((g) => g.projectId));
 
@@ -167,6 +95,18 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
                      project_ids = excluded.project_ids`,
       [reportData.periodStartUnix, reportData.periodEndUnix, projectIds, cardContent, completenessJson]
     );
+
+    const reportRow = db
+      .query<{ id: number }, [string, number, number]>(
+        "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
+      )
+      .get("daily", reportData.periodStartUnix, reportData.periodEndUnix)!;
+    for (let i = 0; i < cards.length; i++) {
+      db.run(
+        "INSERT OR IGNORE INTO report_deliveries (report_id, card_index, content) VALUES (?, ?, ?)",
+        [reportRow.id, i, JSON.stringify(cards[i])]
+      );
+    }
   } catch (err) {
     const msg = `DB upsert failed: ${err instanceof Error ? err.message : String(err)}`;
     console.error(`[Report] ${msg}`);
@@ -222,10 +162,11 @@ function generateWeeklyReport(
   const weeklyCard = buildWeeklyCard(dateRange, weeklyData);
   const weeklyJson = JSON.stringify(weeklyCard);
 
-  if (weeklyJson.length > HARD_BYTES) {
-    console.warn(`[Report] Weekly card exceeds 30KB hard limit (${weeklyJson.length} bytes) — sending anyway`);
-  } else if (weeklyJson.length > WARN_BYTES) {
-    console.warn(`[Report] Weekly card exceeds 20KB warn threshold (${weeklyJson.length} bytes)`);
+  const weeklyBytes = Buffer.byteLength(weeklyJson, "utf-8");
+  if (weeklyBytes > 30_000) {
+    console.warn(`[Report] Weekly card exceeds 30KB hard limit (${weeklyBytes} bytes) — sending anyway`);
+  } else if (weeklyBytes > 20_000) {
+    console.warn(`[Report] Weekly card exceeds 20KB warn threshold (${weeklyBytes} bytes)`);
   }
 
   const weeklyProjectIds = JSON.stringify(
@@ -248,6 +189,16 @@ function generateWeeklyReport(
         weeklyJson,
         weeklyCompletenessJson,
       ]
+    );
+
+    const weeklyRow = db
+      .query<{ id: number }, [string, number, number]>(
+        "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
+      )
+      .get("weekly", weeklyData.periodStartUnix, weeklyData.periodEndUnix)!;
+    db.run(
+      "INSERT OR IGNORE INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)",
+      [weeklyRow.id, weeklyJson]
     );
   } catch (err) {
     const msg = `Weekly DB upsert failed: ${err instanceof Error ? err.message : String(err)}`;
