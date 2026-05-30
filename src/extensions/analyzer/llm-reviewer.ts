@@ -98,11 +98,19 @@ Significance classification rules:
 Respond with a JSON object matching the required schema.`;
 }
 
+function resolveAnthropicBaseUrl(rawUrl: string): string | undefined {
+  if (!rawUrl) return undefined;
+  const trimmed = rawUrl.replace(/\/+$/, "");
+  // @ai-sdk/anthropic constructs endpoint as `${baseURL}/messages`.
+  // Gateways expose Anthropic format at /v1/messages, so the baseURL must end with /v1.
+  return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+}
+
 export async function reviewPR(ctx: AnalysisContext, pr: PRInfo): Promise<ReviewResult> {
   const settings = getSettings();
 
   const anthropic = createAnthropic({
-    baseURL: settings.llm.baseUrl,
+    baseURL: resolveAnthropicBaseUrl(settings.llm.baseUrl),
     apiKey: settings.llm.apiKey,
   });
 
