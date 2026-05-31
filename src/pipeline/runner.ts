@@ -11,9 +11,11 @@ export interface StageResult {
   budgetSkippedCount?: number;
 }
 
+export type ReportMode = "daily" | "weekly" | "monthly";
+
 export interface PipelineContext {
   stageResults: Map<string, StageResult>;
-  isWeeklyRun: boolean;
+  reportMode: ReportMode;
 }
 
 export interface PipelineStage {
@@ -105,11 +107,11 @@ export async function writeHealthAndMaybeAlert(
 
 export async function runPipeline(
   stages: PipelineStage[],
-  options?: { isWeeklyRun?: boolean; healthCheckOptions?: HealthCheckOptions }
+  options?: { reportMode?: ReportMode; healthCheckOptions?: HealthCheckOptions }
 ): Promise<Map<string, StageResult>> {
   const ctx: PipelineContext = {
     stageResults: new Map(),
-    isWeeklyRun: options?.isWeeklyRun ?? false,
+    reportMode: options?.reportMode ?? "daily",
   };
 
   for (const stage of stages) {

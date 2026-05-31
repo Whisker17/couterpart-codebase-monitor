@@ -121,15 +121,15 @@ afterEach(() => {
 
 describe("collect stage", () => {
   it("inserts projects into DB from config if not present", async () => {
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const rows = testDb.query("SELECT id FROM projects").all();
     expect(rows.length).toBe(2);
   });
 
   it("is idempotent: running twice does not create duplicate projects", async () => {
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const rows = testDb.query("SELECT id FROM projects").all();
     expect(rows.length).toBe(2);
@@ -140,7 +140,7 @@ describe("collect stage", () => {
     mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);
     mockFetchAndStoreDiff.mockResolvedValueOnce({ status: "available", path: "data/diffs/org-repo/42.patch" });
 
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const row = testDb
       .query("SELECT * FROM pull_requests WHERE pr_number = 42")
@@ -156,7 +156,7 @@ describe("collect stage", () => {
     mockFetchPRStats.mockResolvedValueOnce({ changed_files: 8, additions: 200, deletions: 50 });
     mockFetchAndStoreDiff.mockResolvedValueOnce({ status: "available", path: "p" });
 
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const row = testDb
       .query("SELECT files_changed, additions, deletions FROM pull_requests WHERE pr_number = 7")
@@ -172,8 +172,8 @@ describe("collect stage", () => {
     mockFetchMergedPRs.mockResolvedValue([pr]);
     mockFetchAndStoreDiff.mockResolvedValue({ status: "available", path: "data/diffs/org-repo/42.patch" });
 
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const rows = testDb
       .query("SELECT id FROM pull_requests WHERE pr_number = 42 AND project_id = 'org/repo'")
@@ -188,7 +188,7 @@ describe("collect stage", () => {
     mockFetchAndStoreDiff.mockResolvedValueOnce({ status: "available", path: "p" });
 
     const before = Math.floor(Date.now() / 1000);
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const row = testDb
       .query("SELECT last_synced_at FROM projects WHERE id = 'org/repo'")
@@ -205,7 +205,7 @@ describe("collect stage", () => {
       .mockRejectedValueOnce(new Error("API rate limit exceeded"))
       .mockResolvedValueOnce([]);
 
-    const result = await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    const result = await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     expect(result.errors.length).toBe(1);
     expect(result.errors[0]).toContain("API rate limit exceeded");
@@ -218,7 +218,7 @@ describe("collect stage", () => {
     mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);
     mockFetchAndStoreDiff.mockResolvedValueOnce({ status: "fetch_failed", path: null });
 
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const row = testDb
       .query("SELECT diff_status, diff_path FROM pull_requests WHERE pr_number = 5")
@@ -236,7 +236,7 @@ describe("collect stage", () => {
       topics: ["systems", "cli"],
     });
 
-    await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const row = testDb
       .query("SELECT description, language, topics FROM projects WHERE id = 'org/repo'")
@@ -255,7 +255,7 @@ describe("collect stage", () => {
       .mockResolvedValueOnce([makePR({ number: 3, merged_at: new Date() })]);
     mockFetchAndStoreDiff.mockResolvedValue({ status: "available", path: "p" });
 
-    const result = await execute({ stageResults: new Map(), isWeeklyRun: false }, makeDeps());
+    const result = await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
     expect(result.itemsProcessed).toBe(3);
   });
 });
