@@ -1,0 +1,48 @@
+import { getDb } from "../storage/db";
+import { getSettings } from "../config/settings";
+
+export interface BudgetStatus {
+  tokensUsedThisMonth: number;
+  estimatedCostUSD: number;
+  budgetCapUSD: number;
+  usagePercent: number;
+  action: "normal" | "skip_routine" | "pause";
+}
+
+function getMonthStartUnix(): number {
+  const now = new Date();
+  return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000);
+}
+
+export function getBudgetStatus(): BudgetStatus {
+  const db = getDb();
+  const settings = getSettings();
+  const monthStart = getMonthStartUnix();
+
+  const row = db
+    .query<
+      { total_input: number | null; total_output: number | null; total_cost: number | null },
+      [number]
+    >(
+      `SELECT SUM(input_tokens) as total_input, SUM(output_tokens) as total_output,
+              SUM(estimated_cost_usd) as total_cost
+       FROM analyses WHERE analyzed_at >= ?`
+    )
+    .get(monthStart);
+
+  const tokensUsedThisMonth = (row?.total_input ?? 0) + (row?.total_output ?? 0);
+  const estimatedCostUSD = row?.total_cost ?? 0;
+  const budgetCapUSD = settings.budget.monthlyCap;
+  const usagePercent = budgetCapUSD > 0 ? estimatedCostUSD / budgetCapUSD : 0;
+
+  let action: "normal" | "skip_routine" | "pause";
+  if (usagePercent >= settings.budget.cutoffThreshold) {
+    action = "pause";
+  } else if (usagePercent >= settings.budget.warningThreshold) {
+    action = "skip_routine";
+  } else {
+    action = "normal";
+  }
+
+  return { tokensUsedThisMonth, estimatedCostUSD, budgetCapUSD, usagePercent, action };
+}

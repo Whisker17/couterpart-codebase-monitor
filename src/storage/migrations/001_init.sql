@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   deletions INTEGER,
   diff_path TEXT,
   diff_status TEXT CHECK(diff_status IN ('available', 'missing', 'fetch_failed', 'too_large')) DEFAULT 'missing',
-  analysis_status TEXT CHECK(analysis_status IN ('pending', 'complete', 'failed')) DEFAULT 'pending',
+  analysis_status TEXT CHECK(analysis_status IN ('pending', 'complete', 'failed', 'budget_skipped')) DEFAULT 'pending',
   retry_count INTEGER DEFAULT 0,
   last_error TEXT,
   fetched_at INTEGER DEFAULT (unixepoch()),

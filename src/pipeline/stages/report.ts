@@ -74,7 +74,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
       ? `Partial report: ${failedProjects.length} project(s) failed collection/analysis`
       : undefined;
 
-  const { cards, errors: cardErrors } = formatReport(date, reportData.grouped, partialWarning);
+  const { cards, errors: cardErrors } = formatReport(date, reportData.grouped, partialWarning, reportData.budgetLine);
   if (cardErrors.length > 0) {
     for (const e of cardErrors) console.warn(`[Report] ⚠ ${e}`);
     errors.push(...cardErrors);

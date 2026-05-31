@@ -40,12 +40,20 @@ mock.module("../../config/settings", () => ({
       diffTokenBudget: 8000,
       maxManifestEntries: 100,
     },
+    lark: {
+      webhookUrl: undefined,
+    },
     budget: {
       monthlyCap: 80,
       warningThreshold: 0.8,
       cutoffThreshold: 1.0,
     },
   }),
+}));
+
+const mockSendCard = mock(async () => ({ code: 0, msg: "ok", data: undefined }));
+mock.module("../../extensions/lark-dispatcher/webhook", () => ({
+  sendCard: mockSendCard,
 }));
 
 mock.module("../../extensions/analyzer/llm-reviewer", () => ({
@@ -66,7 +74,7 @@ CREATE TABLE IF NOT EXISTS pull_requests (
   merged_at INTEGER, files_changed INTEGER, additions INTEGER, deletions INTEGER,
   diff_path TEXT,
   diff_status TEXT DEFAULT 'missing',
-  analysis_status TEXT DEFAULT 'pending',
+  analysis_status TEXT CHECK(analysis_status IN ('pending', 'complete', 'failed', 'budget_skipped')) DEFAULT 'pending',
   retry_count INTEGER DEFAULT 0,
   last_error TEXT,
   fetched_at INTEGER DEFAULT (unixepoch())
@@ -113,6 +121,8 @@ function insertPR(overrides: Partial<{
   retry_count: number;
   diff_status: string;
   diff_path: string | null;
+  files_changed: number;
+  additions: number;
 }> = {}): number {
   const opts = {
     title: "Test PR",
@@ -120,19 +130,34 @@ function insertPR(overrides: Partial<{
     retry_count: 0,
     diff_status: "missing",
     diff_path: null,
+    files_changed: 3,
+    additions: 50,
     ...overrides,
   };
   testDb.run(
     `INSERT INTO pull_requests (project_id, pr_number, title, analysis_status, retry_count, diff_status, diff_path, files_changed, additions, deletions)
-     VALUES ('org/repo', ?, ?, ?, ?, ?, ?, 3, 50, 10)`,
-    [Math.floor(Math.random() * 100000), opts.title, opts.analysis_status, opts.retry_count, opts.diff_status, opts.diff_path]
+     VALUES ('org/repo', ?, ?, ?, ?, ?, ?, ?, ?, 10)`,
+    [Math.floor(Math.random() * 100000), opts.title, opts.analysis_status, opts.retry_count, opts.diff_status, opts.diff_path, opts.files_changed, opts.additions]
   );
   return (testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!).id;
+}
+
+function insertAnalysis(costUsd: number): void {
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
+  const analyzedAt = Math.floor(monthStart.getTime() / 1000) + 3600;
+  testDb.run(
+    `INSERT INTO analyses (pr_id, project_id, summary, input_tokens, output_tokens, estimated_cost_usd, analyzed_at)
+     VALUES (1, 'org/repo', 'existing', 100, 10, ?, ?)`,
+    [costUsd, analyzedAt]
+  );
 }
 
 beforeEach(() => {
   setupDb();
   mockReviewPR.mockReset();
+  mockSendCard.mockReset();
   mockReviewPR.mockImplementation(async () => ({
     output: {
       summary: "Test summary",
@@ -245,12 +270,8 @@ describe("analyze stage", () => {
     expect(result.errors.length).toBe(1);
   });
 
-  it("sets budgetExhausted when monthly cap is reached", async () => {
-    // Insert a large spend to exceed the $80 cap
-    testDb.run(
-      `INSERT INTO analyses (pr_id, project_id, summary, input_tokens, output_tokens, estimated_cost_usd, analyzed_at)
-       VALUES (1, 'org/repo', 'old', 100, 10, 90.0, unixepoch())` // $90 > $80 cap
-    );
+  it("pauses all analysis and sets budgetExhausted when monthly cap is reached", async () => {
+    insertAnalysis(90); // $90 > $80 cap → pause action
     insertPR();
     insertPR();
 
@@ -258,6 +279,53 @@ describe("analyze stage", () => {
     expect(result.budgetExhausted).toBe(true);
     expect((result.budgetSkippedCount ?? 0)).toBeGreaterThan(0);
     expect(mockReviewPR).not.toHaveBeenCalled();
+  });
+
+  it("skips likely_routine PRs and marks budget_skipped at 80-100% usage", async () => {
+    insertAnalysis(68); // $68 / $80 = 85% → skip_routine action
+    // Routine PR: small, title matches pattern
+    insertPR({ title: "fix typo in readme", files_changed: 1, additions: 5 });
+
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
+    expect(result.itemsProcessed).toBe(0);
+    expect(mockReviewPR).not.toHaveBeenCalled();
+
+    const pr = testDb.query<{ analysis_status: string }, []>("SELECT analysis_status FROM pull_requests LIMIT 1").get();
+    expect(pr?.analysis_status).toBe("budget_skipped");
+    expect(result.budgetSkippedCount).toBeGreaterThan(0);
+  });
+
+  it("always analyzes PRs with >10 files even at 80-100% usage", async () => {
+    insertAnalysis(68); // 85% → skip_routine
+    // Large PR: >10 files
+    insertPR({ title: "fix typo", files_changed: 15, additions: 5 });
+
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
+    expect(result.itemsProcessed).toBe(1);
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+
+    const pr = testDb.query<{ analysis_status: string }, []>("SELECT analysis_status FROM pull_requests LIMIT 1").get();
+    expect(pr?.analysis_status).toBe("complete");
+  });
+
+  it("always analyzes PRs with >500 additions even at 80-100% usage", async () => {
+    insertAnalysis(68); // 85% → skip_routine
+    // Large PR: >500 additions
+    insertPR({ title: "fix typo", files_changed: 1, additions: 600 });
+
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
+    expect(result.itemsProcessed).toBe(1);
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+  });
+
+  it("processes unknown-significance PRs normally at skip_routine budget", async () => {
+    insertAnalysis(68); // 85% → skip_routine
+    // Medium PR — not routine, not obviously notable
+    insertPR({ title: "implement login flow", files_changed: 5, additions: 100 });
+
+    const result = await execute({ stageResults: new Map(), isWeeklyRun: false });
+    expect(result.itemsProcessed).toBe(1);
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
   });
 
   it("uses metadata_only mode when diff_status is too_large", async () => {
