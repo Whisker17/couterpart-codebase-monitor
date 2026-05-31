@@ -127,8 +127,8 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     errors.push(msg);
   }
 
-  // Weekly report — only when this run was triggered by the weekly cron
-  if (ctx.isWeeklyRun) {
+  // Weekly report — only when this run uses weekly mode
+  if (ctx.reportMode === "weekly") {
     const weeklyErrors = generateWeeklyReport(db, completeness);
     // Weekly errors are non-fatal: they don't affect the daily success flag
     if (weeklyErrors.length > 0) {

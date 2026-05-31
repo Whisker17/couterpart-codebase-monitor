@@ -83,7 +83,7 @@ function insertReport(db: Database, content = '{"header":{}}'): number {
   return row.id;
 }
 
-const ctx = { stageResults: new Map(), isWeeklyRun: false };
+const ctx = { stageResults: new Map(), reportMode: "daily" as const };
 
 beforeEach(() => {
   testDb = makeDb();
