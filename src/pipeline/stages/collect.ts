@@ -1,7 +1,7 @@
 import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import { getDb } from "../../storage/db";
 import { getTrackedProjects } from "../../config/projects";
-import { fetchMergedPRs, fetchRepoMetadata, fetchPRStats } from "../../extensions/github-collector/fetcher";
+import { fetchMergedPRs, fetchRepoMetadata, fetchPRStats, RepoNotFoundError } from "../../extensions/github-collector/fetcher";
 import { fetchAndStoreDiff } from "../../extensions/github-collector/diff-fetcher";
 import type { PRData, RepoMetadata, PRStats } from "../../extensions/github-collector/fetcher";
 import type { DiffResult } from "../../extensions/github-collector/diff-fetcher";
@@ -51,8 +51,21 @@ export async function execute(
 
   ensureProjectsLoaded();
 
+  // Skip projects that have been marked inactive (e.g. deleted/renamed repos)
+  const inactiveIds = new Set<string>(
+    db
+      .query<{ id: string }, []>("SELECT id FROM projects WHERE active = 0")
+      .all()
+      .map((r) => r.id)
+  );
+
   for (const project of projects) {
     const pid = projectId(project.org, project.repo);
+
+    if (inactiveIds.has(pid)) {
+      console.log(`[Collect] Skipping inactive project ${pid}`);
+      continue;
+    }
 
     try {
       // Determine since: last_synced_at or 7 days ago
@@ -67,7 +80,8 @@ export async function execute(
         : Date.now() - SEVEN_DAYS_MS;
       const since = new Date(sinceMs);
 
-      // Fetch repo metadata and update projects table
+      // Fetch repo metadata and update projects table.
+      // RepoNotFoundError is re-thrown so the outer catch marks the project inactive.
       try {
         const meta = await deps.fetchRepoMetadata(project.org, project.repo);
         db.run(
@@ -75,6 +89,7 @@ export async function execute(
           [meta.description, meta.language, JSON.stringify(meta.topics), pid]
         );
       } catch (metaErr) {
+        if (metaErr instanceof RepoNotFoundError) throw metaErr;
         console.warn(
           `[Collect] Failed to fetch metadata for ${pid}: ${metaErr instanceof Error ? metaErr.message : String(metaErr)}`
         );
@@ -141,10 +156,17 @@ export async function execute(
 
       totalPRs += prs.length;
     } catch (err) {
-      const msg = `${pid}: ${err instanceof Error ? err.message : String(err)}`;
-      console.error(`[Collect] Failed project ${msg}`);
-      errors.push(msg);
-      failedProjects.push(pid);
+      if (err instanceof RepoNotFoundError) {
+        console.error(`[Collect] ALERT: ${err.message} — marking project inactive`);
+        db.run(`UPDATE projects SET active = 0 WHERE id = ?`, [pid]);
+        errors.push(`${pid}: repo not found (marked inactive)`);
+        failedProjects.push(pid);
+      } else {
+        const msg = `${pid}: ${err instanceof Error ? err.message : String(err)}`;
+        console.error(`[Collect] Failed project ${msg}`);
+        errors.push(msg);
+        failedProjects.push(pid);
+      }
     }
   }
 

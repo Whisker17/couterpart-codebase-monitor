@@ -1,10 +1,12 @@
-import { generateObject, NoObjectGeneratedError } from "ai";
+import { generateObject } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { getSettings } from "../../config/settings";
 import type { AnalysisContext } from "./context";
+import { withLLMRetry } from "./llm-retry";
 
 const PROMPT_VERSION = "v1.0-diff-aware";
+const LLM_TIMEOUT_MS = 60_000;
 
 const AnalysisSchema = z.object({
   summary: z.string(),
@@ -106,8 +108,15 @@ function resolveAnthropicBaseUrl(rawUrl: string): string | undefined {
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
 }
 
-export async function reviewPR(ctx: AnalysisContext, pr: PRInfo): Promise<ReviewResult> {
+type GenerateObjectFn = typeof generateObject;
+
+export async function reviewPR(
+  ctx: AnalysisContext,
+  pr: PRInfo,
+  deps?: { generateFn?: GenerateObjectFn }
+): Promise<ReviewResult> {
   const settings = getSettings();
+  const generateFn = deps?.generateFn ?? generateObject;
 
   const anthropic = createAnthropic({
     baseURL: resolveAnthropicBaseUrl(settings.llm.baseUrl),
@@ -117,12 +126,27 @@ export async function reviewPR(ctx: AnalysisContext, pr: PRInfo): Promise<Review
   const systemPrompt = buildSystemPrompt(ctx, pr);
 
   async function callLLM(): Promise<ReviewResult> {
-    const result = await generateObject({
-      model: anthropic(settings.llm.model),
-      schema: AnalysisSchema,
-      prompt: systemPrompt,
-      maxOutputTokens: settings.llm.maxTokensPerCall,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+    let result: Awaited<ReturnType<GenerateObjectFn>>;
+    try {
+      result = await generateFn({
+        model: anthropic(settings.llm.model),
+        schema: AnalysisSchema,
+        prompt: systemPrompt,
+        maxOutputTokens: settings.llm.maxTokensPerCall,
+        maxRetries: 0,
+        abortSignal: controller.signal,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error("LLM call timed out after 60s");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const inputTokens = result.usage.inputTokens ?? 0;
     const outputTokens = result.usage.outputTokens ?? 0;
@@ -144,31 +168,7 @@ export async function reviewPR(ctx: AnalysisContext, pr: PRInfo): Promise<Review
     };
   }
 
-  const withTimeout = (call: Promise<ReviewResult>) =>
-    Promise.race([
-      call,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("LLM call timed out after 60s")), 60_000)
-      ),
-    ]);
-
-  let firstErrMsg: string;
-  try {
-    return await withTimeout(callLLM());
-  } catch (firstErr) {
-    // Only retry on schema validation failure; all other errors propagate immediately
-    if (!(firstErr instanceof NoObjectGeneratedError)) {
-      throw firstErr;
-    }
-    firstErrMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-  }
-
-  try {
-    return await withTimeout(callLLM());
-  } catch (retryErr) {
-    const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-    throw new Error(`LLM schema validation failed after retry. First: ${firstErrMsg}; Retry: ${retryMsg}`);
-  }
+  return withLLMRetry(() => callLLM());
 }
 
 export { PROMPT_VERSION };

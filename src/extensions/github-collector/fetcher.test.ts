@@ -1,4 +1,5 @@
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
+import { RequestError } from "@octokit/request-error";
 
 type MockPR = {
   number: number;
@@ -49,7 +50,9 @@ mock.module("../../config/settings", () => ({
   getSettings: () => ({ github: { token: "test-token" } }),
 }));
 
-const { fetchMergedPRs, fetchRepoMetadata, fetchPRStats } = await import("./fetcher");
+const { fetchMergedPRs, fetchRepoMetadata, fetchPRStats, RepoNotFoundError } = await import(
+  "./fetcher"
+);
 
 function makePR(overrides: {
   number: number;
@@ -68,10 +71,65 @@ function makePR(overrides: {
   };
 }
 
+function makeRateLimitError(resetTimestamp: number): RequestError {
+  return new RequestError("API rate limit exceeded", 403, {
+    request: { method: "GET", url: "https://api.github.com", headers: {} },
+    response: {
+      url: "https://api.github.com",
+      status: 403,
+      headers: {
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(resetTimestamp),
+      },
+      data: {},
+    },
+  });
+}
+
+function makeServerError(status: number): RequestError {
+  return new RequestError(`Server error ${status}`, status, {
+    request: { method: "GET", url: "https://api.github.com", headers: {} },
+    response: {
+      url: "https://api.github.com",
+      status,
+      headers: {},
+      data: {},
+    },
+  });
+}
+
+function makeNotFoundError(): RequestError {
+  return new RequestError("Not Found", 404, {
+    request: { method: "GET", url: "https://api.github.com", headers: {} },
+    response: {
+      url: "https://api.github.com",
+      status: 404,
+      headers: {},
+      data: {},
+    },
+  });
+}
+
+// Replace setTimeout with immediate version to avoid test delays
+let originalSetTimeout: typeof globalThis.setTimeout;
+function installFakeTimers() {
+  originalSetTimeout = globalThis.setTimeout;
+  (globalThis as any).setTimeout = (fn: () => void, _ms: number) =>
+    originalSetTimeout(fn, 0);
+}
+function restoreRealTimers() {
+  globalThis.setTimeout = originalSetTimeout;
+}
+
 beforeEach(() => {
   mockPullsList.mockClear();
   mockPullsGet.mockClear();
   mockReposGet.mockClear();
+});
+
+afterEach(() => {
+  // Ensure timers are always restored even if test throws
+  if (originalSetTimeout) restoreRealTimers();
 });
 
 describe("fetchMergedPRs", () => {
@@ -172,6 +230,44 @@ describe("fetchMergedPRs", () => {
     expect(pr.node_id).toBe("PR_abc123");
     expect(pr.changed_files).toBe(0);
   });
+
+  it("throws RepoNotFoundError on 404", async () => {
+    mockPullsList.mockRejectedValueOnce(makeNotFoundError());
+
+    await expect(fetchMergedPRs("myorg", "myrepo", new Date())).rejects.toThrow(RepoNotFoundError);
+  });
+
+  it("retries and succeeds after rate limit 403", async () => {
+    installFakeTimers();
+    const pastResetTimestamp = Math.floor(Date.now() / 1000) - 10;
+    mockPullsList
+      .mockRejectedValueOnce(makeRateLimitError(pastResetTimestamp))
+      .mockResolvedValueOnce({ data: [] });
+
+    const result = await fetchMergedPRs("org", "repo", new Date());
+    expect(result).toHaveLength(0);
+    expect(mockPullsList.mock.calls).toHaveLength(2);
+  });
+
+  it("retries on 5xx and succeeds", async () => {
+    installFakeTimers();
+    mockPullsList
+      .mockRejectedValueOnce(makeServerError(503))
+      .mockResolvedValueOnce({ data: [] });
+
+    const result = await fetchMergedPRs("org", "repo", new Date());
+    expect(result).toHaveLength(0);
+    expect(mockPullsList.mock.calls).toHaveLength(2);
+  });
+
+  it("exhausts 5xx retries and throws after max retries", async () => {
+    installFakeTimers();
+    mockPullsList.mockRejectedValue(makeServerError(500));
+
+    await expect(fetchMergedPRs("org", "repo", new Date())).rejects.toThrow("Server error 500");
+    // 1 initial + 3 retries = 4 attempts
+    expect(mockPullsList.mock.calls).toHaveLength(4);
+  });
 });
 
 describe("fetchRepoMetadata", () => {
@@ -200,6 +296,11 @@ describe("fetchRepoMetadata", () => {
     expect(meta.language).toBeNull();
     expect(meta.topics).toEqual([]);
   });
+
+  it("throws RepoNotFoundError on 404", async () => {
+    mockReposGet.mockRejectedValueOnce(makeNotFoundError());
+    await expect(fetchRepoMetadata("org", "deleted-repo")).rejects.toThrow(RepoNotFoundError);
+  });
 });
 
 describe("fetchPRStats", () => {
@@ -224,5 +325,16 @@ describe("fetchPRStats", () => {
     expect(mockPullsGet.mock.calls).toHaveLength(1);
     const callArgs = mockPullsGet.mock.calls[0]?.[0] as { pull_number: number };
     expect(callArgs?.pull_number).toBe(99);
+  });
+
+  it("retries on 5xx server error", async () => {
+    installFakeTimers();
+    mockPullsGet
+      .mockRejectedValueOnce(makeServerError(502))
+      .mockResolvedValueOnce({ data: { changed_files: 3, additions: 10, deletions: 2 } });
+
+    const stats = await fetchPRStats("org", "repo", 1);
+    expect(stats.changed_files).toBe(3);
+    expect(mockPullsGet.mock.calls).toHaveLength(2);
   });
 });

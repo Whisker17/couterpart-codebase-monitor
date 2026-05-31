@@ -61,6 +61,7 @@ function makeDb(): Database {
       language TEXT,
       topics TEXT,
       last_synced_at INTEGER,
+      active INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER DEFAULT (unixepoch())
     );
     CREATE TABLE IF NOT EXISTS pull_requests (

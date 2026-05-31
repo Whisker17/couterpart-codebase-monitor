@@ -1,4 +1,5 @@
 import { Octokit } from "octokit";
+import { RequestError } from "@octokit/request-error";
 import { getSettings } from "../../config/settings";
 
 export interface PRData {
@@ -25,6 +26,16 @@ export interface RepoMetadata {
   topics: string[];
 }
 
+export class RepoNotFoundError extends Error {
+  constructor(
+    public readonly org: string,
+    public readonly repo: string
+  ) {
+    super(`Repository ${org}/${repo} not found (404) — may have been deleted or renamed`);
+    this.name = "RepoNotFoundError";
+  }
+}
+
 let _octokit: Octokit | null = null;
 
 function getOctokit(): Octokit {
@@ -34,21 +45,77 @@ function getOctokit(): Octokit {
   return _octokit;
 }
 
+function isRateLimitExhausted(err: RequestError): boolean {
+  return err.status === 403 && err.response?.headers["x-ratelimit-remaining"] === "0";
+}
+
+async function waitForRateLimitReset(err: RequestError): Promise<void> {
+  const resetHeader = err.response?.headers["x-ratelimit-reset"];
+  const resetTimestamp = resetHeader ? parseInt(String(resetHeader), 10) : 0;
+  const waitMs = Math.max(0, resetTimestamp * 1000 - Date.now()) + 1_000; // 1s buffer
+  console.warn(`[GitHub] Rate limited (403). Waiting ${Math.ceil(waitMs / 1000)}s until reset...`);
+  await new Promise((r) => setTimeout(r, waitMs));
+}
+
+const MAX_GITHUB_RETRIES = 3;
+
+async function withGitHubRetry<T>(
+  fn: () => Promise<T>,
+  org: string,
+  repo: string
+): Promise<T> {
+  let lastError: Error = new Error("unreachable");
+
+  for (let attempt = 0; attempt <= MAX_GITHUB_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!(err instanceof RequestError)) throw err;
+      if (err.status === 404) throw new RepoNotFoundError(org, repo);
+
+      lastError = err;
+      if (attempt === MAX_GITHUB_RETRIES) break;
+
+      if (isRateLimitExhausted(err)) {
+        // Wait until reset, then retry immediately — no additional backoff delay
+        await waitForRateLimitReset(err);
+        continue;
+      }
+
+      if (err.status >= 500) {
+        const delay = Math.min(1_000 * Math.pow(2, attempt), 30_000);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+
+      // Other 4xx: don't retry
+      throw err;
+    }
+  }
+
+  throw lastError;
+}
+
 export async function fetchMergedPRs(org: string, repo: string, since: Date): Promise<PRData[]> {
   const octokit = getOctokit();
   const results: PRData[] = [];
 
   let page = 1;
   outer: while (true) {
-    const response = await octokit.rest.pulls.list({
-      owner: org,
-      repo,
-      state: "closed",
-      sort: "updated",
-      direction: "desc",
-      per_page: 100,
-      page,
-    });
+    const response = await withGitHubRetry(
+      () =>
+        octokit.rest.pulls.list({
+          owner: org,
+          repo,
+          state: "closed",
+          sort: "updated",
+          direction: "desc",
+          per_page: 100,
+          page,
+        }),
+      org,
+      repo
+    );
 
     const items = response.data;
     if (items.length === 0) break;
@@ -86,7 +153,11 @@ export async function fetchMergedPRs(org: string, repo: string, since: Date): Pr
 
 export async function fetchPRStats(org: string, repo: string, prNumber: number): Promise<PRStats> {
   const octokit = getOctokit();
-  const response = await octokit.rest.pulls.get({ owner: org, repo, pull_number: prNumber });
+  const response = await withGitHubRetry(
+    () => octokit.rest.pulls.get({ owner: org, repo, pull_number: prNumber }),
+    org,
+    repo
+  );
   return {
     changed_files: response.data.changed_files,
     additions: response.data.additions,
@@ -96,7 +167,11 @@ export async function fetchPRStats(org: string, repo: string, prNumber: number):
 
 export async function fetchRepoMetadata(org: string, repo: string): Promise<RepoMetadata> {
   const octokit = getOctokit();
-  const response = await octokit.rest.repos.get({ owner: org, repo });
+  const response = await withGitHubRetry(
+    () => octokit.rest.repos.get({ owner: org, repo }),
+    org,
+    repo
+  );
   const data = response.data;
   return {
     description: data.description ?? null,
