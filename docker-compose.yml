@@ -1,0 +1,32 @@
+version: "3.8"
+services:
+  monitor:
+    build: .
+    container_name: counterpart-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test:
+        - "CMD"
+        - "sh"
+        - "-c"
+        - >-
+          test -f data/health.json &&
+          bun -e "const h=JSON.parse(require('fs').readFileSync('data/health.json','utf8'));
+          const age=Date.now()-new Date(h.lastRun).getTime();
+          if(!h.lastRun||age>7200000||h.success===false)process.exit(1)"
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 2m
