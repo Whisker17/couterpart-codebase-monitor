@@ -6,6 +6,7 @@ import {
   getRunStages,
   getPipelineReportMode,
   getModeNotImplementedMessage,
+  runE2E,
 } from "./e2e-run";
 import type { StageResult } from "./pipeline/runner";
 
@@ -144,5 +145,34 @@ describe("getModeNotImplementedMessage", () => {
     expect(msg).not.toBeNull();
     expect(msg).toContain("[E2E]");
     expect(msg).toContain("Monthly mode is not implemented");
+  });
+});
+
+describe("runE2E --mode monthly exits 1 immediately", () => {
+  it("returns exit code 1 for --mode monthly without touching env or DB", async () => {
+    // runE2E checks monthly before validateEnv, so no real env or DB needed
+    const exitCode = await runE2E(["--mode", "monthly"]);
+    expect(exitCode).toBe(1);
+  });
+});
+
+describe("--mode all maps to weekly pipeline mode", () => {
+  it("all mode uses weekly reportMode (covers daily + weekly in one pass)", () => {
+    expect(getPipelineReportMode("all")).toBe("weekly");
+  });
+
+  it("all mode with --no-dispatch selects 3 stages", () => {
+    const { noDispatch } = parseOptions(["--mode", "all", "--no-dispatch"]);
+    expect(getRunStages(noDispatch).map((s) => s.name)).toEqual(["collect", "analyze", "report"]);
+  });
+
+  it("all mode without --no-dispatch selects 4 stages", () => {
+    const { noDispatch } = parseOptions(["--mode", "all"]);
+    expect(getRunStages(noDispatch).map((s) => s.name)).toEqual([
+      "collect",
+      "analyze",
+      "report",
+      "dispatch",
+    ]);
   });
 });
