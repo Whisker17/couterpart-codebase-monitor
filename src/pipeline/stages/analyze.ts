@@ -7,13 +7,27 @@ import { truncateDiff } from "../../extensions/analyzer/diff-truncator";
 import { reviewPR } from "../../extensions/analyzer/llm-reviewer";
 import { buildProjectContext } from "../../extensions/analyzer/context";
 import type { AnalysisContext } from "../../extensions/analyzer/context";
+import { getBudgetStatus } from "../../utils/budget-tracker";
+import { preFilterSignificance } from "../../extensions/analyzer/significance";
+import { sendCard } from "../../extensions/lark-dispatcher/webhook";
 
 const TMP_DIR = "data/analysis-inputs/tmp";
 const FINAL_DIR = "data/analysis-inputs";
 
-function getMonthStartUnix(): number {
-  const now = new Date();
-  return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000);
+function buildBudgetAlertCard(estimatedCost: number, budgetCap: number): object {
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: "plain_text", content: "Counterpart Monitor · Budget Alert" },
+      template: "red",
+    },
+    elements: [
+      {
+        tag: "markdown",
+        content: `**Budget alert: $${estimatedCost.toFixed(2)}/$${budgetCap.toFixed(2)} used. Analysis paused.**`,
+      },
+    ],
+  };
 }
 
 interface PRRow {
@@ -109,28 +123,43 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
 
   console.log(`[Analyze] Found ${pendingPRs.length} PRs to analyze`);
 
-  const monthStartUnix = getMonthStartUnix();
+  let larkBudgetAlertSent = false;
 
-  let prIndex = 0;
-  for (const pr of pendingPRs) {
-    prIndex++;
+  for (let i = 0; i < pendingPRs.length; i++) {
+    const pr = pendingPRs[i]!;
 
     // Budget check before each PR
-    const budgetRow = db
-      .query<{ total_cost: number | null }, [number]>(
-        `SELECT SUM(estimated_cost_usd) as total_cost FROM analyses WHERE analyzed_at >= ?`
-      )
-      .get(monthStartUnix);
-    const monthlySpend = budgetRow?.total_cost ?? 0;
+    const budget = getBudgetStatus();
 
-    if (monthlySpend >= settings.budget.monthlyCap) {
-      const remaining = pendingPRs.length - prIndex + 1;
+    if (budget.action === "pause") {
+      const remaining = pendingPRs.length - i;
       console.warn(
-        `[Analyze] Monthly budget cap ($${settings.budget.monthlyCap}) reached. Skipping remaining ${remaining} PRs.`
+        `[Analyze] Budget at 100% ($${budget.estimatedCostUSD.toFixed(2)}/$${budget.budgetCapUSD}). Pausing analysis — ${remaining} PR(s) skipped.`
       );
       budgetExhausted = true;
       budgetSkippedCount = remaining;
+
+      if (!larkBudgetAlertSent && settings.lark.webhookUrl) {
+        const alertCard = buildBudgetAlertCard(budget.estimatedCostUSD, budget.budgetCapUSD);
+        sendCard(settings.lark.webhookUrl, alertCard).catch((err) => {
+          console.warn(`[Analyze] Budget alert send failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        larkBudgetAlertSent = true;
+      }
       break;
+    }
+
+    if (budget.action === "skip_routine") {
+      const preFilter = preFilterSignificance(pr);
+      const isLargePR = (pr.files_changed ?? 0) > 10 || (pr.additions ?? 0) > 500;
+      if (preFilter === "likely_routine" && !isLargePR) {
+        db.run(`UPDATE pull_requests SET analysis_status = 'budget_skipped' WHERE id = ?`, [pr.id]);
+        budgetSkippedCount++;
+        console.log(
+          `[Analyze] PR ${pr.id} (${pr.title}): budget_skipped (routine at ${(budget.usagePercent * 100).toFixed(0)}% usage)`
+        );
+        continue;
+      }
     }
 
     try {

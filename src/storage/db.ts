@@ -1,7 +1,7 @@
 import { Database, constants } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
-import { MIGRATION_001, MIGRATION_002 } from "./schema";
+import { MIGRATION_001, MIGRATION_002, MIGRATION_003 } from "./schema";
 
 const DB_PATH = "data/monitor.db";
 
@@ -38,6 +38,11 @@ function runMigrations(database: Database): void {
   if (!applied.includes("002_add_active")) {
     database.exec(MIGRATION_002);
     database.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("002_add_active");
+  }
+
+  if (!applied.includes("003_budget_skipped")) {
+    database.exec(MIGRATION_003);
+    database.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("003_budget_skipped");
   }
 }
 

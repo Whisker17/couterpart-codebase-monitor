@@ -34,19 +34,20 @@ export interface FormatResult {
 export function formatReport(
   date: string,
   analyses: GroupedAnalyses,
-  partialWarning: string | undefined
+  partialWarning: string | undefined,
+  budgetLine?: string
 ): FormatResult {
   const errors: string[] = [];
 
   // Level 1: full card
-  const fullCard = buildDailyCard(date, analyses, partialWarning);
+  const fullCard = buildDailyCard(date, analyses, partialWarning, budgetLine);
   if (byteLength(JSON.stringify(fullCard)) <= LEVEL1_BYTES) {
     return { cards: [fullCard], errors };
   }
 
   // Level 2: notable/directional_shift only, append omit note
   const { filtered, omittedCount } = filterRoutinePRs(analyses);
-  const trimmedCard = buildDailyCard(date, filtered, partialWarning);
+  const trimmedCard = buildDailyCard(date, filtered, partialWarning, budgetLine);
   const summaryEl = trimmedCard.elements.find(
     (el): el is { tag: "markdown"; content: string } => (el as { tag: string }).tag === "markdown"
   );
@@ -65,7 +66,7 @@ export function formatReport(
   console.warn(
     `[Formatter] Trimmed card still ${trimmedSize} bytes — splitting per project`
   );
-  const perProjectCards = analyses.map((p) => buildDailyCard(date, [p], partialWarning));
+  const perProjectCards = analyses.map((p) => buildDailyCard(date, [p], partialWarning, budgetLine));
   for (const card of perProjectCards) {
     const size = byteLength(JSON.stringify(card));
     if (size > 30_000) {

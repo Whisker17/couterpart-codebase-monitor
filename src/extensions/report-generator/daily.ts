@@ -1,5 +1,6 @@
 import { getDb } from "../../storage/db";
 import type { ProjectAnalysis, GroupedAnalyses } from "./templates/daily-card";
+import { getBudgetStatus } from "../../utils/budget-tracker";
 
 interface AnalysisRow {
   id: number;
@@ -23,6 +24,7 @@ export interface DailyReportData {
   grouped: GroupedAnalyses;
   periodStartUnix: number;
   periodEndUnix: number;
+  budgetLine?: string;
 }
 
 export function buildDailyReport(): DailyReportData {
@@ -48,8 +50,15 @@ export function buildDailyReport(): DailyReportData {
     )
     .all(periodStartUnix, periodEndUnix);
 
+  const budget = getBudgetStatus();
+  let budgetLine: string | undefined;
+  if (budget.usagePercent > 0.6) {
+    const warningMarker = budget.usagePercent > 0.8 ? " ⚠" : "";
+    budgetLine = `Budget: $${budget.estimatedCostUSD.toFixed(2)} / $${budget.budgetCapUSD.toFixed(2)} (${(budget.usagePercent * 100).toFixed(0)}%)${warningMarker}`;
+  }
+
   if (rows.length === 0) {
-    return { analyses: [], grouped: [], periodStartUnix, periodEndUnix };
+    return { analyses: [], grouped: [], periodStartUnix, periodEndUnix, budgetLine };
   }
 
   const projectMap = new Map<string, AnalysisRow[]>();
@@ -95,5 +104,5 @@ export function buildDailyReport(): DailyReportData {
     return bRank - aRank;
   });
 
-  return { analyses: rows, grouped, periodStartUnix, periodEndUnix };
+  return { analyses: rows, grouped, periodStartUnix, periodEndUnix, budgetLine };
 }

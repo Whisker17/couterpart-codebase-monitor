@@ -51,7 +51,8 @@ export type GroupedAnalyses = ProjectAnalysis[];
 export function buildDailyCard(
   date: string,
   projectAnalyses: GroupedAnalyses,
-  partialWarning?: string
+  partialWarning?: string,
+  budgetLine?: string
 ): LarkCard {
   const summaryLines: string[] = [];
   if (partialWarning) {
@@ -97,6 +98,24 @@ export function buildDailyCard(
 
   const detailContent = detailParts.join("\n").trim();
 
+  const elements: LarkElement[] = [
+    { tag: "markdown", content: summaryContent },
+    { tag: "hr" },
+    {
+      tag: "collapsible_panel",
+      expanded: false,
+      header: {
+        title: { tag: "plain_text", content: "Technical Details" },
+      },
+      elements: [{ tag: "markdown", content: detailContent || "_No technical details available._" }],
+    },
+  ];
+
+  if (budgetLine) {
+    elements.push({ tag: "hr" });
+    elements.push({ tag: "markdown", content: budgetLine });
+  }
+
   return {
     config: { wide_screen_mode: true },
     header: {
@@ -106,17 +125,6 @@ export function buildDailyCard(
       },
       template: "blue",
     },
-    elements: [
-      { tag: "markdown", content: summaryContent },
-      { tag: "hr" },
-      {
-        tag: "collapsible_panel",
-        expanded: false,
-        header: {
-          title: { tag: "plain_text", content: "Technical Details" },
-        },
-        elements: [{ tag: "markdown", content: detailContent || "_No technical details available._" }],
-      },
-    ],
+    elements,
   };
 }
