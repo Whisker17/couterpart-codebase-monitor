@@ -1,6 +1,6 @@
 {
   "llm": {
-    "model": "claude-sonnet-4-6",
+    "model": "claude-opus-4-6",
     "baseUrlEnvVar": "LLM_BASE_URL",
     "apiKeyEnvVar": "LLM_API_KEY",
     "maxTokensPerCall": 4096,

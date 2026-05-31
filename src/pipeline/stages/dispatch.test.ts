@@ -5,6 +5,12 @@ import { rmSync } from "fs";
 const TEST_DB_PATH = "data/test-dispatch-stage.db";
 let testDb: Database;
 
+interface MockLarkResponse {
+  code: number;
+  msg: string;
+  data?: { message_id: string };
+}
+
 // --- mock db ---
 mock.module("../../storage/db", () => ({
   getDb: () => testDb,
@@ -19,7 +25,7 @@ mock.module("../../config/settings", () => ({
 }));
 
 // --- mock sendCard via a stable wrapper so we can change behaviour per-test ---
-const sendCardImpl = mock(async (_url: string, _card: object) => ({
+const sendCardImpl = mock(async (_url: string, _card: object): Promise<MockLarkResponse> => ({
   code: 0,
   msg: "success",
   data: { message_id: "msg-001" },

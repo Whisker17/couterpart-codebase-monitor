@@ -1,8 +1,6 @@
 # Counterpart Monitor
 
-Counterpart Monitor is an engineering intelligence pipeline for tracking open-source projects. It collects recently merged GitHub pull requests, stores raw diffs, runs diff-aware LLM analysis, and generates daily or weekly report cards for local review.
-
-The current M1 scope is local-first: collect PR data, analyze it, and write report JSON files. Lark delivery and production operations are planned for the next milestone.
+Counterpart Monitor is an engineering intelligence pipeline for tracking open-source projects. It collects recently merged GitHub pull requests, stores raw diffs, runs diff-aware LLM analysis, generates daily or weekly report cards, and dispatches them to Lark.
 
 ## What It Does
 
@@ -14,6 +12,7 @@ The current M1 scope is local-first: collect PR data, analyze it, and write repo
 - Falls back to metadata-only analysis when a diff is missing or too large.
 - Records prompt inputs in `analysis_inputs` for audit and replay.
 - Generates daily reports and weekly trend reports as Lark card JSON.
+- Dispatches report cards to Lark and tracks per-card delivery state.
 - Exports analysis audit data as JSONL.
 
 ## Requirements
@@ -30,10 +29,10 @@ bun install
 
 ## Configuration
 
-Create a local `.env` file from the example:
+Create a local `.env` file from the template:
 
 ```bash
-cp .env.example .env
+cp .env.template .env
 ```
 
 Set these variables:
@@ -45,7 +44,7 @@ LLM_API_KEY=your_llm_api_key
 LARK_WEBHOOK_URL=
 ```
 
-`GITHUB_TOKEN`, `LLM_BASE_URL`, and `LLM_API_KEY` are required for the M1 pipeline. `LARK_WEBHOOK_URL` is optional for now because M1 does not send reports to Lark.
+`GITHUB_TOKEN`, `LLM_BASE_URL`, and `LLM_API_KEY` are required for collection and analysis. `LARK_WEBHOOK_URL` is required for a full E2E run with Lark delivery; if it is unset, the dispatch stage skips gracefully after report generation.
 
 The default settings live in `config/settings.json`:
 
@@ -67,7 +66,7 @@ Tracked projects live in `config/projects.json`. Each project needs:
 }
 ```
 
-## Local M1 Run
+## Local E2E Run
 
 Run the local end-to-end pipeline once:
 
@@ -82,10 +81,10 @@ bun run src/e2e-run.ts
 This runs:
 
 ```text
-collect -> analyze -> report
+collect -> analyze -> report -> dispatch
 ```
 
-It intentionally does not run the Lark dispatcher. The run writes local runtime data under `data/`.
+The run writes local runtime data under `data/`. With `LARK_WEBHOOK_URL` set, it also sends pending report cards to Lark and records delivery status.
 
 Expected outputs:
 
@@ -93,6 +92,7 @@ Expected outputs:
 - `data/diffs/<org>-<repo>/<pr-number>.patch`
 - `data/analysis-inputs/<analysis-id>.diff`
 - `data/reports/daily-YYYY-MM-DD.json`
+- `report_deliveries` rows updated to `sent` after successful Lark delivery
 - optional weekly report JSON when the weekly path is triggered
 
 ## Scheduled Run
@@ -127,7 +127,7 @@ The SQLite database is created automatically at `data/monitor.db`. Main tables:
 - `analyses`: LLM summaries, technical details, categories, significance, token usage, and estimated cost.
 - `analysis_inputs`: prompt version, input quality, rendered project context, file manifest, and diff snapshot path.
 - `reports`: generated daily, weekly, or monthly report content.
-- `report_deliveries`: reserved for Lark delivery tracking.
+- `report_deliveries`: per-card Lark delivery content, status, message ID, and sent timestamp.
 
 The database uses WAL mode and production-oriented SQLite pragmas from `src/storage/db.ts`.
 
@@ -174,7 +174,11 @@ The database uses WAL mode and production-oriented SQLite pragmas from `src/stor
 
 `src/pipeline/stages/dispatch.ts`
 
-Lark delivery is not part of M1. The stage exists for the M2 dispatcher work.
+- Reads unsent or failed `report_deliveries` rows.
+- Sends each card to the configured Lark webhook.
+- Marks successful deliveries as `sent` with message ID and timestamp.
+- Leaves failed deliveries retryable for the next run.
+- Skips gracefully when `LARK_WEBHOOK_URL` is unset.
 
 ## Development
 
@@ -230,14 +234,15 @@ pm2 logs counterpart-monitor
 
 ## Current Milestone Status
 
-M1 is implemented for local validation:
+M1 is implemented and M2 Lark delivery is wired into the local E2E path:
 
 - Pipeline runner and scheduler.
 - GitHub collector and diff storage.
 - Diff-aware LLM analyzer.
 - Daily report generator.
 - Weekly report generator.
+- Lark dispatcher with delivery tracking.
 - Prompt baseline and audit export.
-- Local end-to-end runner for `collect -> analyze -> report`.
+- Local end-to-end runner for `collect -> analyze -> report -> dispatch`.
 
-M2 should add the launch essentials: Lark delivery, stronger retry/error handling, operational health checks, budget alerting behavior, and production deployment configuration.
+Remaining launch essentials include budget alerting behavior and production hardening.

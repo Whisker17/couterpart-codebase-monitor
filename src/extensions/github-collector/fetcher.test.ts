@@ -111,14 +111,16 @@ function makeNotFoundError(): RequestError {
 }
 
 // Replace setTimeout with immediate version to avoid test delays
-let originalSetTimeout: typeof globalThis.setTimeout;
+let originalSetTimeout: typeof globalThis.setTimeout | undefined;
 function installFakeTimers() {
-  originalSetTimeout = globalThis.setTimeout;
+  const realSetTimeout = globalThis.setTimeout;
+  originalSetTimeout = realSetTimeout;
   (globalThis as any).setTimeout = (fn: () => void, _ms: number) =>
-    originalSetTimeout(fn, 0);
+    realSetTimeout(fn, 0);
 }
 function restoreRealTimers() {
-  globalThis.setTimeout = originalSetTimeout;
+  if (originalSetTimeout) globalThis.setTimeout = originalSetTimeout;
+  originalSetTimeout = undefined;
 }
 
 beforeEach(() => {

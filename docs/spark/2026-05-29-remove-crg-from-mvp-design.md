@@ -202,7 +202,7 @@ CREATE TABLE IF NOT EXISTS analysis_inputs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   analysis_id INTEGER NOT NULL REFERENCES analyses(id),
   prompt_version TEXT NOT NULL,         -- hash or version tag of the prompt template
-  input_quality TEXT NOT NULL,          -- "diff_aware" | "metadata_only"
+  input_quality TEXT NOT NULL,          -- "diff_aware" | "metadata_only" | "diff_plus_graph" (post-MVP)
   rendered_project_context TEXT,        -- the exact PROJECT CONTEXT block sent to LLM
   file_manifest TEXT,                   -- JSON array of FileEntry objects
   diff_included_files INTEGER,          -- count of files whose diff content was included
@@ -226,7 +226,7 @@ Issue 16a's audit export CLI simply joins `analyses` + `analysis_inputs` and exp
 // query pending PR → call LLM (metadata only) → write analysis
 
 // After (this change):
-// query pending PR → build AnalysisContext → call LLM → persist analysis + inputs → write to DB
+// query pending PR → build AnalysisContext → call LLM → persist analysis + inputs + snapshot path
 
 for (const pr of pendingPRs) {
   // Budget hard cap check (see Section 4)
@@ -255,13 +255,18 @@ for (const pr of pendingPRs) {
 
   const analysis = await analyzePR(pr, ctx);
 
-  // Persist analysis + inputs in same transaction
+  // Persist analysis + inputs. The snapshot file uses a temp-file + rename protocol:
+  // 1. write data/analysis-inputs/tmp/{pr_id}-{run_id}.diff.tmp
+  // 2. insert analyses + analysis_inputs in one SQLite transaction
+  // 3. rename .tmp to the final .diff path, or clear truncated_diff_path if rename fails
+  const tmpSnapshotPath = writeTruncatedDiffTemp(pr.id, ctx.diff);
+  let analysisId: number;
   db.transaction(() => {
-    const analysisId = insertAnalysis(analysis);
+    analysisId = insertAnalysis(analysis);
     insertAnalysisInput(analysisId, ctx);       // writes analysis_inputs row
-    saveTruncatedDiff(analysisId, ctx.diff);    // writes .diff snapshot file
     updatePRStatus(pr.id, "complete");
   });
+  finalizeTruncatedDiffSnapshot(tmpSnapshotPath, analysisId);
 }
 ```
 
@@ -288,7 +293,7 @@ This ensures M1 is a complete deliverable (daily + weekly reports with baseline 
 
 ### 4. Budget Guard in M1
 
-With diff-aware analysis nearly doubling token consumption, running M1 without any budget controls risks unexpected costs. Add a lightweight budget guard to M1 (Issue 7), while keeping Issue 21's full dashboard/fine-grained strategy in M2.
+With diff-aware analysis nearly doubling token consumption, running M1 without any budget controls risks unexpected costs. Add a lightweight budget guard to M1 (Issue 7), while keeping Issue 22's full dashboard/fine-grained strategy in M2.
 
 **M1 budget guard (added to Issue 7):**
 
@@ -296,10 +301,10 @@ With diff-aware analysis nearly doubling token consumption, running M1 without a
 // Before each PR analysis:
 const estimatedInputTokens = estimateTokens(prompt);  // simple char/4 heuristic
 const monthlyUsage = db.query(
-  "SELECT SUM(tokens_used) as total FROM analyses WHERE analyzed_at >= ?"
+  "SELECT SUM(estimated_cost_usd) as total_cost FROM analyses WHERE analyzed_at >= ?"
 ).get(monthStart);
 
-const estimatedCost = (monthlyUsage.total + estimatedInputTokens) * COST_PER_TOKEN;
+const estimatedCost = monthlyUsage.total_cost + estimateCallCost(estimatedInputTokens);
 if (estimatedCost > settings.budget.monthlyCap) {
   log.warn(`[Budget] Hard cap reached: ~$${estimatedCost.toFixed(2)} / $${settings.budget.monthlyCap}. Skipping remaining analyses.`);
   break;  // stop analyzing for this pipeline run
@@ -322,7 +327,7 @@ interface StageResult {
 }
 ```
 
-**Scope:** Hard cap + visible state only. No skip-routine logic, no dashboard, no Lark budget alerts — those are Issue 21 (M2). This is a safety net with clear observability, not a feature.
+**Scope:** Hard cap + visible state only. No skip-routine logic, no dashboard, no Lark budget alerts — those are Issue 22 (M2). This is a safety net with clear observability, not a feature.
 
 ### 5. Data Retention: Extend Diff Retention for Prompt Tuning
 
@@ -339,7 +344,7 @@ Original design deletes diff files 24 hours after analysis completes. But Issue 
 The audit export (Issue 16a) reads from the persisted `analysis_inputs` table — no reconstruction needed. Export format:
 
 ```jsonl
-{"pr_id": 42, "project_id": "vercel/next.js", "pr_number": 12345, "input": {"prompt_version": "v1.0-abc123", "diff_truncated": true, "included_files": 8, "total_files": 15, "input_quality": "diff_aware", "rendered_project_context": "...", "file_manifest": [...]}, "output": {"summary": "...", "significance": "notable", ...}, "tokens_used": 3200}
+{"pr_id": 42, "project_id": "vercel/next.js", "pr_number": 12345, "input": {"prompt_version": "v1.0-abc123", "diff_truncated": true, "included_files": 8, "total_files": 15, "input_quality": "diff_aware", "rendered_project_context": "...", "file_manifest": [...]}, "output": {"summary": "...", "significance": "notable", ...}, "model_id": "claude-sonnet-4-6", "input_tokens": 2400, "output_tokens": 800, "estimated_cost_usd": 0.019}
 ```
 
 Because inputs are persisted at analysis time (see Section 2), the export is always faithful to what the LLM actually saw — even if the prompt template or truncator logic has since changed. After `.diff` snapshot files are deleted (>30 days), the metadata row still provides prompt version, file manifest, truncation stats, and project context for long-term quality tracking.

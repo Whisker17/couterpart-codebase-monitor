@@ -32,8 +32,8 @@ describe("getTrackedProjects", () => {
     const { getTrackedProjects } = await import("./projects.ts");
     const projects = getTrackedProjects();
     const keys = projects.map((p) => `${p.org}/${p.repo}`);
-    expect(keys).toContain("vercel/next.js");
-    expect(keys).toContain("oven-sh/bun");
+    expect(keys).toContain("base/base");
+    expect(keys).toContain("ethereum-optimism/optimism");
   });
 
   it("returns the same reference on repeated calls (cached)", async () => {

@@ -21,7 +21,7 @@ export function buildFinalCard(
   partialWarning: string | undefined
 ): FinalCardResult {
   const { cards, errors } = formatReport(date, analyses, partialWarning);
-  const card = cards.length === 1 ? cards[0] : cards;
+  const card = cards.length === 1 ? cards[0]! : cards;
   return { content: JSON.stringify(card), card, errors };
 }
 
@@ -80,7 +80,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     errors.push(...cardErrors);
   }
 
-  const finalCard = cards.length === 1 ? cards[0] : cards;
+  const finalCard = cards.length === 1 ? cards[0]! : cards;
   const cardContent = JSON.stringify(finalCard);
   const completenessJson = JSON.stringify(completeness);
   const projectIds = JSON.stringify(reportData.grouped.map((g) => g.projectId));

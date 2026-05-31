@@ -7,6 +7,17 @@ import { withLLMRetry, MAX_LLM_RUN_RETRIES } from "./llm-retry";
 
 let originalSetTimeout: typeof globalThis.setTimeout;
 
+function makeNoObjectGeneratedError(message: string): NoObjectGeneratedError {
+  return new NoObjectGeneratedError({
+    message,
+    text: "",
+    response: {} as any,
+    usage: {} as any,
+    finishReason: "error",
+    cause: undefined,
+  });
+}
+
 function installFakeTimers() {
   originalSetTimeout = globalThis.setTimeout;
   (globalThis as any).setTimeout = (fn: () => void, _ms: number) =>
@@ -32,9 +43,7 @@ describe("withLLMRetry", () => {
 
   it("retries once on NoObjectGeneratedError and succeeds", async () => {
     const fn = mock(async () => "ok");
-    fn.mockRejectedValueOnce(
-      new NoObjectGeneratedError({ message: "schema fail", text: "", response: {} as any, usage: {} as any, cause: undefined })
-    );
+    fn.mockRejectedValueOnce(makeNoObjectGeneratedError("schema fail"));
 
     const result = await withLLMRetry(fn);
     expect(result).toBe("ok");
@@ -43,9 +52,7 @@ describe("withLLMRetry", () => {
 
   it("throws after NoObjectGeneratedError exhausts retries", async () => {
     const fn = mock(async () => "ok");
-    fn.mockRejectedValue(
-      new NoObjectGeneratedError({ message: "schema fail", text: "", response: {} as any, usage: {} as any, cause: undefined })
-    );
+    fn.mockRejectedValue(makeNoObjectGeneratedError("schema fail"));
 
     await expect(withLLMRetry(fn)).rejects.toThrow("schema validation failed");
     expect(fn).toHaveBeenCalledTimes(2);
@@ -129,9 +136,7 @@ describe("withLLMRetry", () => {
 
   it("respects custom maxRunRetries", async () => {
     const fn = mock(async () => "ok");
-    fn.mockRejectedValue(
-      new NoObjectGeneratedError({ message: "fail", text: "", response: {} as any, usage: {} as any, cause: undefined })
-    );
+    fn.mockRejectedValue(makeNoObjectGeneratedError("fail"));
 
     await expect(withLLMRetry(fn, 1)).rejects.toThrow("schema validation failed");
     expect(fn).toHaveBeenCalledTimes(2); // 1 + 1 retry
