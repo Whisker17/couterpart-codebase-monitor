@@ -192,6 +192,42 @@ bunx tsc --noEmit
 
 The repository keeps runtime outputs out of git. Do not commit `.env`, database files, diff files, analysis snapshots, or generated reports.
 
+## Deployment
+
+### Requirements
+
+- Bun >= 1.x
+- git
+- pm2 (`npm install -g pm2`)
+
+### Install
+
+```bash
+git clone https://github.com/your-org/counterpart-monitor
+cd counterpart-monitor
+bun install
+cp .env.production.example .env
+# Edit .env and fill in GITHUB_TOKEN, LLM_BASE_URL, LLM_API_KEY, LARK_WEBHOOK_URL
+pm2 start ecosystem.config.js
+```
+
+### Update
+
+```bash
+git pull
+bun install
+pm2 restart counterpart-monitor
+```
+
+### Health
+
+After each pipeline run, `data/health.json` is updated with the last run timestamp, success status, PR count, and errors. If 3 consecutive runs all fail, an alert is sent to the configured Lark webhook.
+
+```bash
+cat data/health.json
+pm2 logs counterpart-monitor
+```
+
 ## Current Milestone Status
 
 M1 is implemented for local validation:
