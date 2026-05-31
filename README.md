@@ -68,32 +68,49 @@ Tracked projects live in `config/projects.json`. Each project needs:
 
 ## Local E2E Run
 
-Run the local end-to-end pipeline once:
+The E2E runner is a manual validation tool that drives the full pipeline against real external services.
 
 ```bash
 set -a
 source .env
 set +a
 
+# Daily report (default) — collect → analyze → report → dispatch
 bun run src/e2e-run.ts
+bun run src/e2e-run.ts --mode daily
+
+# Weekly report — collect → analyze → report(daily+weekly) → dispatch
+bun run src/e2e-run.ts --mode weekly
+
+# Same as weekly; also prints "[SKIPPED] monthly: not implemented"
+bun run src/e2e-run.ts --mode all
+
+# Monthly — exits 1 (not implemented yet)
+bun run src/e2e-run.ts --mode monthly
+
+# Skip Lark delivery — useful to inspect report JSON before sending
+bun run src/e2e-run.ts --mode weekly --no-dispatch
+bun run src/e2e-run.ts --mode all --no-dispatch
 ```
 
-This runs:
+After the pipeline, the runner prints a structured summary: stage results, report IDs and delivery status, a sample of new analyses, cost estimate, and Lark message IDs.
 
-```text
-collect -> analyze -> report -> dispatch
-```
+When to use each mode:
 
-The run writes local runtime data under `data/`. With `LARK_WEBHOOK_URL` set, it also sends pending report cards to Lark and records delivery status.
+- **daily**: validate today's collect/analyze/report/dispatch end-to-end
+- **weekly**: validate weekly aggregation in addition to daily (use on Sundays or before a weekly release)
+- **all**: comprehensive check — equivalent to weekly with a monthly-skipped note; exit 0 as long as daily+weekly pass
+- **monthly**: reserved for after `buildMonthlyReport` is implemented
+- **`--no-dispatch`**: generate and inspect reports in DB without sending to Lark
 
-Expected outputs:
+Expected runtime outputs:
 
 - `data/monitor.db`
 - `data/diffs/<org>-<repo>/<pr-number>.patch`
 - `data/analysis-inputs/<analysis-id>.diff`
 - `data/reports/daily-YYYY-MM-DD.json`
+- `data/reports/weekly-YYYY-MM-DD.json` (weekly/all modes)
 - `report_deliveries` rows updated to `sent` after successful Lark delivery
-- optional weekly report JSON when the weekly path is triggered
 
 ## Scheduled Run
 
