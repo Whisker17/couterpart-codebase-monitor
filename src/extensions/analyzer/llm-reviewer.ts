@@ -6,6 +6,7 @@ import type { AnalysisContext } from "./context";
 import { withLLMRetry } from "./llm-retry";
 
 const PROMPT_VERSION = "v1.0-diff-aware";
+const LLM_TIMEOUT_MS = 60_000;
 
 const AnalysisSchema = z.object({
   summary: z.string(),
@@ -125,12 +126,27 @@ export async function reviewPR(
   const systemPrompt = buildSystemPrompt(ctx, pr);
 
   async function callLLM(): Promise<ReviewResult> {
-    const result = await generateFn({
-      model: anthropic(settings.llm.model),
-      schema: AnalysisSchema,
-      prompt: systemPrompt,
-      maxOutputTokens: settings.llm.maxTokensPerCall,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+    let result: Awaited<ReturnType<GenerateObjectFn>>;
+    try {
+      result = await generateFn({
+        model: anthropic(settings.llm.model),
+        schema: AnalysisSchema,
+        prompt: systemPrompt,
+        maxOutputTokens: settings.llm.maxTokensPerCall,
+        maxRetries: 0,
+        abortSignal: controller.signal,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error("LLM call timed out after 60s");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const inputTokens = result.usage.inputTokens ?? 0;
     const outputTokens = result.usage.outputTokens ?? 0;
@@ -152,15 +168,7 @@ export async function reviewPR(
     };
   }
 
-  const withTimeout = (call: Promise<ReviewResult>) =>
-    Promise.race([
-      call,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("LLM call timed out after 60s")), 60_000)
-      ),
-    ]);
-
-  return withLLMRetry(() => withTimeout(callLLM()));
+  return withLLMRetry(() => callLLM());
 }
 
 export { PROMPT_VERSION };

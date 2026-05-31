@@ -51,8 +51,21 @@ export async function execute(
 
   ensureProjectsLoaded();
 
+  // Skip projects that have been marked inactive (e.g. deleted/renamed repos)
+  const inactiveIds = new Set<string>(
+    db
+      .query<{ id: string }, []>("SELECT id FROM projects WHERE active = 0")
+      .all()
+      .map((r) => r.id)
+  );
+
   for (const project of projects) {
     const pid = projectId(project.org, project.repo);
+
+    if (inactiveIds.has(pid)) {
+      console.log(`[Collect] Skipping inactive project ${pid}`);
+      continue;
+    }
 
     try {
       // Determine since: last_synced_at or 7 days ago
@@ -67,7 +80,8 @@ export async function execute(
         : Date.now() - SEVEN_DAYS_MS;
       const since = new Date(sinceMs);
 
-      // Fetch repo metadata and update projects table
+      // Fetch repo metadata and update projects table.
+      // RepoNotFoundError is re-thrown so the outer catch marks the project inactive.
       try {
         const meta = await deps.fetchRepoMetadata(project.org, project.repo);
         db.run(
@@ -75,6 +89,7 @@ export async function execute(
           [meta.description, meta.language, JSON.stringify(meta.topics), pid]
         );
       } catch (metaErr) {
+        if (metaErr instanceof RepoNotFoundError) throw metaErr;
         console.warn(
           `[Collect] Failed to fetch metadata for ${pid}: ${metaErr instanceof Error ? metaErr.message : String(metaErr)}`
         );

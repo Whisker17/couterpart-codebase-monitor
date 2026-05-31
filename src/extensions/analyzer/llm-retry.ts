@@ -5,6 +5,8 @@ export const RATE_LIMIT_DELAYS_MS = [5_000, 10_000, 20_000];
 
 // Max retries per PR within a single pipeline run (across all error types)
 export const MAX_LLM_RUN_RETRIES = 2;
+const MAX_NO_OBJECT_ATTEMPTS = 2;
+const MAX_SERVER_ERROR_ATTEMPTS = 2;
 
 export function isRateLimitError(err: unknown): boolean {
   return err instanceof APICallError && err.statusCode === 429;
@@ -28,7 +30,8 @@ export async function withLLMRetry<T>(
       return await callFn();
     } catch (err) {
       if (err instanceof NoObjectGeneratedError) {
-        if (runRetries < maxRunRetries) {
+        const maxRetries = Math.min(maxRunRetries, MAX_NO_OBJECT_ATTEMPTS - 1);
+        if (runRetries < maxRetries) {
           runRetries++;
           continue;
         }
@@ -51,10 +54,11 @@ export async function withLLMRetry<T>(
       }
 
       if (isServerError(err)) {
-        if (runRetries < maxRunRetries) {
+        const maxRetries = Math.min(maxRunRetries, MAX_SERVER_ERROR_ATTEMPTS - 1);
+        if (runRetries < maxRetries) {
           const delay = Math.min(1_000 * Math.pow(2, runRetries), 30_000);
           console.warn(
-            `[LLM] Server error (${(err as APICallError).statusCode}), retry ${runRetries + 1}/${maxRunRetries} in ${delay}ms`
+            `[LLM] Server error (${(err as APICallError).statusCode}), retry ${runRetries + 1}/${maxRetries} in ${delay}ms`
           );
           await new Promise((r) => setTimeout(r, delay));
           runRetries++;

@@ -16,6 +16,10 @@ const mockFetch = mock(async (_url: unknown, _opts: unknown): Promise<Response> 
   } as unknown as Response;
 });
 
+function isRetryableStatus(code: number): boolean {
+  return code >= 500 || code === 408 || code === 429;
+}
+
 // Override any prior mock.module (e.g., from dispatch.test.ts which mocks this module)
 // by providing the real implementation that calls globalThis.fetch explicitly.
 mock.module("./webhook", () => {
@@ -33,10 +37,12 @@ mock.module("./webhook", () => {
     async sendCard(webhookUrl: string, card: object): Promise<LarkWebhookResponse> {
       let last = await doSend(webhookUrl, card);
       if (last.code === 0) return last;
+      if (!isRetryableStatus(last.code)) return last;
       for (const delayMs of RETRY_DELAYS_MS) {
         await new Promise((r) => setTimeout(r, delayMs));
         last = await doSend(webhookUrl, card);
         if (last.code === 0) return last;
+        if (!isRetryableStatus(last.code)) return last;
       }
       return last;
     },
@@ -138,5 +144,16 @@ describe("sendCard", () => {
 
     expect(result.code).toBe(429);
     expect(result.msg).toBe("HTTP 429");
+  });
+
+  it("returns permanent 4xx immediately without retrying", async () => {
+    // 401 Unauthorized is a permanent error — webhook URL/token is invalid
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) } as unknown as Response);
+
+    const result = await sendCard(FAKE_URL, FAKE_CARD);
+
+    expect(result.code).toBe(401);
+    expect(result.msg).toBe("HTTP 401");
+    expect(mockFetch).toHaveBeenCalledTimes(1); // no retry
   });
 });

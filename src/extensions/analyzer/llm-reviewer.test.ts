@@ -48,7 +48,7 @@ describe("withLLMRetry", () => {
     );
 
     await expect(withLLMRetry(fn)).rejects.toThrow("schema validation failed");
-    expect(fn).toHaveBeenCalledTimes(MAX_LLM_RUN_RETRIES + 1);
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 
   it("retries on 429 rate limit with backoff", async () => {
@@ -100,6 +100,22 @@ describe("withLLMRetry", () => {
 
     const result = await withLLMRetry(fn);
     expect(result).toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws after a server error fails twice", async () => {
+    installFakeTimers();
+    const fn = mock(async () => "ok");
+    const serverErr = new APICallError({
+      url: "https://api.anthropic.com",
+      statusCode: 500,
+      requestBodyValues: {},
+      message: "server error",
+      isRetryable: true,
+    });
+    fn.mockRejectedValue(serverErr);
+
+    await expect(withLLMRetry(fn)).rejects.toBeInstanceOf(APICallError);
     expect(fn).toHaveBeenCalledTimes(2);
   });
 

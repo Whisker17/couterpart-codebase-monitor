@@ -3,7 +3,6 @@ import { RequestError } from "@octokit/request-error";
 import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { getSettings } from "../../config/settings";
-import { withRetry } from "../../utils/retry";
 import { RepoNotFoundError } from "./fetcher";
 
 const MAX_DIFF_BYTES = 2_000_000;
@@ -36,6 +35,46 @@ async function waitForRateLimitReset(err: RequestError): Promise<void> {
   await new Promise((r) => setTimeout(r, waitMs));
 }
 
+const MAX_DIFF_RETRIES = 3;
+
+async function fetchDiffWithRetry(octokit: Octokit, org: string, repo: string, prNumber: number): Promise<string> {
+  let lastError: Error = new Error("unreachable");
+
+  for (let attempt = 0; attempt <= MAX_DIFF_RETRIES; attempt++) {
+    try {
+      const response = await octokit.rest.pulls.get({
+        owner: org,
+        repo,
+        pull_number: prNumber,
+        mediaType: { format: "diff" },
+      });
+      return response.data as unknown as string;
+    } catch (err) {
+      if (!(err instanceof RequestError)) throw err;
+      if (err.status === 404) throw new RepoNotFoundError(org, repo);
+
+      lastError = err;
+      if (attempt === MAX_DIFF_RETRIES) break;
+
+      if (isRateLimitExhausted(err)) {
+        // Wait until reset, then retry immediately — no additional backoff delay
+        await waitForRateLimitReset(err);
+        continue;
+      }
+
+      if (err.status >= 500) {
+        const delay = Math.min(1_000 * Math.pow(2, attempt), 30_000);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+
+      throw err;
+    }
+  }
+
+  throw lastError;
+}
+
 export async function fetchAndStoreDiff(
   org: string,
   repo: string,
@@ -45,40 +84,7 @@ export async function fetchAndStoreDiff(
 
   try {
     const octokit = getOctokit();
-    diffText = await withRetry(
-      async () => {
-        try {
-          const response = await octokit.rest.pulls.get({
-            owner: org,
-            repo,
-            pull_number: prNumber,
-            mediaType: { format: "diff" },
-          });
-          return response.data as unknown as string;
-        } catch (err) {
-          if (!(err instanceof RequestError)) throw err;
-          if (err.status === 404) throw new RepoNotFoundError(org, repo);
-          if (isRateLimitExhausted(err)) {
-            await waitForRateLimitReset(err);
-            throw err;
-          }
-          throw err;
-        }
-      },
-      {
-        maxRetries: 3,
-        baseDelayMs: 1_000,
-        maxDelayMs: 30_000,
-        retryOn: (e) => {
-          if (e instanceof RepoNotFoundError) return false;
-          if (e instanceof RequestError) {
-            if (isRateLimitExhausted(e)) return true;
-            return e.status >= 500;
-          }
-          return false;
-        },
-      }
-    );
+    diffText = await fetchDiffWithRetry(octokit, org, repo, prNumber);
   } catch (err) {
     if (err instanceof RepoNotFoundError) throw err;
     return { status: "fetch_failed", path: null };

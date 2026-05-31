@@ -1,7 +1,6 @@
 import { Octokit } from "octokit";
 import { RequestError } from "@octokit/request-error";
 import { getSettings } from "../../config/settings";
-import { withRetry } from "../../utils/retry";
 
 export interface PRData {
   number: number;
@@ -58,40 +57,43 @@ async function waitForRateLimitReset(err: RequestError): Promise<void> {
   await new Promise((r) => setTimeout(r, waitMs));
 }
 
+const MAX_GITHUB_RETRIES = 3;
+
 async function withGitHubRetry<T>(
   fn: () => Promise<T>,
   org: string,
   repo: string
 ): Promise<T> {
-  return withRetry(
-    async () => {
-      try {
-        return await fn();
-      } catch (err) {
-        if (!(err instanceof RequestError)) throw err;
-        if (err.status === 404) throw new RepoNotFoundError(org, repo);
-        if (isRateLimitExhausted(err)) {
-          // Wait until reset then re-throw so withRetry's loop retries fn
-          await waitForRateLimitReset(err);
-          throw err;
-        }
-        throw err;
+  let lastError: Error = new Error("unreachable");
+
+  for (let attempt = 0; attempt <= MAX_GITHUB_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!(err instanceof RequestError)) throw err;
+      if (err.status === 404) throw new RepoNotFoundError(org, repo);
+
+      lastError = err;
+      if (attempt === MAX_GITHUB_RETRIES) break;
+
+      if (isRateLimitExhausted(err)) {
+        // Wait until reset, then retry immediately — no additional backoff delay
+        await waitForRateLimitReset(err);
+        continue;
       }
-    },
-    {
-      maxRetries: 3,
-      baseDelayMs: 1_000,
-      maxDelayMs: 30_000,
-      retryOn: (e) => {
-        if (e instanceof RepoNotFoundError) return false;
-        if (e instanceof RequestError) {
-          if (isRateLimitExhausted(e)) return true;
-          return e.status >= 500;
-        }
-        return false;
-      },
+
+      if (err.status >= 500) {
+        const delay = Math.min(1_000 * Math.pow(2, attempt), 30_000);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+
+      // Other 4xx: don't retry
+      throw err;
     }
-  );
+  }
+
+  throw lastError;
 }
 
 export async function fetchMergedPRs(org: string, repo: string, since: Date): Promise<PRData[]> {
