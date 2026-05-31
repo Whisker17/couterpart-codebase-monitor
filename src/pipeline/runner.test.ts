@@ -93,6 +93,36 @@ describe("runPipeline", () => {
     const results = await runPipeline([]);
     expect(results.size).toBe(0);
   });
+
+  it("defaults ctx.reportMode to 'daily' when no options provided", async () => {
+    let seenMode: string | undefined;
+
+    const checkStage: PipelineStage = {
+      name: "check",
+      execute: async (ctx: PipelineContext) => {
+        seenMode = ctx.reportMode;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+
+    await runPipeline([checkStage]);
+    expect(seenMode).toBe("daily");
+  });
+
+  it("propagates reportMode: 'weekly' to stages via context", async () => {
+    let seenMode: string | undefined;
+
+    const checkStage: PipelineStage = {
+      name: "check",
+      execute: async (ctx: PipelineContext) => {
+        seenMode = ctx.reportMode;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+
+    await runPipeline([checkStage], { reportMode: "weekly" });
+    expect(seenMode).toBe("weekly");
+  });
 });
 
 describe("writeHealthAndMaybeAlert", () => {
