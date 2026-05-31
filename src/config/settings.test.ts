@@ -23,7 +23,7 @@ describe("getSettings", () => {
 
   it("returns complete Settings object with expected defaults", () => {
     const s = getSettings();
-    expect(s.llm.model).toBe("claude-sonnet-4-6");
+    expect(s.llm.model).toBe("claude-opus-4-6");
     expect(s.llm.diffTokenBudget).toBe(8000);
     expect(s.llm.maxManifestEntries).toBe(100);
     expect(s.llm.maxTokensPerCall).toBe(4096);

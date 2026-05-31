@@ -323,8 +323,9 @@ describe("report stage", () => {
       )
       .all();
     expect(deliveries.length).toBeGreaterThan(0);
-    expect(deliveries[0].card_index).toBe(0);
-    expect(deliveries[0].status).toBe("pending");
+    const first = deliveries[0]!;
+    expect(first.card_index).toBe(0);
+    expect(first.status).toBe("pending");
   });
 
   it("report_deliveries rows use INSERT OR IGNORE — re-run does not duplicate them", async () => {

@@ -154,7 +154,7 @@ export async function reviewPR(
       inputTokens * INPUT_COST_PER_TOKEN + outputTokens * OUTPUT_COST_PER_TOKEN;
 
     return {
-      output: result.object,
+      output: result.object as AnalysisOutput,
       inputTokens,
       outputTokens,
       estimatedCostUsd,

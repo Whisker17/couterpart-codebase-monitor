@@ -1,32 +1,32 @@
 [
   {
-    "org": "vercel",
-    "repo": "next.js",
-    "url": "https://github.com/vercel/next.js",
-    "tags": ["frontend", "framework", "react"]
+    "org": "base",
+    "repo": "base",
+    "url": "https://github.com/base/base",
+    "tags": ["blockchain", "l2", "ethereum"]
   },
   {
-    "org": "denoland",
-    "repo": "deno",
-    "url": "https://github.com/denoland/deno",
-    "tags": ["runtime", "typescript", "javascript"]
+    "org": "ethereum-optimism",
+    "repo": "optimism",
+    "url": "https://github.com/ethereum-optimism/optimism",
+    "tags": ["blockchain", "l2", "ethereum", "optimism"]
   },
   {
-    "org": "oven-sh",
-    "repo": "bun",
-    "url": "https://github.com/oven-sh/bun",
-    "tags": ["runtime", "javascript", "bundler"]
+    "org": "ethereum-optimism",
+    "repo": "op-geth",
+    "url": "https://github.com/ethereum-optimism/op-geth",
+    "tags": ["blockchain", "l2", "geth", "optimism"]
   },
   {
-    "org": "astral-sh",
-    "repo": "ruff",
-    "url": "https://github.com/astral-sh/ruff",
-    "tags": ["python", "linter", "tooling"]
+    "org": "bnb-chain",
+    "repo": "reth-bsc",
+    "url": "https://github.com/bnb-chain/reth-bsc",
+    "tags": ["blockchain", "bsc", "reth", "bnb"]
   },
   {
-    "org": "pydantic",
-    "repo": "pydantic",
-    "url": "https://github.com/pydantic/pydantic",
-    "tags": ["python", "validation", "library"]
+    "org": "bnb-chain",
+    "repo": "bsc",
+    "url": "https://github.com/bnb-chain/bsc",
+    "tags": ["blockchain", "bsc", "bnb"]
   }
 ]

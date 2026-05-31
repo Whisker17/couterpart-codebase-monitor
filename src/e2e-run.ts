@@ -4,19 +4,28 @@
  */
 import { validateEnv } from "./config/settings.ts";
 import { getDb, closeDb } from "./storage/db";
-import { runPipeline } from "./pipeline/runner";
+import { runPipeline, type PipelineStage, type StageResult } from "./pipeline/runner";
 import { stage as collect } from "./pipeline/stages/collect";
 import { stage as analyze } from "./pipeline/stages/analyze";
 import { stage as report } from "./pipeline/stages/report";
+import { stage as dispatch } from "./pipeline/stages/dispatch";
 
-async function main() {
+export function getE2EStages(): PipelineStage[] {
+  return [collect, analyze, report, dispatch];
+}
+
+export function getExitCode(results: Map<string, StageResult>): 0 | 1 {
+  return [...results.values()].some((result) => !result.success) ? 1 : 0;
+}
+
+export async function runE2E(): Promise<number> {
   validateEnv();
   getDb();
 
   const start = Date.now();
   console.log("[E2E] Starting full pipeline run...");
 
-  const results = await runPipeline([collect, analyze, report]);
+  const results = await runPipeline(getE2EStages());
 
   const totalMs = Date.now() - start;
   console.log(`\n[E2E] Pipeline complete in ${(totalMs / 1000).toFixed(1)}s`);
@@ -36,11 +45,18 @@ async function main() {
     }
   }
 
-  closeDb();
-  process.exit(0);
+  return getExitCode(results);
 }
 
-main().catch((err) => {
-  console.error("[E2E] Fatal error:", err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  runE2E()
+    .then((exitCode) => {
+      closeDb();
+      process.exit(exitCode);
+    })
+    .catch((err) => {
+      console.error("[E2E] Fatal error:", err);
+      closeDb();
+      process.exit(1);
+    });
+}
