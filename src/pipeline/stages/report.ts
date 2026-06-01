@@ -8,11 +8,20 @@ import { buildWeeklyReport } from "../../extensions/report-generator/weekly";
 import { buildWeeklyCard } from "../../extensions/report-generator/templates/weekly-card";
 import { writeReportFile } from "../../extensions/report-generator/file-writer";
 import { formatReport } from "../../extensions/lark-dispatcher/formatter";
+import {
+  localizeDailyDelivery as defaultLocalizeDailyDelivery,
+  localizeWeeklyDelivery as defaultLocalizeWeeklyDelivery,
+} from "../../extensions/report-generator/delivery-localizer";
 
 export interface FinalCardResult {
   content: string;
   card: LarkCard | LarkCard[];
   errors: string[];
+}
+
+export interface ReportStageDeps {
+  localizeDailyDelivery?: typeof defaultLocalizeDailyDelivery;
+  localizeWeeklyDelivery?: typeof defaultLocalizeWeeklyDelivery;
 }
 
 export function buildFinalCard(
@@ -48,9 +57,11 @@ function collectFailedProjects(ctx: PipelineContext): string[] {
   return Array.from(failed);
 }
 
-export async function execute(ctx: PipelineContext): Promise<StageResult> {
+export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}): Promise<StageResult> {
   const db = getDb();
   const errors: string[] = [];
+  const localizeDailyDelivery = deps.localizeDailyDelivery ?? defaultLocalizeDailyDelivery;
+  const localizeWeeklyDelivery = deps.localizeWeeklyDelivery ?? defaultLocalizeWeeklyDelivery;
 
   const reportData = buildDailyReport();
 
@@ -76,7 +87,8 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
       ? `Partial report: ${failedProjects.length} project(s) failed collection/analysis`
       : undefined;
 
-  const { cards, errors: cardErrors } = formatReport(date, deliverableGrouped, partialWarning, reportData.budgetLine);
+  const localizedGrouped = await localizeDailyDelivery(deliverableGrouped);
+  const { cards, errors: cardErrors } = formatReport(date, localizedGrouped, partialWarning, reportData.budgetLine);
   if (cardErrors.length > 0) {
     for (const e of cardErrors) console.warn(`[Report] ⚠ ${e}`);
     errors.push(...cardErrors);
@@ -85,7 +97,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
   const finalCard = cards.length === 1 ? cards[0]! : cards;
   const cardContent = JSON.stringify(finalCard);
   const completenessJson = JSON.stringify(completeness);
-  const projectIds = JSON.stringify(deliverableGrouped.map((g) => g.projectId));
+  const projectIds = JSON.stringify(localizedGrouped.map((g) => g.projectId));
 
   try {
     db.run(
@@ -105,10 +117,17 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
       .get("daily", reportData.periodStartUnix, reportData.periodEndUnix)!;
     for (let i = 0; i < cards.length; i++) {
       db.run(
-        "INSERT OR IGNORE INTO report_deliveries (report_id, card_index, content) VALUES (?, ?, ?)",
+        `INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, ?, ?)
+         ON CONFLICT(report_id, card_index)
+         DO UPDATE SET content = excluded.content
+         WHERE report_deliveries.status != 'sent'`,
         [reportRow.id, i, JSON.stringify(cards[i])]
       );
     }
+    db.run(
+      "DELETE FROM report_deliveries WHERE report_id = ? AND card_index >= ? AND status != 'sent'",
+      [reportRow.id, cards.length]
+    );
   } catch (err) {
     const msg = `DB upsert failed: ${err instanceof Error ? err.message : String(err)}`;
     console.error(`[Report] ${msg}`);
@@ -119,7 +138,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     const filePath = writeReportFile({
       date: `daily-${date}`,
       card: finalCard,
-      analyses: deliverableGrouped,
+      analyses: localizedGrouped,
       completeness,
     });
     console.log(`[Report] Written to ${filePath}`);
@@ -131,7 +150,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
 
   // Weekly report — only when this run uses weekly mode
   if (ctx.reportMode === "weekly") {
-    const weeklyErrors = generateWeeklyReport(db, completeness);
+    const weeklyErrors = await generateWeeklyReport(db, completeness, localizeWeeklyDelivery);
     // Weekly errors are non-fatal: they don't affect the daily success flag
     if (weeklyErrors.length > 0) {
       console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
@@ -146,12 +165,13 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
   };
 }
 
-function generateWeeklyReport(
+async function generateWeeklyReport(
   db: Database,
-  completeness: { total: number; success: number; failed: string[] }
-): string[] {
+  completeness: { total: number; success: number; failed: string[] },
+  localizeWeeklyDelivery: typeof defaultLocalizeWeeklyDelivery
+): Promise<string[]> {
   const errors: string[] = [];
-  const weeklyData = buildWeeklyReport();
+  const weeklyData = await localizeWeeklyDelivery(buildWeeklyReport());
 
   if (weeklyData.projectHighlights.length === 0) {
     console.log("[Report] Weekly: no analyses found for the past 7 days, skipping");
@@ -199,8 +219,15 @@ function generateWeeklyReport(
       )
       .get("weekly", weeklyData.periodStartUnix, weeklyData.periodEndUnix)!;
     db.run(
-      "INSERT OR IGNORE INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)",
+      `INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)
+       ON CONFLICT(report_id, card_index)
+       DO UPDATE SET content = excluded.content
+       WHERE report_deliveries.status != 'sent'`,
       [weeklyRow.id, weeklyJson]
+    );
+    db.run(
+      "DELETE FROM report_deliveries WHERE report_id = ? AND card_index >= 1 AND status != 'sent'",
+      [weeklyRow.id]
     );
   } catch (err) {
     const msg = `Weekly DB upsert failed: ${err instanceof Error ? err.message : String(err)}`;

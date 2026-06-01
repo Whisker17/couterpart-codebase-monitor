@@ -21,6 +21,9 @@ mock.module("../../extensions/report-generator/file-writer", () => ({
   writeReportFile: mockWriteReportFile,
 }));
 
+const mockLocalizeDailyDelivery = mock(async (analyses: unknown) => analyses);
+const mockLocalizeWeeklyDelivery = mock(async (data: unknown) => data);
+
 const { execute, buildFinalCard } = await import("./report");
 
 function getTodayStartUtcUnix(): number {
@@ -145,6 +148,10 @@ describe("report stage", () => {
     testDb = new Database(TEST_DB_PATH);
     applySchema(testDb);
     mockWriteReportFile.mockClear();
+    mockLocalizeDailyDelivery.mockClear();
+    mockLocalizeWeeklyDelivery.mockClear();
+    mockLocalizeDailyDelivery.mockImplementation(async (analyses: unknown) => analyses);
+    mockLocalizeWeeklyDelivery.mockImplementation(async (data: unknown) => data);
   });
 
   afterEach(() => {
@@ -328,7 +335,7 @@ describe("report stage", () => {
     expect(first.status).toBe("pending");
   });
 
-  it("report_deliveries rows use INSERT OR IGNORE — re-run does not duplicate them", async () => {
+  it("report_deliveries rows are upserted without duplicating them", async () => {
     insertTestData(testDb);
     const ctx = { stageResults: new Map(), reportMode: "daily" as const };
     await execute(ctx);
@@ -350,6 +357,83 @@ describe("report stage", () => {
     expect(card).toHaveProperty("config");
     expect(card).toHaveProperty("header");
     expect(card).toHaveProperty("elements");
+  });
+
+  it("stores localized daily delivery content before dispatch", async () => {
+    insertTestData(testDb);
+    mockLocalizeDailyDelivery.mockImplementation(async (analyses: any) =>
+      analyses.map((project: any) => ({
+        ...project,
+        prs: project.prs.map((pr: any) => ({
+          ...pr,
+          summary: "中文日报摘要",
+        })),
+      }))
+    );
+
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    await execute(ctx, { localizeDailyDelivery: mockLocalizeDailyDelivery });
+
+    const delivery = testDb
+      .query<{ content: string }, []>("SELECT content FROM report_deliveries LIMIT 1")
+      .get()!;
+    expect(delivery.content).toContain("中文日报摘要");
+    expect(delivery.content).not.toContain("Test summary");
+    expect(mockLocalizeDailyDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates existing unsent delivery content when report content changes", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    await execute(ctx);
+
+    mockLocalizeDailyDelivery.mockImplementation(async (analyses: any) =>
+      analyses.map((project: any) => ({
+        ...project,
+        prs: project.prs.map((pr: any) => ({
+          ...pr,
+          summary: "中文重跑摘要",
+        })),
+      }))
+    );
+    await execute(ctx, { localizeDailyDelivery: mockLocalizeDailyDelivery });
+
+    const delivery = testDb
+      .query<{ content: string; status: string }, []>("SELECT content, status FROM report_deliveries LIMIT 1")
+      .get()!;
+    expect(delivery.status).toBe("pending");
+    expect(delivery.content).toContain("中文重跑摘要");
+    expect(delivery.content).not.toContain("Test summary");
+  });
+
+  it("stores localized weekly delivery content before dispatch", async () => {
+    insertTestData(testDb);
+    mockLocalizeWeeklyDelivery.mockImplementation(async (data: any) => ({
+      ...data,
+      projectHighlights: data.projectHighlights.map((project: any) => ({
+        ...project,
+        highlights: project.highlights.map((highlight: any) => ({
+          ...highlight,
+          summary: "中文周报摘要",
+        })),
+      })),
+    }));
+
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const };
+    await execute(ctx, { localizeWeeklyDelivery: mockLocalizeWeeklyDelivery });
+
+    const delivery = testDb
+      .query<{ content: string }, []>(
+        `SELECT d.content
+         FROM report_deliveries d
+         JOIN reports r ON d.report_id = r.id
+         WHERE r.type = 'weekly'
+         LIMIT 1`
+      )
+      .get()!;
+    expect(delivery.content).toContain("中文周报摘要");
+    expect(delivery.content).not.toContain("Test summary");
+    expect(mockLocalizeWeeklyDelivery).toHaveBeenCalledTimes(1);
   });
 
   it("does not create reports row when no analyses exist", async () => {
