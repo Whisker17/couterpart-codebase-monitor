@@ -54,7 +54,9 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
 
   const reportData = buildDailyReport();
 
-  if (reportData.grouped.length === 0) {
+  const deliverableGrouped = reportData.grouped.filter((g) => g.prs.length > 0);
+  if (deliverableGrouped.length === 0) {
+    console.log("[Report] Daily: no deliverable PRs for this period, skipping report and delivery");
     return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
   }
 
@@ -74,7 +76,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
       ? `Partial report: ${failedProjects.length} project(s) failed collection/analysis`
       : undefined;
 
-  const { cards, errors: cardErrors } = formatReport(date, reportData.grouped, partialWarning, reportData.budgetLine);
+  const { cards, errors: cardErrors } = formatReport(date, deliverableGrouped, partialWarning, reportData.budgetLine);
   if (cardErrors.length > 0) {
     for (const e of cardErrors) console.warn(`[Report] ⚠ ${e}`);
     errors.push(...cardErrors);
@@ -83,7 +85,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
   const finalCard = cards.length === 1 ? cards[0]! : cards;
   const cardContent = JSON.stringify(finalCard);
   const completenessJson = JSON.stringify(completeness);
-  const projectIds = JSON.stringify(reportData.grouped.map((g) => g.projectId));
+  const projectIds = JSON.stringify(deliverableGrouped.map((g) => g.projectId));
 
   try {
     db.run(
@@ -117,7 +119,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     const filePath = writeReportFile({
       date: `daily-${date}`,
       card: finalCard,
-      analyses: reportData.grouped,
+      analyses: deliverableGrouped,
       completeness,
     });
     console.log(`[Report] Written to ${filePath}`);
@@ -138,7 +140,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
 
   return {
     success: errors.length === 0,
-    itemsProcessed: reportData.grouped.length,
+    itemsProcessed: deliverableGrouped.length,
     errors,
     durationMs: 0,
   };

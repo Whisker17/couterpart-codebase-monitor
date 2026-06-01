@@ -8,6 +8,7 @@
  *   bun run src/e2e-run.ts --mode monthly       # exits 1 — not implemented yet
  *   bun run src/e2e-run.ts --mode weekly --no-dispatch  # skip Lark delivery
  */
+import type { Database } from "bun:sqlite";
 import { validateEnv } from "./config/settings.ts";
 import { getDb, closeDb } from "./storage/db";
 import { runPipeline, type PipelineStage, type StageResult, type ReportMode } from "./pipeline/runner";
@@ -99,13 +100,14 @@ function formatUnixDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
 
-function printPostRunSummary(
+export function printPostRunSummary(
   mode: RunMode,
   noDispatch: boolean,
   results: Map<string, StageResult>,
-  maxAnalysisIdBefore: number
+  maxAnalysisIdBefore: number,
+  injectedDb?: Database
 ): 0 | 1 {
-  const db = getDb();
+  const db = injectedDb ?? getDb();
 
   console.log("\nStage results:");
   for (const [name, r] of results) {
@@ -141,12 +143,15 @@ function printPostRunSummary(
       .get(reportType, reportType === "weekly" ? todayMidnightUnix - 6 * 86400 : todayMidnightUnix);
 
     if (!row) {
-      // Check if there's any data — if analyses exist for today, missing report is a failure
+      const periodStart = reportType === "weekly"
+        ? todayMidnightUnix - 6 * 86400
+        : todayMidnightUnix;
+      const periodEnd = todayMidnightUnix + 86399;
       const analysisCount = db
-        .query<{ count: number }, [number]>(
-          "SELECT COUNT(*) as count FROM analyses a JOIN pull_requests p ON a.pr_id = p.id WHERE p.fetched_at >= ?"
+        .query<{ count: number }, [number, number]>(
+          "SELECT COUNT(*) as count FROM analyses a JOIN pull_requests p ON a.pr_id = p.id WHERE p.merged_at >= ? AND p.merged_at <= ?"
         )
-        .get(todayMidnightUnix);
+        .get(periodStart, periodEnd);
 
       if (analysisCount && analysisCount.count > 0) {
         console.log(`  ${reportType}: MISSING (analyses exist — failure)`);

@@ -351,6 +351,89 @@ describe("report stage", () => {
     expect(card).toHaveProperty("header");
     expect(card).toHaveProperty("elements");
   });
+
+  it("does not create reports row when no analyses exist", async () => {
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    await execute(ctx);
+    const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports").get()!;
+    expect(count.n).toBe(0);
+  });
+
+  it("does not create report_deliveries row when no analyses exist", async () => {
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    await execute(ctx);
+    const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM report_deliveries").get()!;
+    expect(count.n).toBe(0);
+  });
+
+  it("does not call writeReportFile when no deliverable PRs", async () => {
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    await execute(ctx);
+    expect(mockWriteReportFile).not.toHaveBeenCalled();
+  });
+
+  it("emits skip log when no deliverable PRs", async () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    try {
+      const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+      await execute(ctx);
+    } finally {
+      console.log = origLog;
+    }
+    expect(logs.some((l) => l.includes("no deliverable PRs"))).toBe(true);
+  });
+
+  it("routine-only PRs still generate daily report", async () => {
+    // routine significance is valid deliverable content
+    insertTestData(testDb); // inserts routine PR merged today
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const result = await execute(ctx);
+    expect(result.success).toBe(true);
+    expect(result.itemsProcessed).toBeGreaterThan(0);
+    const row = testDb.query<{ id: number }, []>("SELECT id FROM reports WHERE type='daily'").get();
+    expect(row).toBeDefined();
+  });
+
+  it("partial upstream failure with deliverable PRs still generates report", async () => {
+    insertTestData(testDb);
+    const ctx = {
+      stageResults: new Map([
+        ["collect", { success: false, itemsProcessed: 0, errors: [], durationMs: 0, failedProjects: ["org/repo-b"] }],
+      ]),
+      reportMode: "daily" as const,
+    };
+    const result = await execute(ctx);
+    expect(result.success).toBe(true);
+    const row = testDb.query<{ id: number }, []>("SELECT id FROM reports WHERE type='daily'").get();
+    expect(row).toBeDefined();
+  });
+
+  it("project_ids contains only projects whose PRs are in today's window", async () => {
+    const todayStart = getTodayStartUtcUnix();
+    const now = Math.floor(Date.now() / 1000);
+
+    // repo-a has a PR merged today — deliverable
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-a', 'org', 'repo-a', 'https://github.com/org/repo-a')`);
+    testDb.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-a', 1, 'Today PR', ?, 'complete')`, [todayStart + 3600]);
+    const prA = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+    testDb.run(`INSERT INTO analyses (pr_id, project_id, summary, significance, analyzed_at) VALUES (?, 'org/repo-a', 'Summary A', 'routine', ?)`, [prA.id, now]);
+
+    // repo-b has a PR merged yesterday — not in today's window, so buildDailyReport won't include it
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-b', 'org', 'repo-b', 'https://github.com/org/repo-b')`);
+    testDb.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-b', 1, 'Yesterday PR', ?, 'complete')`, [todayStart - 3600]);
+    const prB = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+    testDb.run(`INSERT INTO analyses (pr_id, project_id, summary, significance, analyzed_at) VALUES (?, 'org/repo-b', 'Summary B', 'routine', ?)`, [prB.id, now]);
+
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    await execute(ctx);
+
+    const row = testDb.query<{ project_ids: string }, []>("SELECT project_ids FROM reports WHERE type='daily'").get()!;
+    const projectIds = JSON.parse(row.project_ids);
+    expect(projectIds).toContain("org/repo-a");
+    expect(projectIds).not.toContain("org/repo-b");
+  });
 });
 
 describe("buildFinalCard", () => {
