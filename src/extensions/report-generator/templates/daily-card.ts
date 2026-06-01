@@ -56,9 +56,10 @@ export type GroupedAnalyses = ProjectAnalysis[];
 // suggestions ("Mantle should ...", "mantle/reth may need ...") belong in weekly.
 export function stripCounterpartRecommendations(text: string): string {
   return text
-    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+should\b[^.!?\n]*/gi, "")
-    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+may\s+need\b[^.!?\n]*/gi, "")
-    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+needs?\s+to\b[^.!?\n]*/gi, "")
+    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+should\b[^.!?;\n]*/gi, "")
+    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+may\s+need\b[^.!?;\n]*/gi, "")
+    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+needs?\s+to\b[^.!?;\n]*/gi, "")
+    .replace(/;\s*;/g, ";")
     .replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -150,9 +151,9 @@ export function buildDailyCard(
       tag: "collapsible_panel",
       expanded: hasSignificantPrs,
       header: {
-        title: { tag: "plain_text", content: "Notable PRs" },
+        title: { tag: "plain_text", content: hasSignificantPrs ? "Notable PRs" : "PR Details" },
       },
-      elements: [{ tag: "markdown", content: detailContent || "_No notable PRs to expand._" }],
+      elements: [{ tag: "markdown", content: detailContent || "_No PRs to display._" }],
     },
   ];
 

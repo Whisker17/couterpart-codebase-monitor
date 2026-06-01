@@ -132,7 +132,7 @@ describe("buildDailyCard", () => {
     expect(hr).toBeDefined();
   });
 
-  it("detail panel is inside a collapsible_panel labeled 'Notable PRs'", () => {
+  it("detail panel is labeled 'Notable PRs' when significant PRs exist", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
     const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
       tag: "collapsible_panel";
@@ -141,9 +141,18 @@ describe("buildDailyCard", () => {
       elements: Array<{ tag: string; content: string }>;
     };
     expect(panel).toBeDefined();
-    expect(panel.header.title.content).toContain("Notable PRs");
+    expect(panel.header.title.content).toBe("Notable PRs");
     expect(panel.elements[0]!.content).toContain("org/repo-a");
     expect(panel.elements[0]!.content).toContain("#101");
+  });
+
+  it("detail panel is labeled 'PR Details' when only routine PRs exist", () => {
+    const card = buildDailyCard("2026-06-05", routineOnlyAnalyses);
+    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
+      tag: "collapsible_panel";
+      header: { title: { tag: string; content: string } };
+    };
+    expect(panel.header.title.content).toBe("PR Details");
   });
 
   it("panel starts expanded when significant (notable/directional_shift) PRs are present", () => {
@@ -198,6 +207,38 @@ describe("buildDailyCard", () => {
     expect(detail).not.toContain("#303");
     // A count note for the remaining routine PRs
     expect(detail).toContain("3 more routine PR");
+  });
+
+  it("routine-only project with exactly 1 PR shows no 'N more' count note", () => {
+    const singleRoutineAnalyses: GroupedAnalyses = [
+      {
+        projectId: "org/repo-e",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 0,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 400,
+            title: "Only routine PR",
+            summary: "Single routine change",
+            technicalDetail: null,
+            significance: "routine",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+
+    const card = buildDailyCard("2026-06-05", singleRoutineAnalyses);
+    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
+      tag: "collapsible_panel";
+      elements: Array<{ content: string }>;
+    };
+    const detail = panel.elements[0]!.content;
+    expect(detail).toContain("#400");
+    // No "more" note when there's only 1 routine PR
+    expect(detail).not.toContain("more routine");
   });
 
   it("daily report does not output counterpart action recommendations", () => {
@@ -322,5 +363,16 @@ describe("stripCounterpartRecommendations", () => {
       "signal; Mantle should act on this; end of signal"
     );
     expect(result).not.toMatch(/\s{2,}/);
+  });
+
+  it("does not consume text after a semicolon following a stripped clause", () => {
+    const input =
+      "switching to async executor; Mantle should update its runtime adapter; source repo also removes legacy sync path.";
+    const result = stripCounterpartRecommendations(input);
+    expect(result).toBe(
+      "switching to async executor; source repo also removes legacy sync path."
+    );
+    expect(result).not.toContain("Mantle should");
+    expect(result).toContain("source repo also removes legacy sync path");
   });
 });
