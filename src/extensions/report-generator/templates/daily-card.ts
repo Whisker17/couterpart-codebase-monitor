@@ -43,10 +43,32 @@ export interface ProjectAnalysis {
     technicalDetail: string | null;
     significance: "routine" | "notable" | "directional_shift";
     directionSignal: string | null;
+    // Optional fields for weekly scoring — not rendered in Lark delivery
+    weeklyCandidateReason?: string;
+    candidateTags?: string[];
   }>;
 }
 
 export type GroupedAnalyses = ProjectAnalysis[];
+
+// Strip cross-repo counterpart recommendations from direction signals.
+// Daily reports describe the source PR's own direction; cross-repo action
+// suggestions ("Mantle should ...", "mantle/reth may need ...") belong in weekly.
+export function stripCounterpartRecommendations(text: string): string {
+  return text
+    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+should\b[^.!?;\n]*/gi, "")
+    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+may\s+need\b[^.!?;\n]*/gi, "")
+    .replace(/\b(mantle\/reth|mantle\/[a-z-]+|mantle)\s+needs?\s+to\b[^.!?;\n]*/gi, "")
+    .replace(/;\s*;/g, ";")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function significanceBadge(significance: ProjectAnalysis["prs"][number]["significance"]): string {
+  if (significance === "directional_shift") return "🔴 DIRECTIONAL";
+  if (significance === "notable") return "🟡 NOTABLE";
+  return "⚪ ROUTINE";
+}
 
 export function buildDailyCard(
   date: string,
@@ -54,6 +76,7 @@ export function buildDailyCard(
   partialWarning?: string,
   budgetLine?: string
 ): LarkCard {
+  // Summary section
   const summaryLines: string[] = [];
   if (partialWarning) {
     summaryLines.push(`⚠ ${partialWarning}`);
@@ -75,24 +98,47 @@ export function buildDailyCard(
 
   const summaryContent = `**Summary**\n${summaryLines.join("\n")}`;
 
+  // Determine whether notable/directional PRs exist across all projects.
+  // The detail panel starts expanded when there is signal worth surfacing.
+  const hasSignificantPrs = projectAnalyses.some(
+    (p) => p.directionalShiftCount > 0 || p.notableCount > 0
+  );
+
+  // Detail section: significant PRs (directional_shift + notable) are shown in full.
+  // Routine PRs are never expanded — for routine-only projects one representative
+  // is shown compactly with a count note for the rest.
   const detailParts: string[] = [];
   for (const project of projectAnalyses) {
-    detailParts.push(`**[${project.projectId}]**`);
-    for (const pr of project.prs) {
-      const badge = pr.significance === "directional_shift"
-        ? "🔴 DIRECTIONAL"
-        : pr.significance === "notable"
-        ? "🟡 NOTABLE"
-        : "⚪ ROUTINE";
-      detailParts.push(`\nPR #${pr.prNumber}: ${pr.title}`);
-      detailParts.push(`${badge} — ${pr.summary}`);
-      if (pr.directionSignal) {
-        detailParts.push(`Direction: ${pr.directionSignal}`);
-      }
-      if (pr.technicalDetail) {
-        detailParts.push(`Technical: ${pr.technicalDetail}`);
+    const significantPrs = project.prs.filter((pr) => pr.significance !== "routine");
+    const routinePrs = project.prs.filter((pr) => pr.significance === "routine");
+
+    const visiblePrs = significantPrs.length > 0 ? significantPrs : routinePrs.slice(0, 1);
+
+    if (visiblePrs.length === 0) continue;
+
+    detailParts.push(`**[${project.projectId}]** · ${project.prCount} PR${project.prCount !== 1 ? "s" : ""}`);
+
+    for (const pr of visiblePrs) {
+      // Strip cross-repo counterpart recommendations before rendering
+      const directionSignal = pr.directionSignal
+        ? stripCounterpartRecommendations(pr.directionSignal)
+        : null;
+
+      detailParts.push(`\n#${pr.prNumber} ${pr.title}`);
+      detailParts.push(`${significanceBadge(pr.significance)} — ${pr.summary}`);
+      if (directionSignal) {
+        detailParts.push(`Direction: ${directionSignal}`);
       }
     }
+
+    // Omit notes for routine PRs not shown
+    if (significantPrs.length > 0 && routinePrs.length > 0) {
+      detailParts.push(`_${routinePrs.length} routine PR${routinePrs.length !== 1 ? "s" : ""} not expanded_`);
+    } else if (significantPrs.length === 0 && routinePrs.length > 1) {
+      const rest = routinePrs.length - 1;
+      detailParts.push(`_${rest} more routine PR${rest !== 1 ? "s" : ""}_`);
+    }
+
     detailParts.push("");
   }
 
@@ -103,11 +149,11 @@ export function buildDailyCard(
     { tag: "hr" },
     {
       tag: "collapsible_panel",
-      expanded: false,
+      expanded: hasSignificantPrs,
       header: {
-        title: { tag: "plain_text", content: "Technical Details" },
+        title: { tag: "plain_text", content: hasSignificantPrs ? "Notable PRs" : "PR Details" },
       },
-      elements: [{ tag: "markdown", content: detailContent || "_No technical details available._" }],
+      elements: [{ tag: "markdown", content: detailContent || "_No PRs to display._" }],
     },
   ];
 
