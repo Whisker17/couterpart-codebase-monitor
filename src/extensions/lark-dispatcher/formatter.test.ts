@@ -48,33 +48,43 @@ describe("formatReport", () => {
     expect(card).toHaveProperty("elements");
   });
 
-  it("trims routine PRs and appends omit note when full card exceeds 20KB but trimmed < 28KB", () => {
-    const longDetail = "x".repeat(400);
-    const manyRoutine = Array.from({ length: 60 }, (_, i) => ({
-      prNumber: i + 10,
-      title: `Routine PR ${i}`,
-      summary: longDetail,
-      technicalDetail: longDetail,
-      significance: "routine" as const,
-      directionSignal: null,
+  it("removes routine-only projects and appends omit note when full card exceeds 20KB but trimmed < 28KB", () => {
+    // 30 notable-only projects with long summaries push the full card over 20KB.
+    // 10 routine-only projects are filtered out by Level 2, bringing the card under 28KB.
+    const longSummary = "x".repeat(600);
+    const notableProjects: GroupedAnalyses = Array.from({ length: 30 }, (_, i) => ({
+      projectId: `org/notable-project-${i}`,
+      prCount: 1,
+      directionalShiftCount: 0,
+      notableCount: 1,
+      topDirectionSignal: null,
+      prs: [{ ...notablePR, prNumber: i + 1, summary: longSummary }],
     }));
-    const bigAnalyses: GroupedAnalyses = [
-      {
-        projectId: "org/repo-a",
-        prCount: manyRoutine.length + 1,
-        directionalShiftCount: 0,
-        notableCount: 1,
-        topDirectionSignal: null,
-        prs: [notablePR, ...manyRoutine],
-      },
-    ];
+    const routineOnlyProjects: GroupedAnalyses = Array.from({ length: 10 }, (_, i) => ({
+      projectId: `org/routine-only-project-${i}`,
+      prCount: 3,
+      directionalShiftCount: 0,
+      notableCount: 0,
+      topDirectionSignal: null,
+      prs: Array.from({ length: 3 }, (_, j) => ({
+        prNumber: j + 100,
+        title: `Routine PR ${i}-${j}`,
+        summary: "routine summary",
+        technicalDetail: null,
+        significance: "routine" as const,
+        directionSignal: null,
+      })),
+    }));
+    const analyses: GroupedAnalyses = [...notableProjects, ...routineOnlyProjects];
 
-    const result = formatReport("2026-06-01", bigAnalyses, undefined);
+    const result = formatReport("2026-06-01", analyses, undefined);
     expect(result.errors).toHaveLength(0);
     expect(result.cards).toHaveLength(1);
     const content = JSON.stringify(result.cards[0]);
+    // Formatter Level 2 removed routine-only projects and appended the omit note
     expect(content).toContain("omitted");
-    expect(content).not.toContain("Routine PR 0");
+    // Routine-only project detail is not in the trimmed output
+    expect(content).not.toContain("routine-only-project");
     const size = Buffer.byteLength(content, "utf-8");
     expect(size).toBeLessThanOrEqual(28_000);
   });

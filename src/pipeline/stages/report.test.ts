@@ -391,31 +391,37 @@ describe("buildFinalCard", () => {
     expect(parsed.config).toBeDefined();
   });
 
-  it("filters routine PRs and adds omit note when card exceeds 20KB", () => {
-    const longSummary = "x".repeat(500);
-    // Build analyses with many routine + 1 notable PR that together exceed 20KB
-    const manyRoutine = Array.from({ length: 50 }, (_, i) => ({
-      prNumber: i + 10,
-      title: `Routine PR ${i}`,
-      summary: longSummary,
-      technicalDetail: longSummary,
-      significance: "routine" as const,
-      directionSignal: null,
+  it("removes routine-only projects and adds omit note when card exceeds 20KB", () => {
+    // 30 notable-only projects with long summaries push the full card over 20KB.
+    // 10 routine-only projects are filtered by formatter Level 2, adding the omit note.
+    const longSummary = "x".repeat(600);
+    const notableProjects = Array.from({ length: 30 }, (_, i) => ({
+      projectId: `org/notable-project-${i}`,
+      prCount: 1,
+      directionalShiftCount: 0,
+      notableCount: 1,
+      topDirectionSignal: null,
+      prs: [{ ...notablePR, prNumber: i + 1, summary: longSummary }],
     }));
-    const bigAnalyses = [
-      {
-        projectId: "org/repo-a",
-        prCount: manyRoutine.length + 1,
-        directionalShiftCount: 0,
-        notableCount: 1,
-        topDirectionSignal: null,
-        prs: [notablePR, ...manyRoutine],
-      },
-    ];
+    const routineOnlyProjects = Array.from({ length: 10 }, (_, i) => ({
+      projectId: `org/routine-only-${i}`,
+      prCount: 3,
+      directionalShiftCount: 0,
+      notableCount: 0,
+      topDirectionSignal: null,
+      prs: Array.from({ length: 3 }, (_, j) => ({
+        prNumber: j + 100,
+        title: `Routine PR ${i}-${j}`,
+        summary: "routine summary",
+        technicalDetail: null,
+        significance: "routine" as const,
+        directionSignal: null,
+      })),
+    }));
+    const bigAnalyses = [...notableProjects, ...routineOnlyProjects];
 
     const result = buildFinalCard("2026-06-01", bigAnalyses, undefined);
     expect(result.errors).toHaveLength(0);
-    // Should have omitted routine PRs — content should not contain routine PR titles
     const card = JSON.parse(result.content);
     const summaryEl = card.config
       ? card.elements?.find((e: { tag: string }) => e.tag === "markdown")
@@ -423,8 +429,8 @@ describe("buildFinalCard", () => {
     if (summaryEl) {
       expect(summaryEl.content).toContain("omitted");
     }
-    // Content must be under 20KB
-    expect(result.content.length).toBeLessThanOrEqual(20 * 1024);
+    // Content must be under 28KB (Level 2 limit)
+    expect(Buffer.byteLength(result.content, "utf-8")).toBeLessThanOrEqual(28 * 1024);
   });
 
   it("returns no errors for small analyses", () => {
