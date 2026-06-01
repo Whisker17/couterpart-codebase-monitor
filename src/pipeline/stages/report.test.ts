@@ -1,6 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { rmSync, mkdirSync } from "fs";
+import type { GroupedAnalyses } from "../../extensions/report-generator/templates/daily-card";
+import type { WeeklyReportData } from "../../extensions/report-generator/weekly";
 
 const TEST_DB_PATH = "data/test-report-stage.db";
 let testDb: Database;
@@ -21,8 +23,8 @@ mock.module("../../extensions/report-generator/file-writer", () => ({
   writeReportFile: mockWriteReportFile,
 }));
 
-const mockLocalizeDailyDelivery = mock(async (analyses: unknown) => analyses);
-const mockLocalizeWeeklyDelivery = mock(async (data: unknown) => data);
+const mockLocalizeDailyDelivery = mock(async (analyses: GroupedAnalyses) => analyses);
+const mockLocalizeWeeklyDelivery = mock(async (data: WeeklyReportData) => data);
 
 const { execute, buildFinalCard } = await import("./report");
 
@@ -150,8 +152,8 @@ describe("report stage", () => {
     mockWriteReportFile.mockClear();
     mockLocalizeDailyDelivery.mockClear();
     mockLocalizeWeeklyDelivery.mockClear();
-    mockLocalizeDailyDelivery.mockImplementation(async (analyses: unknown) => analyses);
-    mockLocalizeWeeklyDelivery.mockImplementation(async (data: unknown) => data);
+    mockLocalizeDailyDelivery.mockImplementation(async (analyses: GroupedAnalyses) => analyses);
+    mockLocalizeWeeklyDelivery.mockImplementation(async (data: WeeklyReportData) => data);
   });
 
   afterEach(() => {

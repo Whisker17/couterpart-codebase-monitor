@@ -251,15 +251,18 @@ pm2 logs counterpart-monitor
 
 ## Current Milestone Status
 
-M1 is implemented and M2 Lark delivery is wired into the local E2E path:
+The first MVP launch gate is implemented:
 
 - Pipeline runner and scheduler.
 - GitHub collector and diff storage.
-- Diff-aware LLM analyzer.
+- Diff-aware LLM analyzer with budget controls.
 - Daily report generator.
 - Weekly report generator.
-- Lark dispatcher with delivery tracking.
+- Lark dispatcher with delivery tracking and Chinese delivery localization.
 - Prompt baseline and audit export.
 - Local end-to-end runner for `collect -> analyze -> report -> dispatch`.
+- PM2 and Docker Compose deployment paths with health reporting.
 
-Remaining launch essentials include budget alerting behavior and production hardening.
+Deployment still requires production `.env` values for GitHub, LLM, and Lark.
+Remaining reporter work is post-MVP scope, including Mantle counterpart scoring,
+monthly narrative reports, and configurable data retention.
