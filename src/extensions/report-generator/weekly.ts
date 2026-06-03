@@ -1,4 +1,5 @@
 import { getDb } from "../../storage/db";
+import { getWeekPeriod } from "../../utils/time-window";
 
 interface WeeklyAnalysisRow {
   id: number;
@@ -45,15 +46,9 @@ export interface WeeklyReportData {
   periodEndUnix: number;
 }
 
-function getWeekStartUtcUnix(): number {
-  const now = new Date();
-  return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6) / 1000);
-}
-
-export function buildWeeklyReport(): WeeklyReportData {
+export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportData {
   const db = getDb();
-  const periodStartUnix = getWeekStartUtcUnix();
-  const periodEndUnix = periodStartUnix + 7 * 86400 - 1;
+  const { startUnix: periodStartUnix, endUnix: periodEndUnix } = getWeekPeriod(timezone, now);
 
   const rows = db
     .query<WeeklyAnalysisRow, [number, number]>(

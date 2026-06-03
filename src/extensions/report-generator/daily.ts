@@ -1,6 +1,7 @@
 import { getDb } from "../../storage/db";
 import type { ProjectAnalysis, GroupedAnalyses } from "./templates/daily-card";
 import { getBudgetStatus } from "../../utils/budget-tracker";
+import { getYesterdayPeriod } from "../../utils/time-window";
 
 interface AnalysisRow {
   id: number;
@@ -14,11 +15,6 @@ interface AnalysisRow {
   pr_number: number;
 }
 
-function getTodayStartUtcUnix(): number {
-  const now = new Date();
-  return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000);
-}
-
 export interface DailyReportData {
   analyses: AnalysisRow[];
   grouped: GroupedAnalyses;
@@ -27,10 +23,9 @@ export interface DailyReportData {
   budgetLine?: string;
 }
 
-export function buildDailyReport(): DailyReportData {
+export function buildDailyReport(timezone: string, now?: Date): DailyReportData {
   const db = getDb();
-  const periodStartUnix = getTodayStartUtcUnix();
-  const periodEndUnix = periodStartUnix + 86399; // 23:59:59
+  const { startUnix: periodStartUnix, endUnix: periodEndUnix } = getYesterdayPeriod(timezone, now);
 
   const rows = db
     .query<AnalysisRow, [number, number]>(

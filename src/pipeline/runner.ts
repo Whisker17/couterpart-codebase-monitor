@@ -16,6 +16,7 @@ export type ReportMode = "daily" | "weekly" | "monthly";
 export interface PipelineContext {
   stageResults: Map<string, StageResult>;
   reportMode: ReportMode;
+  timezone?: string;
 }
 
 export interface PipelineStage {
@@ -107,11 +108,12 @@ export async function writeHealthAndMaybeAlert(
 
 export async function runPipeline(
   stages: PipelineStage[],
-  options?: { reportMode?: ReportMode; healthCheckOptions?: HealthCheckOptions }
+  options?: { reportMode?: ReportMode; timezone?: string; healthCheckOptions?: HealthCheckOptions }
 ): Promise<Map<string, StageResult>> {
   const ctx: PipelineContext = {
     stageResults: new Map(),
     reportMode: options?.reportMode ?? "daily",
+    timezone: options?.timezone ?? "UTC",
   };
 
   for (const stage of stages) {

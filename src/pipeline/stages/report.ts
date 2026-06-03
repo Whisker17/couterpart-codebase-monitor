@@ -34,17 +34,19 @@ export function buildFinalCard(
   return { content: JSON.stringify(card), card, errors };
 }
 
-function formatDate(unixSeconds: number): string {
+function formatDate(unixSeconds: number, timezone: string): string {
   const d = new Date(unixSeconds * 1000);
-  const year = d.getUTCFullYear();
-  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
 }
 
-function formatShortDate(unixSeconds: number): string {
+function formatShortDate(unixSeconds: number, timezone: string): string {
   const d = new Date(unixSeconds * 1000);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: timezone });
 }
 
 function collectFailedProjects(ctx: PipelineContext): string[] {
@@ -62,14 +64,9 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
   const errors: string[] = [];
   const localizeDailyDelivery = deps.localizeDailyDelivery ?? defaultLocalizeDailyDelivery;
   const localizeWeeklyDelivery = deps.localizeWeeklyDelivery ?? defaultLocalizeWeeklyDelivery;
+  const timezone = ctx.timezone ?? "UTC";
 
-  const reportData = buildDailyReport();
-
-  const deliverableGrouped = reportData.grouped.filter((g) => g.prs.length > 0);
-  if (deliverableGrouped.length === 0) {
-    console.log("[Report] Daily: no deliverable PRs for this period, skipping report and delivery");
-    return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
-  }
+  const reportData = buildDailyReport(timezone);
 
   const failedProjects = collectFailedProjects(ctx);
   const trackedProjects = getTrackedProjects();
@@ -80,7 +77,20 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
     failed: failedProjects,
   };
 
-  const date = formatDate(reportData.periodStartUnix);
+  const deliverableGrouped = reportData.grouped.filter((g) => g.prs.length > 0);
+  if (deliverableGrouped.length === 0) {
+    console.log("[Report] Daily: no deliverable PRs for this period, skipping report and delivery");
+    if (ctx.reportMode === "weekly") {
+      const weeklyErrors = await generateWeeklyReport(db, completeness, localizeWeeklyDelivery, timezone);
+      if (weeklyErrors.length > 0) {
+        console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
+      }
+      return { success: weeklyErrors.length === 0, itemsProcessed: 0, errors: weeklyErrors, durationMs: 0 };
+    }
+    return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+  }
+
+  const date = formatDate(reportData.periodStartUnix, timezone);
 
   const partialWarning =
     failedProjects.length > 0
@@ -148,12 +158,11 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
     errors.push(msg);
   }
 
-  // Weekly report — only when this run uses weekly mode
   if (ctx.reportMode === "weekly") {
-    const weeklyErrors = await generateWeeklyReport(db, completeness, localizeWeeklyDelivery);
-    // Weekly errors are non-fatal: they don't affect the daily success flag
+    const weeklyErrors = await generateWeeklyReport(db, completeness, localizeWeeklyDelivery, timezone);
     if (weeklyErrors.length > 0) {
       console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
+      errors.push(...weeklyErrors);
     }
   }
 
@@ -168,18 +177,19 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
 async function generateWeeklyReport(
   db: Database,
   completeness: { total: number; success: number; failed: string[] },
-  localizeWeeklyDelivery: typeof defaultLocalizeWeeklyDelivery
+  localizeWeeklyDelivery: typeof defaultLocalizeWeeklyDelivery,
+  timezone: string
 ): Promise<string[]> {
   const errors: string[] = [];
-  const weeklyData = await localizeWeeklyDelivery(buildWeeklyReport());
+  const weeklyData = await localizeWeeklyDelivery(buildWeeklyReport(timezone));
 
   if (weeklyData.projectHighlights.length === 0) {
     console.log("[Report] Weekly: no analyses found for the past 7 days, skipping");
     return errors;
   }
 
-  const startLabel = formatShortDate(weeklyData.periodStartUnix);
-  const endLabel = formatShortDate(weeklyData.periodEndUnix);
+  const startLabel = formatShortDate(weeklyData.periodStartUnix, timezone);
+  const endLabel = formatShortDate(weeklyData.periodEndUnix, timezone);
   const dateRange = `${startLabel}–${endLabel}`;
   const weeklyCard = buildWeeklyCard(dateRange, weeklyData);
   const weeklyJson = JSON.stringify(weeklyCard);
@@ -236,7 +246,7 @@ async function generateWeeklyReport(
   }
 
   try {
-    const weeklyDate = `weekly-${formatDate(weeklyData.periodEndUnix)}`;
+    const weeklyDate = `weekly-${formatDate(weeklyData.periodEndUnix, timezone)}`;
     const filePath = writeReportFile({
       date: weeklyDate,
       card: weeklyCard,

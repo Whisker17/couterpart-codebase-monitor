@@ -28,9 +28,16 @@ const mockLocalizeWeeklyDelivery = mock(async (data: WeeklyReportData) => data);
 
 const { execute, buildFinalCard } = await import("./report");
 
-function getTodayStartUtcUnix(): number {
-  const now = new Date();
-  return Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) / 1000);
+import { getYesterdayPeriod, getWeekPeriod } from "../../utils/time-window";
+
+const TZ = "UTC";
+
+function getYesterdayStartUnix(): number {
+  return getYesterdayPeriod(TZ).startUnix;
+}
+
+function getYesterdayEndUnix(): number {
+  return getYesterdayPeriod(TZ).endUnix;
 }
 
 function applySchema(db: Database): void {
@@ -109,18 +116,18 @@ function applySchema(db: Database): void {
 }
 
 function insertTestData(db: Database): void {
-  const now = Math.floor(Date.now() / 1000);
+  const yesterdayMid = getYesterdayStartUnix() + 3600;
   db.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-a', 'org', 'repo-a', 'https://github.com/org/repo-a')`);
   db.run(
     `INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status)
      VALUES ('org/repo-a', 1, 'Test PR', ?, 'complete')`,
-    [now]
+    [yesterdayMid]
   );
   const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
   db.run(
     `INSERT INTO analyses (pr_id, project_id, summary, technical_detail, direction_signal, significance, analyzed_at)
      VALUES (?, 'org/repo-a', 'Test summary', 'Test detail', null, 'routine', ?)`,
-    [pr.id, now]
+    [pr.id, yesterdayMid]
   );
 }
 
@@ -162,7 +169,7 @@ describe("report stage", () => {
   });
 
   it("returns itemsProcessed=0 when no analyses exist", async () => {
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     const result = await execute(ctx);
     expect(result.success).toBe(true);
     expect(result.itemsProcessed).toBe(0);
@@ -170,7 +177,7 @@ describe("report stage", () => {
 
   it("returns itemsProcessed > 0 when analyses exist", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     const result = await execute(ctx);
     expect(result.success).toBe(true);
     expect(result.itemsProcessed).toBeGreaterThan(0);
@@ -178,7 +185,7 @@ describe("report stage", () => {
 
   it("writes the report row to the reports table", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     const row = testDb.query<{ id: number; type: string }, []>("SELECT * FROM reports").get();
     expect(row).toBeDefined();
@@ -187,7 +194,7 @@ describe("report stage", () => {
 
   it("is idempotent — running twice doesn't create duplicate rows", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     await execute(ctx);
     const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports").get()!;
@@ -196,7 +203,7 @@ describe("report stage", () => {
 
   it("calls writeReportFile when analyses exist", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     expect(mockWriteReportFile).toHaveBeenCalledTimes(1);
   });
@@ -206,8 +213,9 @@ describe("report stage", () => {
     const ctx = {
       stageResults: new Map([
         ["collect", { success: false, itemsProcessed: 0, errors: [], durationMs: 0, failedProjects: ["org/repo-b"] }],
-      ]),
+      ]) as any,
       reportMode: "daily" as const,
+      timezone: TZ,
     };
     await execute(ctx);
     const row = testDb.query<{ content: string }, []>("SELECT content FROM reports").get()!;
@@ -219,7 +227,7 @@ describe("report stage", () => {
 
   it("completeness is stored in reports table", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     const row = testDb.query<{ completeness: string }, []>("SELECT completeness FROM reports").get()!;
     const completeness = JSON.parse(row.completeness);
@@ -230,7 +238,7 @@ describe("report stage", () => {
 
   it("upsert updates project_ids on re-run", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     const before = testDb.query<{ project_ids: string }, []>("SELECT project_ids FROM reports").get()!;
     await execute(ctx);
@@ -240,23 +248,22 @@ describe("report stage", () => {
     expect(after.project_ids).toBe(before.project_ids);
   });
 
-  it("daily report includes only PRs merged during the daily period", async () => {
-    const todayStart = getTodayStartUtcUnix();
-    const now = Math.floor(Date.now() / 1000);
-    insertAnalyzedPr(testDb, 1, "Today PR", todayStart + 3600, now);
-    insertAnalyzedPr(testDb, 2, "Backfilled PR", todayStart - 7 * 86400 + 3600, now);
+  it("daily report includes only PRs merged during yesterday's period", async () => {
+    const yesterdayStart = getYesterdayStartUnix();
+    insertAnalyzedPr(testDb, 1, "Yesterday PR", yesterdayStart + 3600, yesterdayStart + 3600);
+    insertAnalyzedPr(testDb, 2, "Old PR", yesterdayStart - 7 * 86400 + 3600, yesterdayStart - 7 * 86400 + 3600);
 
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
 
     const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
-    expect(row.content).toContain("Today PR");
-    expect(row.content).not.toContain("Backfilled PR");
+    expect(row.content).toContain("Yesterday PR");
+    expect(row.content).not.toContain("Old PR");
   });
 
   it("does not write weekly report row when reportMode is daily", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='weekly'").get()!;
     expect(count.n).toBe(0);
@@ -264,7 +271,7 @@ describe("report stage", () => {
 
   it("writes weekly report row when reportMode is weekly", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "weekly" as const };
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
     await execute(ctx);
     const weeklyRow = testDb.query<{ type: string }, []>("SELECT type FROM reports WHERE type='weekly'").get();
     expect(weeklyRow).toBeDefined();
@@ -273,14 +280,14 @@ describe("report stage", () => {
 
   it("weekly run calls writeReportFile twice (daily + weekly)", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "weekly" as const };
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
     await execute(ctx);
     expect(mockWriteReportFile).toHaveBeenCalledTimes(2);
   });
 
   it("daily report still succeeds on weekly run", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "weekly" as const };
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
     const result = await execute(ctx);
     expect(result.success).toBe(true);
     const dailyRow = testDb.query<{ type: string }, []>("SELECT type FROM reports WHERE type='daily'").get();
@@ -289,7 +296,7 @@ describe("report stage", () => {
 
   it("weekly run is idempotent — running twice produces only one weekly row", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "weekly" as const };
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
     await execute(ctx);
     await execute(ctx);
     const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='weekly'").get()!;
@@ -297,13 +304,12 @@ describe("report stage", () => {
   });
 
   it("weekly report includes only PRs merged during the weekly period", async () => {
-    const todayStart = getTodayStartUtcUnix();
-    const weeklyStart = todayStart - 6 * 86400;
-    const now = Math.floor(Date.now() / 1000);
-    insertAnalyzedPr(testDb, 1, "This Week PR", todayStart + 3600, now);
-    insertAnalyzedPr(testDb, 2, "Older Than Week PR", weeklyStart - 86400 + 3600, now);
+    const { startUnix: weeklyStart, endUnix: weeklyEnd } = getWeekPeriod(TZ);
+    const midWeek = Math.floor((weeklyStart + weeklyEnd) / 2);
+    insertAnalyzedPr(testDb, 1, "This Week PR", midWeek, midWeek);
+    insertAnalyzedPr(testDb, 2, "Older Than Week PR", weeklyStart - 86400, weeklyStart - 86400);
 
-    const ctx = { stageResults: new Map(), reportMode: "weekly" as const };
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
     await execute(ctx);
 
     const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='weekly'").get()!;
@@ -315,7 +321,7 @@ describe("report stage", () => {
     insertTestData(testDb);
     // Force the weekly DB write to fail by closing the DB mid-run isn't feasible,
     // but we can verify the contract: after a normal weekly run, success reflects only daily errors
-    const ctx = { stageResults: new Map(), reportMode: "weekly" as const };
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
     const result = await execute(ctx);
     // Daily succeeded — result.success must be true regardless of weekly outcome
     expect(result.success).toBe(true);
@@ -324,7 +330,7 @@ describe("report stage", () => {
 
   it("creates at least one report_deliveries row after report insert", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     const deliveries = testDb
       .query<{ card_index: number; status: string }, []>(
@@ -339,7 +345,7 @@ describe("report stage", () => {
 
   it("report_deliveries rows are upserted without duplicating them", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     await execute(ctx);
     const count = testDb
@@ -350,7 +356,7 @@ describe("report stage", () => {
 
   it("delivery content is valid JSON that parses to a LarkCard", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     const delivery = testDb
       .query<{ content: string }, []>("SELECT content FROM report_deliveries LIMIT 1")
@@ -373,7 +379,7 @@ describe("report stage", () => {
       }))
     );
 
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx, { localizeDailyDelivery: mockLocalizeDailyDelivery });
 
     const delivery = testDb
@@ -386,7 +392,7 @@ describe("report stage", () => {
 
   it("updates existing unsent delivery content when report content changes", async () => {
     insertTestData(testDb);
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
 
     mockLocalizeDailyDelivery.mockImplementation(async (analyses: any) =>
@@ -421,7 +427,7 @@ describe("report stage", () => {
       })),
     }));
 
-    const ctx = { stageResults: new Map(), reportMode: "weekly" as const };
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
     await execute(ctx, { localizeWeeklyDelivery: mockLocalizeWeeklyDelivery });
 
     const delivery = testDb
@@ -439,21 +445,21 @@ describe("report stage", () => {
   });
 
   it("does not create reports row when no analyses exist", async () => {
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports").get()!;
     expect(count.n).toBe(0);
   });
 
   it("does not create report_deliveries row when no analyses exist", async () => {
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM report_deliveries").get()!;
     expect(count.n).toBe(0);
   });
 
   it("does not call writeReportFile when no deliverable PRs", async () => {
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
     expect(mockWriteReportFile).not.toHaveBeenCalled();
   });
@@ -463,7 +469,7 @@ describe("report stage", () => {
     const origLog = console.log;
     console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
     try {
-      const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+      const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
       await execute(ctx);
     } finally {
       console.log = origLog;
@@ -474,7 +480,7 @@ describe("report stage", () => {
   it("routine-only PRs still generate daily report", async () => {
     // routine significance is valid deliverable content
     insertTestData(testDb); // inserts routine PR merged today
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     const result = await execute(ctx);
     expect(result.success).toBe(true);
     expect(result.itemsProcessed).toBeGreaterThan(0);
@@ -487,8 +493,9 @@ describe("report stage", () => {
     const ctx = {
       stageResults: new Map([
         ["collect", { success: false, itemsProcessed: 0, errors: [], durationMs: 0, failedProjects: ["org/repo-b"] }],
-      ]),
+      ]) as any,
       reportMode: "daily" as const,
+      timezone: TZ,
     };
     const result = await execute(ctx);
     expect(result.success).toBe(true);
@@ -496,23 +503,22 @@ describe("report stage", () => {
     expect(row).toBeDefined();
   });
 
-  it("project_ids contains only projects whose PRs are in today's window", async () => {
-    const todayStart = getTodayStartUtcUnix();
-    const now = Math.floor(Date.now() / 1000);
+  it("project_ids contains only projects whose PRs are in yesterday's window", async () => {
+    const yesterdayStart = getYesterdayStartUnix();
 
-    // repo-a has a PR merged today — deliverable
+    // repo-a has a PR merged yesterday — deliverable
     testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-a', 'org', 'repo-a', 'https://github.com/org/repo-a')`);
-    testDb.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-a', 1, 'Today PR', ?, 'complete')`, [todayStart + 3600]);
+    testDb.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-a', 1, 'Yesterday PR', ?, 'complete')`, [yesterdayStart + 3600]);
     const prA = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
-    testDb.run(`INSERT INTO analyses (pr_id, project_id, summary, significance, analyzed_at) VALUES (?, 'org/repo-a', 'Summary A', 'routine', ?)`, [prA.id, now]);
+    testDb.run(`INSERT INTO analyses (pr_id, project_id, summary, significance, analyzed_at) VALUES (?, 'org/repo-a', 'Summary A', 'routine', ?)`, [prA.id, yesterdayStart + 3600]);
 
-    // repo-b has a PR merged yesterday — not in today's window, so buildDailyReport won't include it
+    // repo-b has a PR merged 2 days ago — not in yesterday's window
     testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-b', 'org', 'repo-b', 'https://github.com/org/repo-b')`);
-    testDb.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-b', 1, 'Yesterday PR', ?, 'complete')`, [todayStart - 3600]);
+    testDb.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-b', 1, 'Old PR', ?, 'complete')`, [yesterdayStart - 86400]);
     const prB = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
-    testDb.run(`INSERT INTO analyses (pr_id, project_id, summary, significance, analyzed_at) VALUES (?, 'org/repo-b', 'Summary B', 'routine', ?)`, [prB.id, now]);
+    testDb.run(`INSERT INTO analyses (pr_id, project_id, summary, significance, analyzed_at) VALUES (?, 'org/repo-b', 'Summary B', 'routine', ?)`, [prB.id, yesterdayStart - 86400]);
 
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const };
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
 
     const row = testDb.query<{ project_ids: string }, []>("SELECT project_ids FROM reports WHERE type='daily'").get()!;

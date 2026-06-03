@@ -14,8 +14,9 @@
     "tokenEnvVar": "GITHUB_TOKEN"
   },
   "schedule": {
-    "dailyCron": "0 8 * * *",
-    "weeklyCron": "0 9 * * 1"
+    "dailyCron": "0 9 * * *",
+    "weeklyCron": "30 9 * * 1",
+    "timezone": "Asia/Shanghai"
   },
   "budget": {
     "monthlyCap": 80,

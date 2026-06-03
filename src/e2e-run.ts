@@ -9,13 +9,14 @@
  *   bun run src/e2e-run.ts --mode weekly --no-dispatch  # skip Lark delivery
  */
 import type { Database } from "bun:sqlite";
-import { validateEnv } from "./config/settings.ts";
+import { validateEnv, getSettings } from "./config/settings.ts";
 import { getDb, closeDb } from "./storage/db";
 import { runPipeline, type PipelineStage, type StageResult, type ReportMode } from "./pipeline/runner";
 import { stage as collect } from "./pipeline/stages/collect";
 import { stage as analyze } from "./pipeline/stages/analyze";
 import { stage as report } from "./pipeline/stages/report";
 import { stage as dispatch } from "./pipeline/stages/dispatch";
+import { getYesterdayPeriod, getWeekPeriod } from "./utils/time-window";
 
 export type RunMode = "daily" | "weekly" | "monthly" | "all";
 
@@ -96,7 +97,15 @@ interface AnalysisRow {
   estimated_cost_usd: number | null;
 }
 
-function formatUnixDate(unixSeconds: number): string {
+function formatUnixDate(unixSeconds: number, timezone?: string): string {
+  if (timezone) {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(unixSeconds * 1000));
+  }
   return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
 
@@ -105,9 +114,11 @@ export function printPostRunSummary(
   noDispatch: boolean,
   results: Map<string, StageResult>,
   maxAnalysisIdBefore: number,
-  injectedDb?: Database
+  injectedDb?: Database,
+  injectedTimezone?: string
 ): 0 | 1 {
   const db = injectedDb ?? getDb();
+  const timezone = injectedTimezone ?? getSettings().schedule.timezone;
 
   console.log("\nStage results:");
   for (const [name, r] of results) {
@@ -125,28 +136,24 @@ export function printPostRunSummary(
 
   const anyFailed = [...results.values()].some((r) => !r.success);
 
-  // Determine which report types to check based on mode
   const expectedTypes: string[] = mode === "daily" ? ["daily"] : ["daily", "weekly"];
 
-  // Today's window: midnight UTC to now
-  const nowUnix = Math.floor(Date.now() / 1000);
-  const todayMidnightUnix = nowUnix - (nowUnix % 86400);
+  const { startUnix: dailyStart, endUnix: dailyEnd } = getYesterdayPeriod(timezone);
+  const { startUnix: weeklyStart } = getWeekPeriod(timezone);
 
   console.log("\nReports:");
   let reportsMissing = false;
 
   for (const reportType of expectedTypes) {
+    const periodStart = reportType === "weekly" ? weeklyStart : dailyStart;
     const row = db
       .query<ReportRow, [string, number]>(
         "SELECT id, type, period_start, period_end, created_at FROM reports WHERE type = ? AND period_start >= ? ORDER BY period_start DESC LIMIT 1"
       )
-      .get(reportType, reportType === "weekly" ? todayMidnightUnix - 6 * 86400 : todayMidnightUnix);
+      .get(reportType, periodStart);
 
     if (!row) {
-      const periodStart = reportType === "weekly"
-        ? todayMidnightUnix - 6 * 86400
-        : todayMidnightUnix;
-      const periodEnd = todayMidnightUnix + 86399;
+      const periodEnd = dailyEnd;
       const analysisCount = db
         .query<{ count: number }, [number, number]>(
           "SELECT COUNT(*) as count FROM analyses a JOIN pull_requests p ON a.pr_id = p.id WHERE p.merged_at >= ? AND p.merged_at <= ?"
@@ -173,8 +180,8 @@ export function printPostRunSummary(
     const pending = deliveries.filter((d) => d.status === "pending").length;
     const periodStr =
       reportType === "weekly"
-        ? `${formatUnixDate(row.period_start)}..${formatUnixDate(row.period_end)}`
-        : formatUnixDate(row.period_start);
+        ? `${formatUnixDate(row.period_start, timezone)}..${formatUnixDate(row.period_end, timezone)}`
+        : formatUnixDate(row.period_start, timezone);
 
     console.log(
       `  ${reportType}  #${row.id} ${periodStr} cards=${deliveries.length} deliveries=sent:${sent} failed:${failed} pending:${pending}`
@@ -224,15 +231,15 @@ export function printPostRunSummary(
     console.log("  new analyses: 0");
   }
 
-  // Lark message IDs from this run (sent deliveries for expected reports)
   const messageIds: string[] = [];
   if (!noDispatch) {
     for (const reportType of expectedTypes) {
+      const lookupStart = reportType === "weekly" ? weeklyStart : dailyStart;
       const row = db
         .query<ReportRow, [string, number]>(
           "SELECT id FROM reports WHERE type = ? AND period_start >= ? ORDER BY period_start DESC LIMIT 1"
         )
-        .get(reportType, reportType === "weekly" ? todayMidnightUnix - 6 * 86400 : todayMidnightUnix);
+        .get(reportType, lookupStart);
 
       if (row) {
         const ids = db
@@ -277,8 +284,10 @@ export async function runE2E(argv: string[] = process.argv.slice(2)): Promise<nu
   const stageNames = stages.map((s) => s.name).join(" → ");
   console.log(`[E2E] Stages: ${stageNames}`);
 
+  const timezone = getSettings().schedule.timezone;
+
   const start = Date.now();
-  const results = await runPipeline(stages, { reportMode });
+  const results = await runPipeline(stages, { reportMode, timezone });
   const totalMs = Date.now() - start;
 
   console.log(`\n[E2E] Pipeline complete in ${(totalMs / 1000).toFixed(1)}s`);

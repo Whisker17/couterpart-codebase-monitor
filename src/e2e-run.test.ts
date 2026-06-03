@@ -12,6 +12,7 @@ import {
   runE2E,
 } from "./e2e-run";
 import type { StageResult } from "./pipeline/runner";
+import { getYesterdayPeriod } from "./utils/time-window";
 
 function result(success: boolean): StageResult {
   return { success, itemsProcessed: 0, errors: success ? [] : ["failed"], durationMs: 0 };
@@ -231,11 +232,7 @@ function applyE2ESummarySchema(db: Database): void {
 
 describe("printPostRunSummary — no-data check uses merged_at", () => {
   let db: Database;
-
-  function getTodayMidnightUnix(): number {
-    const now = Math.floor(Date.now() / 1000);
-    return now - (now % 86400);
-  }
+  const TZ = "UTC";
 
   beforeEach(() => {
     db = new Database(E2E_SUMMARY_DB_PATH);
@@ -247,12 +244,12 @@ describe("printPostRunSummary — no-data check uses merged_at", () => {
     try { rmSync(E2E_SUMMARY_DB_PATH); } catch { /* ignore */ }
   });
 
-  it("prints [NO_DATA] when no analyses exist for today's merged_at window", () => {
+  it("prints [NO_DATA] when no analyses exist for yesterday's merged_at window", () => {
     const logs: string[] = [];
     const orig = console.log;
     console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
     try {
-      printPostRunSummary("daily", true, new Map(), 0, db);
+      printPostRunSummary("daily", true, new Map(), 0, db, TZ);
     } finally {
       console.log = orig;
     }
@@ -260,12 +257,12 @@ describe("printPostRunSummary — no-data check uses merged_at", () => {
     expect(logs.some((l) => l.includes("MISSING"))).toBe(false);
   });
 
-  it("prints [NO_DATA] when PR was fetched today but merged yesterday", () => {
-    const todayMidnight = getTodayMidnightUnix();
-    const yesterday = todayMidnight - 3600; // merged before today's window
+  it("prints [NO_DATA] when PR was merged before yesterday's window", () => {
+    const { startUnix } = getYesterdayPeriod(TZ);
+    const beforeWindow = startUnix - 3600;
     const now = Math.floor(Date.now() / 1000);
 
-    db.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, fetched_at) VALUES ('org/repo-a', 1, 'Old PR', ?, ?)`, [yesterday, now]);
+    db.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, fetched_at) VALUES ('org/repo-a', 1, 'Old PR', ?, ?)`, [beforeWindow, now]);
     const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
     db.run(`INSERT INTO analyses (pr_id, project_id, summary, analyzed_at) VALUES (?, 'org/repo-a', 'summary', ?)`, [pr.id, now]);
 
@@ -273,22 +270,21 @@ describe("printPostRunSummary — no-data check uses merged_at", () => {
     const orig = console.log;
     console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
     try {
-      printPostRunSummary("daily", true, new Map(), 0, db);
+      printPostRunSummary("daily", true, new Map(), 0, db, TZ);
     } finally {
       console.log = orig;
     }
 
-    // PR merged yesterday should NOT cause "MISSING" failure — it's outside today's window
     expect(logs.some((l) => l.includes("[NO_DATA]"))).toBe(true);
     expect(logs.some((l) => l.includes("MISSING"))).toBe(false);
   });
 
-  it("prints MISSING when analyses exist for PRs merged today but report is absent", () => {
-    const todayMidnight = getTodayMidnightUnix();
-    const mergedToday = todayMidnight + 3600;
+  it("prints MISSING when analyses exist for PRs merged yesterday but report is absent", () => {
+    const { startUnix } = getYesterdayPeriod(TZ);
+    const mergedYesterday = startUnix + 3600;
     const now = Math.floor(Date.now() / 1000);
 
-    db.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, fetched_at) VALUES ('org/repo-a', 1, 'Today PR', ?, ?)`, [mergedToday, now]);
+    db.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, fetched_at) VALUES ('org/repo-a', 1, 'Yesterday PR', ?, ?)`, [mergedYesterday, now]);
     const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
     db.run(`INSERT INTO analyses (pr_id, project_id, summary, analyzed_at) VALUES (?, 'org/repo-a', 'summary', ?)`, [pr.id, now]);
 
@@ -296,31 +292,30 @@ describe("printPostRunSummary — no-data check uses merged_at", () => {
     const orig = console.log;
     console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
     try {
-      printPostRunSummary("daily", true, new Map(), 0, db);
+      printPostRunSummary("daily", true, new Map(), 0, db, TZ);
     } finally {
       console.log = orig;
     }
 
-    // PR merged today means the report should have been generated — its absence is a failure
     expect(logs.some((l) => l.includes("MISSING"))).toBe(true);
     expect(logs.some((l) => l.includes("[NO_DATA]"))).toBe(false);
   });
 
   it("returns exit code 1 when daily report is missing and merged_at analyses exist", () => {
-    const todayMidnight = getTodayMidnightUnix();
-    const mergedToday = todayMidnight + 3600;
+    const { startUnix } = getYesterdayPeriod(TZ);
+    const mergedYesterday = startUnix + 3600;
     const now = Math.floor(Date.now() / 1000);
 
-    db.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, fetched_at) VALUES ('org/repo-a', 1, 'Today PR', ?, ?)`, [mergedToday, now]);
+    db.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, fetched_at) VALUES ('org/repo-a', 1, 'Yesterday PR', ?, ?)`, [mergedYesterday, now]);
     const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
     db.run(`INSERT INTO analyses (pr_id, project_id, summary, analyzed_at) VALUES (?, 'org/repo-a', 'summary', ?)`, [pr.id, now]);
 
-    const exitCode = printPostRunSummary("daily", true, new Map(), 0, db);
+    const exitCode = printPostRunSummary("daily", true, new Map(), 0, db, TZ);
     expect(exitCode).toBe(1);
   });
 
   it("returns exit code 0 when daily report is missing and no merged_at analyses in window", () => {
-    const exitCode = printPostRunSummary("daily", true, new Map(), 0, db);
+    const exitCode = printPostRunSummary("daily", true, new Map(), 0, db, TZ);
     expect(exitCode).toBe(0);
   });
 });
