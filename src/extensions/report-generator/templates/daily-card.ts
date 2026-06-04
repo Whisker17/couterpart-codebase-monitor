@@ -43,6 +43,7 @@ export interface ProjectAnalysis {
     technicalDetail: string | null;
     significance: "routine" | "notable" | "directional_shift";
     directionSignal: string | null;
+    htmlUrl: string;
     // Optional fields for weekly scoring — not rendered in Lark delivery
     weeklyCandidateReason?: string;
     candidateTags?: string[];
@@ -50,6 +51,19 @@ export interface ProjectAnalysis {
 }
 
 export type GroupedAnalyses = ProjectAnalysis[];
+
+export function buildPrHtmlUrl(projectUrl: string, prNumber: number): string {
+  return `${projectUrl.replace(/\/+$/, "")}/pull/${prNumber}`;
+}
+
+export function formatMarkdownLink(label: string, url: string): string {
+  const safeLabel = label
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[[\]]/g, (ch) => `\\${ch}`);
+  const safeUrl = url.trim();
+  return safeUrl ? `[${safeLabel}](${safeUrl})` : safeLabel;
+}
 
 // Strip cross-repo counterpart recommendations from direction signals.
 // Daily reports describe the source PR's own direction; cross-repo action
@@ -124,7 +138,7 @@ export function buildDailyCard(
         ? stripCounterpartRecommendations(pr.directionSignal)
         : null;
 
-      detailParts.push(`\n#${pr.prNumber} ${pr.title}`);
+      detailParts.push(`\n${formatMarkdownLink(`#${pr.prNumber} ${pr.title}`, pr.htmlUrl)}`);
       detailParts.push(`${significanceBadge(pr.significance)} — ${pr.summary}`);
       if (directionSignal) {
         detailParts.push(`Direction: ${directionSignal}`);

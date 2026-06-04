@@ -1,4 +1,5 @@
 import { getDb } from "../../storage/db";
+import { buildPrHtmlUrl } from "./templates/daily-card";
 import { getWeekPeriod } from "../../utils/time-window";
 
 interface WeeklyAnalysisRow {
@@ -11,6 +12,7 @@ interface WeeklyAnalysisRow {
   significance: "routine" | "notable" | "directional_shift";
   title: string;
   pr_number: number;
+  project_url: string;
 }
 
 export interface WeeklyProjectSummary {
@@ -24,6 +26,7 @@ export interface WeeklyProjectSummary {
     summary: string;
     significance: "routine" | "notable" | "directional_shift";
     directionSignal: string | null;
+    htmlUrl: string;
   }>;
 }
 
@@ -54,9 +57,11 @@ export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportDat
     .query<WeeklyAnalysisRow, [number, number]>(
       `SELECT a.id, a.pr_id, a.project_id, a.summary, a.technical_detail,
               a.direction_signal, a.significance,
-              pr.title, pr.pr_number
+              pr.title, pr.pr_number,
+              p.url AS project_url
        FROM analyses a
        JOIN pull_requests pr ON a.pr_id = pr.id
+       JOIN projects p ON p.id = pr.project_id
        WHERE pr.merged_at >= ? AND pr.merged_at <= ?
        ORDER BY a.project_id,
                 CASE a.significance
@@ -110,6 +115,7 @@ export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportDat
       summary: p.summary,
       significance: p.significance,
       directionSignal: p.direction_signal,
+      htmlUrl: buildPrHtmlUrl(p.project_url, p.pr_number),
     }));
 
     projectHighlights.push({

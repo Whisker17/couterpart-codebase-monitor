@@ -23,6 +23,7 @@ const sampleData: WeeklyReportData = {
         {
           prNumber: 101,
           title: "Add OAuth2 support",
+          htmlUrl: "https://github.com/org/repo-a/pull/101",
           summary: "Adds OAuth2 authentication flow",
           significance: "directional_shift",
           directionSignal: "migrating auth to OAuth2",
@@ -30,6 +31,7 @@ const sampleData: WeeklyReportData = {
         {
           prNumber: 102,
           title: "Switch to Postgres",
+          htmlUrl: "https://github.com/org/repo-a/pull/102",
           summary: "Migrates DB from SQLite to Postgres",
           significance: "directional_shift",
           directionSignal: "switching to Postgres",
@@ -45,6 +47,7 @@ const sampleData: WeeklyReportData = {
         {
           prNumber: 200,
           title: "Improve cache layer",
+          htmlUrl: "https://github.com/org/repo-b/pull/200",
           summary: "Adds Redis caching for hot paths",
           significance: "notable",
           directionSignal: null,
@@ -148,6 +151,16 @@ describe("buildWeeklyCard", () => {
     expect(content).toContain("org/repo-a");
     expect(content).toContain("#101");
     expect(content).toContain("org/repo-b");
+  });
+
+  it("PR title is rendered as a markdown link in highlights", () => {
+    const card = buildWeeklyCard("May 12–19", sampleData);
+    const panel = card.elements[4] as {
+      tag: "collapsible_panel";
+      elements: Array<{ tag: string; content: string }>;
+    };
+    const content = panel.elements[0]!.content;
+    expect(content).toContain("[PR #101: Add OAuth2 support](https://github.com/org/repo-a/pull/101)");
   });
 
   it("directional shift PRs show DIRECTIONAL badge in highlights", () => {

@@ -18,6 +18,7 @@ const dailyData: GroupedAnalyses = [
         technicalDetail: "Detailed implementation text should stay out of delivery localization.",
         significance: "directional_shift",
         directionSignal: "This suggests stronger alignment with Ethereum JSON-RPC conventions.",
+        htmlUrl: "https://github.com/org/repo/pull/1",
       },
     ],
   },
@@ -50,6 +51,7 @@ const weeklyData: WeeklyReportData = {
           summary: "Migrates the prover service API from gRPC to JSON-RPC and removes protobuf generation.",
           significance: "directional_shift",
           directionSignal: "This suggests stronger alignment with Ethereum JSON-RPC conventions.",
+          htmlUrl: "https://github.com/org/repo/pull/1",
         },
       ],
     },
@@ -118,6 +120,26 @@ describe("delivery localizer", () => {
     expect(localized.projectHighlights[0]!.highlights[0]!.title).toBe("Migrate prover service to JSON-RPC");
   });
 
+  it("preserves htmlUrl in daily localized output", async () => {
+    const generateFn = mock(async () => ({
+      object: { entries: [] },
+      usage: {},
+    }));
+
+    const localized = await localizeDailyDelivery(dailyData, { generateFn, skipCredentialCheck: true });
+    expect(localized[0]!.prs[0]!.htmlUrl).toBe("https://github.com/org/repo/pull/1");
+  });
+
+  it("preserves htmlUrl in weekly localized output", async () => {
+    const generateFn = mock(async () => ({
+      object: { entries: [] },
+      usage: {},
+    }));
+
+    const localized = await localizeWeeklyDelivery(weeklyData, { generateFn, skipCredentialCheck: true });
+    expect(localized.projectHighlights[0]!.highlights[0]!.htmlUrl).toBe("https://github.com/org/repo/pull/1");
+  });
+
   it("falls back to original data when localization fails", async () => {
     const generateFn = mock(async () => {
       throw new Error("LLM unavailable");
@@ -144,6 +166,7 @@ describe("delivery localizer", () => {
           technicalDetail: null,
           significance: "notable" as const,
           directionSignal: null,
+          htmlUrl: `https://github.com/org/repo/pull/${i + 1}`,
         })),
       },
     ];

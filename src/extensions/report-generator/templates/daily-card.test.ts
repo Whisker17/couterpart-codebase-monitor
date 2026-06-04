@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { buildDailyCard, stripCounterpartRecommendations } from "./daily-card";
+import { buildDailyCard, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink } from "./daily-card";
 import type { GroupedAnalyses } from "./daily-card";
 
 const sampleAnalyses: GroupedAnalyses = [
@@ -13,6 +13,7 @@ const sampleAnalyses: GroupedAnalyses = [
       {
         prNumber: 101,
         title: "Add OAuth2 support",
+        htmlUrl: "https://github.com/org/repo-a/pull/101",
         summary: "Adds OAuth2 authentication flow",
         technicalDetail: "Changed auth middleware to use passport-oauth2",
         significance: "directional_shift",
@@ -21,6 +22,7 @@ const sampleAnalyses: GroupedAnalyses = [
       {
         prNumber: 102,
         title: "Fix typo in README",
+        htmlUrl: "https://github.com/org/repo-a/pull/102",
         summary: "Fixes documentation typo",
         technicalDetail: null,
         significance: "routine",
@@ -38,6 +40,7 @@ const sampleAnalyses: GroupedAnalyses = [
       {
         prNumber: 200,
         title: "Bump dependencies",
+        htmlUrl: "https://github.com/org/repo-b/pull/200",
         summary: "Routine dependency update",
         technicalDetail: null,
         significance: "routine",
@@ -58,6 +61,7 @@ const routineOnlyAnalyses: GroupedAnalyses = [
       {
         prNumber: 300,
         title: "Bump lodash",
+        htmlUrl: "https://github.com/org/repo-c/pull/300",
         summary: "Update lodash to 4.17.21",
         technicalDetail: null,
         significance: "routine",
@@ -66,6 +70,7 @@ const routineOnlyAnalyses: GroupedAnalyses = [
       {
         prNumber: 301,
         title: "Fix lint warnings",
+        htmlUrl: "https://github.com/org/repo-c/pull/301",
         summary: "Address eslint warnings",
         technicalDetail: null,
         significance: "routine",
@@ -74,6 +79,7 @@ const routineOnlyAnalyses: GroupedAnalyses = [
       {
         prNumber: 302,
         title: "Update README",
+        htmlUrl: "https://github.com/org/repo-c/pull/302",
         summary: "Docs update",
         technicalDetail: null,
         significance: "routine",
@@ -82,6 +88,7 @@ const routineOnlyAnalyses: GroupedAnalyses = [
       {
         prNumber: 303,
         title: "Version bump",
+        htmlUrl: "https://github.com/org/repo-c/pull/303",
         summary: "Bump to 1.2.3",
         technicalDetail: null,
         significance: "routine",
@@ -180,15 +187,22 @@ describe("buildDailyCard", () => {
       elements: Array<{ content: string }>;
     };
     const detail = panel.elements[0]!.content;
-    // The directional_shift PR for org/repo-a should appear
     expect(detail).toContain("#101");
     expect(detail).toContain("Add OAuth2 support");
-    // The routine PR #102 should NOT appear by title
     expect(detail).not.toContain("#102");
     expect(detail).not.toContain("Fix typo");
-    // An omit note should be shown for the skipped routine PR
     expect(detail).toContain("routine");
     expect(detail).toContain("not expanded");
+  });
+
+  it("PR title is rendered as a markdown link in detail panel", () => {
+    const card = buildDailyCard("2026-06-05", sampleAnalyses);
+    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
+      tag: "collapsible_panel";
+      elements: Array<{ content: string }>;
+    };
+    const detail = panel.elements[0]!.content;
+    expect(detail).toContain("[#101 Add OAuth2 support](https://github.com/org/repo-a/pull/101)");
   });
 
   it("routine-only project shows exactly one representative PR in detail", () => {
@@ -198,14 +212,11 @@ describe("buildDailyCard", () => {
       elements: Array<{ content: string }>;
     };
     const detail = panel.elements[0]!.content;
-    // First routine PR shown as representative
     expect(detail).toContain("#300");
     expect(detail).toContain("Bump lodash");
-    // The other 3 routine PRs are not expanded
     expect(detail).not.toContain("#301");
     expect(detail).not.toContain("#302");
     expect(detail).not.toContain("#303");
-    // A count note for the remaining routine PRs
     expect(detail).toContain("3 more routine PR");
   });
 
@@ -221,6 +232,7 @@ describe("buildDailyCard", () => {
           {
             prNumber: 400,
             title: "Only routine PR",
+            htmlUrl: "https://github.com/org/repo-e/pull/400",
             summary: "Single routine change",
             technicalDetail: null,
             significance: "routine",
@@ -237,7 +249,6 @@ describe("buildDailyCard", () => {
     };
     const detail = panel.elements[0]!.content;
     expect(detail).toContain("#400");
-    // No "more" note when there's only 1 routine PR
     expect(detail).not.toContain("more routine");
   });
 
@@ -253,6 +264,7 @@ describe("buildDailyCard", () => {
           {
             prNumber: 500,
             title: "Async executor migration",
+            htmlUrl: "https://github.com/org/reth/pull/500",
             summary: "Migrates the executor to async runtime",
             technicalDetail: null,
             significance: "directional_shift",
@@ -264,7 +276,6 @@ describe("buildDailyCard", () => {
 
     const card = buildDailyCard("2026-06-05", analysesWithCounterpart);
     const content = JSON.stringify(card);
-    // No "Mantle should ..." recommendations in the delivered Lark card
     expect(content).not.toContain("Mantle should");
     expect(content).not.toContain("mantle should");
   });
@@ -281,6 +292,7 @@ describe("buildDailyCard", () => {
           {
             prNumber: 999,
             title: "Refactor core module",
+            htmlUrl: "https://github.com/org/repo-d/pull/999",
             summary: "Core module refactored for extensibility",
             technicalDetail: null,
             significance: "directional_shift",
@@ -294,11 +306,9 @@ describe("buildDailyCard", () => {
 
     const card = buildDailyCard("2026-06-05", analysesWithCandidateFields);
     const content = JSON.stringify(card);
-    // Internal weekly scoring fields must not appear in the Lark delivery
     expect(content).not.toContain("weeklyCandidateReason");
     expect(content).not.toContain("significant architectural change");
     expect(content).not.toContain("candidateTags");
-    // But the PR itself should be shown
     expect(content).toContain("#999");
   });
 
@@ -326,6 +336,54 @@ describe("buildDailyCard", () => {
     const lastElement = card.elements[card.elements.length - 1] as { tag: string; content: string };
     expect(lastElement.tag).toBe("markdown");
     expect(lastElement.content).toContain("Budget:");
+  });
+});
+
+describe("buildPrHtmlUrl", () => {
+  it("builds URL from project URL and PR number", () => {
+    expect(buildPrHtmlUrl("https://github.com/org/repo", 42)).toBe("https://github.com/org/repo/pull/42");
+  });
+
+  it("strips trailing slash before appending /pull/", () => {
+    expect(buildPrHtmlUrl("https://github.com/org/repo/", 1)).toBe("https://github.com/org/repo/pull/1");
+  });
+
+  it("strips multiple trailing slashes", () => {
+    expect(buildPrHtmlUrl("https://github.com/org/repo//", 5)).toBe("https://github.com/org/repo/pull/5");
+  });
+});
+
+describe("formatMarkdownLink", () => {
+  it("formats a simple label and URL as a markdown link", () => {
+    expect(formatMarkdownLink("#101 Add OAuth2 support", "https://github.com/org/repo/pull/101")).toBe(
+      "[#101 Add OAuth2 support](https://github.com/org/repo/pull/101)"
+    );
+  });
+
+  it("escapes [ and ] in the label", () => {
+    expect(formatMarkdownLink("[breaking] Fix", "https://example.com")).toBe(
+      "[\\[breaking\\] Fix](https://example.com)"
+    );
+  });
+
+  it("collapses whitespace and trims the label", () => {
+    expect(formatMarkdownLink("  Fix   typo  ", "https://example.com")).toBe(
+      "[Fix typo](https://example.com)"
+    );
+  });
+
+  it("collapses newlines in label into a single space", () => {
+    expect(formatMarkdownLink("title\nwith\nnewlines", "https://example.com")).toBe(
+      "[title with newlines](https://example.com)"
+    );
+  });
+
+  it("returns plain label when URL is empty string", () => {
+    expect(formatMarkdownLink("#42 Some PR", "")).toBe("#42 Some PR");
+  });
+
+  it("returns plain label when URL is whitespace-only", () => {
+    expect(formatMarkdownLink("#42 Some PR", "   ")).toBe("#42 Some PR");
   });
 });
 

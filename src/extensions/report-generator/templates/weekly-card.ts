@@ -1,4 +1,5 @@
 import type { LarkCard, LarkElement } from "./daily-card";
+import { formatMarkdownLink } from "./daily-card";
 import type { WeeklyReportData } from "../weekly";
 
 export function buildWeeklyCard(dateRange: string, data: WeeklyReportData): LarkCard {
@@ -40,7 +41,7 @@ export function buildWeeklyCard(dateRange: string, data: WeeklyReportData): Lark
           : h.significance === "notable"
           ? "🟡 NOTABLE"
           : "⚪ ROUTINE";
-      highlightParts.push(`\nPR #${h.prNumber}: ${h.title}`);
+      highlightParts.push(`\n${formatMarkdownLink(`PR #${h.prNumber}: ${h.title}`, h.htmlUrl)}`);
       highlightParts.push(`${badge} — ${h.summary}`);
       if (h.directionSignal) {
         highlightParts.push(`Direction: ${h.directionSignal}`);
