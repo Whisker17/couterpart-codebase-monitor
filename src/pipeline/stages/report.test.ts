@@ -503,6 +503,45 @@ describe("report stage", () => {
     expect(row).toBeDefined();
   });
 
+  it("daily report content contains full GitHub PR URL", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
+    expect(row.content).toContain("https://github.com/org/repo-a/pull/1");
+  });
+
+  it("weekly report content contains full GitHub PR URL", async () => {
+    const { startUnix: weeklyStart, endUnix: weeklyEnd } = getWeekPeriod(TZ);
+    const midWeek = Math.floor((weeklyStart + weeklyEnd) / 2);
+    insertAnalyzedPr(testDb, 5, "Weekly PR", midWeek, midWeek);
+
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
+    await execute(ctx);
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='weekly'").get()!;
+    expect(row.content).toContain("https://github.com/org/repo-a/pull/5");
+  });
+
+  it("PR URL has no double slash when project url has trailing slash", async () => {
+    const yesterdayMid = getYesterdayStartUnix() + 3600;
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-trailing', 'org', 'repo-trailing', 'https://github.com/org/repo-trailing/')`);
+    testDb.run(
+      `INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-trailing', 10, 'Trailing slash PR', ?, 'complete')`,
+      [yesterdayMid]
+    );
+    const pr = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+    testDb.run(
+      `INSERT INTO analyses (pr_id, project_id, summary, significance, analyzed_at) VALUES (?, 'org/repo-trailing', 'Trailing slash summary', 'routine', ?)`,
+      [pr.id, yesterdayMid]
+    );
+
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
+    expect(row.content).toContain("https://github.com/org/repo-trailing/pull/10");
+    expect(row.content).not.toContain("//pull/");
+  });
+
   it("project_ids contains only projects whose PRs are in yesterday's window", async () => {
     const yesterdayStart = getYesterdayStartUnix();
 
@@ -536,6 +575,7 @@ describe("buildFinalCard", () => {
     technicalDetail: null,
     significance: "routine" as const,
     directionSignal: null,
+    htmlUrl: "https://github.com/org/repo-a/pull/1",
   };
 
   const notablePR = {
@@ -545,6 +585,7 @@ describe("buildFinalCard", () => {
     technicalDetail: null,
     significance: "notable" as const,
     directionSignal: "improving perf",
+    htmlUrl: "https://github.com/org/repo-a/pull/2",
   };
 
   const smallAnalyses = [
@@ -591,6 +632,7 @@ describe("buildFinalCard", () => {
         technicalDetail: null,
         significance: "routine" as const,
         directionSignal: null,
+        htmlUrl: `https://github.com/org/routine-only-${i}/pull/${j + 100}`,
       })),
     }));
     const bigAnalyses = [...notableProjects, ...routineOnlyProjects];
