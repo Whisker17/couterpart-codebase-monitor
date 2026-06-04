@@ -14,11 +14,11 @@ const dailyData: GroupedAnalyses = [
       {
         prNumber: 1,
         title: "Migrate prover service to JSON-RPC",
+        htmlUrl: "https://github.com/org/repo/pull/1",
         summary: "Migrates the prover service API from gRPC to JSON-RPC and removes protobuf generation.",
         technicalDetail: "Detailed implementation text should stay out of delivery localization.",
         significance: "directional_shift",
         directionSignal: "This suggests stronger alignment with Ethereum JSON-RPC conventions.",
-        htmlUrl: "https://github.com/org/repo/pull/1",
       },
     ],
   },
@@ -48,10 +48,10 @@ const weeklyData: WeeklyReportData = {
         {
           prNumber: 1,
           title: "Migrate prover service to JSON-RPC",
+          htmlUrl: "https://github.com/org/repo/pull/1",
           summary: "Migrates the prover service API from gRPC to JSON-RPC and removes protobuf generation.",
           significance: "directional_shift",
           directionSignal: "This suggests stronger alignment with Ethereum JSON-RPC conventions.",
-          htmlUrl: "https://github.com/org/repo/pull/1",
         },
       ],
     },
@@ -88,6 +88,7 @@ describe("delivery localizer", () => {
     expect(localized[0]!.prs[0]!.summary).toBe("将 prover service API 从 gRPC 迁移到 JSON-RPC，去掉 protobuf 生成链路。");
     expect(localized[0]!.prs[0]!.directionSignal).toBe("方向上更贴近 Ethereum 的 JSON-RPC 约定。");
     expect(localized[0]!.prs[0]!.title).toBe("Migrate prover service to JSON-RPC");
+    expect(localized[0]!.prs[0]!.htmlUrl).toBe("https://github.com/org/repo/pull/1");
     expect(dailyData[0]!.prs[0]!.summary).toContain("Migrates the prover service API");
   });
 
@@ -118,25 +119,6 @@ describe("delivery localizer", () => {
     expect(localized.projectHighlights[0]!.highlights[0]!.summary).toBe("将 prover service API 从 gRPC 迁移到 JSON-RPC。");
     expect(localized.projectHighlights[0]!.highlights[0]!.directionSignal).toBe("方向上更贴近 Ethereum 的 JSON-RPC 约定。");
     expect(localized.projectHighlights[0]!.highlights[0]!.title).toBe("Migrate prover service to JSON-RPC");
-  });
-
-  it("preserves htmlUrl in daily localized output", async () => {
-    const generateFn = mock(async () => ({
-      object: { entries: [] },
-      usage: {},
-    }));
-
-    const localized = await localizeDailyDelivery(dailyData, { generateFn, skipCredentialCheck: true });
-    expect(localized[0]!.prs[0]!.htmlUrl).toBe("https://github.com/org/repo/pull/1");
-  });
-
-  it("preserves htmlUrl in weekly localized output", async () => {
-    const generateFn = mock(async () => ({
-      object: { entries: [] },
-      usage: {},
-    }));
-
-    const localized = await localizeWeeklyDelivery(weeklyData, { generateFn, skipCredentialCheck: true });
     expect(localized.projectHighlights[0]!.highlights[0]!.htmlUrl).toBe("https://github.com/org/repo/pull/1");
   });
 
@@ -162,11 +144,11 @@ describe("delivery localizer", () => {
         prs: Array.from({ length: 81 }, (_, i) => ({
           prNumber: i + 1,
           title: `PR ${i + 1}`,
+          htmlUrl: `https://github.com/org/repo/pull/${i + 1}`,
           summary: `English summary ${i + 1}`,
           technicalDetail: null,
           significance: "notable" as const,
           directionSignal: null,
-          htmlUrl: `https://github.com/org/repo/pull/${i + 1}`,
         })),
       },
     ];
