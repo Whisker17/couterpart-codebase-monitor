@@ -5,6 +5,7 @@ import type { GroupedAnalyses } from "../report-generator/templates/daily-card";
 const routinePR = {
   prNumber: 1,
   title: "Routine fix",
+  htmlUrl: "https://github.com/org/repo-a/pull/1",
   summary: "s".repeat(50),
   technicalDetail: null,
   significance: "routine" as const,
@@ -14,6 +15,7 @@ const routinePR = {
 const notablePR = {
   prNumber: 2,
   title: "Notable change",
+  htmlUrl: "https://github.com/org/repo-a/pull/2",
   summary: "s".repeat(50),
   technicalDetail: null,
   significance: "notable" as const,
@@ -69,6 +71,7 @@ describe("formatReport", () => {
       prs: Array.from({ length: 3 }, (_, j) => ({
         prNumber: j + 100,
         title: `Routine PR ${i}-${j}`,
+        htmlUrl: `https://github.com/org/proj/pull/${j + 100}`,
         summary: "routine summary",
         technicalDetail: null,
         significance: "routine" as const,
@@ -101,6 +104,7 @@ describe("formatReport", () => {
       prs: Array.from({ length: 15 }, (_, i) => ({
         prNumber: pi * 100 + i,
         title: `Project ${pi} directional PR ${i}`,
+        htmlUrl: `https://github.com/org/proj/pull/${pi * 100 + i}`,
         summary: longDetail,
         technicalDetail: longDetail,
         significance: "directional_shift" as const,
@@ -123,6 +127,7 @@ describe("formatReport", () => {
       prs: Array.from({ length: 15 }, (_, i) => ({
         prNumber: pi * 100 + i,
         title: `P${pi} PR ${i}`,
+        htmlUrl: `https://github.com/org/proj/pull/${pi * 100 + i}`,
         summary: longDetail,
         technicalDetail: longDetail,
         significance: "directional_shift" as const,
@@ -152,6 +157,7 @@ describe("formatReport", () => {
           {
             prNumber: 1,
             title: "Chinese PR",
+            htmlUrl: "https://github.com/org/proj/pull/1",
             summary: chineseSummary,
             technicalDetail: null,
             significance: "routine" as const,
