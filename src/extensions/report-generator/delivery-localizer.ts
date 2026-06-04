@@ -125,12 +125,18 @@ ${items.map((item) => `- key: ${item.key}\n  text: ${item.text}`).join("\n")}`;
 }
 
 async function localizeItems(items: TextItem[], deps?: LocalizeDeps): Promise<Map<string, string>> {
-  if (items.length === 0) return new Map();
+  if (items.length === 0) {
+    console.log("[Localizer] No items to localize");
+    return new Map();
+  }
   if (!deps?.generateFn && isTestRuntime()) return new Map();
 
   const generateFn = (deps?.generateFn ?? generateObject) as GenerateLocalizedFn;
   const settings = deps?.generateFn ? null : getSettings();
-  if (!deps?.skipCredentialCheck && settings && (!settings.llm.apiKey || !settings.llm.baseUrl)) return new Map();
+  if (!deps?.skipCredentialCheck && settings && (!settings.llm.apiKey || !settings.llm.baseUrl)) {
+    console.warn("[Localizer] LLM credentials missing — skipping localization");
+    return new Map();
+  }
 
   const anthropic = settings
     ? createAnthropic({
@@ -139,6 +145,7 @@ async function localizeItems(items: TextItem[], deps?: LocalizeDeps): Promise<Ma
       })
     : null;
 
+  console.log(`[Localizer] Translating ${items.length} items...`);
   const localized = new Map<string, string>();
   for (let i = 0; i < items.length; i += MAX_ITEMS_PER_CALL) {
     const batch = items.slice(i, i + MAX_ITEMS_PER_CALL);
@@ -147,7 +154,7 @@ async function localizeItems(items: TextItem[], deps?: LocalizeDeps): Promise<Ma
       schema: LocalizedDeliverySchema,
       prompt: buildPrompt(batch, i, items.length),
       maxOutputTokens: Math.min(settings?.llm.maxTokensPerCall ?? 4096, 4096),
-      maxRetries: 0,
+      maxRetries: 2,
     });
 
     for (const entry of result.object.entries) {
@@ -155,6 +162,7 @@ async function localizeItems(items: TextItem[], deps?: LocalizeDeps): Promise<Ma
       if (text) localized.set(entry.key, text);
     }
   }
+  console.log(`[Localizer] Done — ${localized.size}/${items.length} items localized`);
   return localized;
 }
 
@@ -181,7 +189,7 @@ export async function localizeDailyDelivery(
       }
     }
   } catch (err) {
-    console.warn(`[Report] Delivery localization skipped: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[Localizer] Daily localization failed — falling back to English: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return localized;
@@ -222,7 +230,7 @@ export async function localizeWeeklyDelivery(
       }
     }
   } catch (err) {
-    console.warn(`[Report] Weekly delivery localization skipped: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[Localizer] Weekly localization failed — falling back to English: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return localized;
