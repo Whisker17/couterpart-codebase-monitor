@@ -55,16 +55,46 @@ export interface Settings {
   };
 }
 
+export interface SafeConfigSnapshot {
+  budget: {
+    monthlyCap: number;
+    warningThreshold: number;
+    cutoffThreshold: number;
+  };
+  diffTokenBudget: number;
+  maxManifestEntries: number;
+}
+
 let _settings: Settings | null = null;
+let _settingsConfigPath: string | null = null;
 
-export function getSettings(): Settings {
-  if (_settings) return _settings;
+export function _resetSettingsCache(): void {
+  _settings = null;
+}
 
-  const configPath = join(process.cwd(), "config", "settings.json");
-  const raw = readFileSync(configPath, "utf-8");
-  const cfg = JSON.parse(raw) as SettingsConfig;
+export function _setSettingsConfigPath(path: string | null): void {
+  _settingsConfigPath = path;
+}
 
-  _settings = {
+function getSettingsConfigPath(): string {
+  return _settingsConfigPath ?? join(process.cwd(), "config", "settings.json");
+}
+
+function readAndParseSettingsConfig(): SettingsConfig {
+  const raw = readFileSync(getSettingsConfigPath(), "utf-8");
+  return JSON.parse(raw) as SettingsConfig;
+}
+
+function validateSafeFields(cfg: SettingsConfig): void {
+  if (typeof cfg.budget.monthlyCap !== "number") throw new Error("budget.monthlyCap must be a number");
+  if (typeof cfg.budget.warningThreshold !== "number") throw new Error("budget.warningThreshold must be a number");
+  if (typeof cfg.budget.cutoffThreshold !== "number") throw new Error("budget.cutoffThreshold must be a number");
+  if (typeof cfg.llm.diffTokenBudget !== "number") throw new Error("llm.diffTokenBudget must be a number");
+  if (typeof cfg.llm.maxManifestEntries !== "number") throw new Error("llm.maxManifestEntries must be a number");
+}
+
+function buildSettingsFromConfig(cfg: SettingsConfig): Settings {
+  return {
     llm: {
       model: cfg.llm.model,
       baseUrl: process.env[cfg.llm.baseUrlEnvVar] ?? "",
@@ -82,12 +112,52 @@ export function getSettings(): Settings {
     schedule: cfg.schedule,
     budget: cfg.budget,
   };
+}
 
+function snapshotFromSettings(s: Settings): SafeConfigSnapshot {
+  return {
+    budget: { ...s.budget },
+    diffTokenBudget: s.llm.diffTokenBudget,
+    maxManifestEntries: s.llm.maxManifestEntries,
+  };
+}
+
+export function getSettings(): Settings {
+  if (_settings) return _settings;
+  const cfg = readAndParseSettingsConfig();
+  _settings = buildSettingsFromConfig(cfg);
   return _settings;
 }
 
-export function _resetSettingsCache(): void {
-  _settings = null;
+export function reloadSafeConfig(): {
+  snapshot: SafeConfigSnapshot;
+  prevSnapshot: SafeConfigSnapshot | null;
+  changed: boolean;
+} {
+  const prev = _settings ? snapshotFromSettings(_settings) : null;
+
+  let cfg: SettingsConfig;
+  try {
+    cfg = readAndParseSettingsConfig();
+    validateSafeFields(cfg);
+  } catch (e) {
+    if (prev) {
+      console.warn(`[config-reload] Failed to reload settings.json, using cached config: ${e}`);
+      return { snapshot: prev, prevSnapshot: prev, changed: false };
+    }
+    throw new Error(`[config-reload] settings.json invalid and no cached config is available: ${e}`);
+  }
+
+  if (!_settings) {
+    _settings = buildSettingsFromConfig(cfg);
+  } else {
+    _settings.budget = cfg.budget;
+    _settings.llm.diffTokenBudget = cfg.llm.diffTokenBudget;
+    _settings.llm.maxManifestEntries = cfg.llm.maxManifestEntries;
+  }
+
+  const next = snapshotFromSettings(_settings);
+  return { snapshot: next, prevSnapshot: prev, changed: JSON.stringify(prev) !== JSON.stringify(next) };
 }
 
 const REQUIRED_ENV_VARS = ["GITHUB_TOKEN", "LLM_BASE_URL", "LLM_API_KEY"];

@@ -1,5 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import { sendCard } from "../extensions/lark-dispatcher/webhook";
+import { reloadSafeConfig } from "../config/settings";
+import type { SafeConfigSnapshot } from "../config/settings";
+import { reloadTrackedProjects } from "../config/projects";
+import type { TrackedProject } from "../config/projects";
 
 export interface StageResult {
   success: boolean;
@@ -106,10 +110,64 @@ export async function writeHealthAndMaybeAlert(
   }
 }
 
+function logConfigReloadDiff(
+  prevSnapshot: SafeConfigSnapshot | null,
+  nextSnapshot: SafeConfigSnapshot,
+  prevProjects: TrackedProject[] | null,
+  nextProjects: TrackedProject[]
+): void {
+  if (prevSnapshot !== null) {
+    if (prevSnapshot.budget.monthlyCap !== nextSnapshot.budget.monthlyCap) {
+      console.log(
+        `[config-reload] budget.monthlyCap changed: $${prevSnapshot.budget.monthlyCap} -> $${nextSnapshot.budget.monthlyCap}`
+      );
+    }
+    if (prevSnapshot.budget.warningThreshold !== nextSnapshot.budget.warningThreshold) {
+      console.log(
+        `[config-reload] budget.warningThreshold changed: ${prevSnapshot.budget.warningThreshold} -> ${nextSnapshot.budget.warningThreshold}`
+      );
+    }
+    if (prevSnapshot.budget.cutoffThreshold !== nextSnapshot.budget.cutoffThreshold) {
+      console.log(
+        `[config-reload] budget.cutoffThreshold changed: ${prevSnapshot.budget.cutoffThreshold} -> ${nextSnapshot.budget.cutoffThreshold}`
+      );
+    }
+    if (prevSnapshot.diffTokenBudget !== nextSnapshot.diffTokenBudget) {
+      console.log(
+        `[config-reload] llm.diffTokenBudget changed: ${prevSnapshot.diffTokenBudget} -> ${nextSnapshot.diffTokenBudget}`
+      );
+    }
+    if (prevSnapshot.maxManifestEntries !== nextSnapshot.maxManifestEntries) {
+      console.log(
+        `[config-reload] llm.maxManifestEntries changed: ${prevSnapshot.maxManifestEntries} -> ${nextSnapshot.maxManifestEntries}`
+      );
+    }
+  }
+
+  if (prevProjects !== null) {
+    const prevKeys = new Set(prevProjects.map((p) => `${p.org}/${p.repo}`));
+    const nextKeys = new Set(nextProjects.map((p) => `${p.org}/${p.repo}`));
+    const added = nextProjects.filter((p) => !prevKeys.has(`${p.org}/${p.repo}`));
+    const removed = prevProjects.filter((p) => !nextKeys.has(`${p.org}/${p.repo}`));
+    if (added.length > 0 || removed.length > 0) {
+      const parts: string[] = [];
+      if (added.length > 0)
+        parts.push(`+${added.length} (new: ${added.map((p) => `${p.org}/${p.repo}`).join(", ")})`);
+      if (removed.length > 0)
+        parts.push(`-${removed.length} (removed: ${removed.map((p) => `${p.org}/${p.repo}`).join(", ")})`);
+      console.log(`[config-reload] tracked projects changed: ${parts.join(", ")}`);
+    }
+  }
+}
+
 export async function runPipeline(
   stages: PipelineStage[],
   options?: { reportMode?: ReportMode; timezone?: string; healthCheckOptions?: HealthCheckOptions }
 ): Promise<Map<string, StageResult>> {
+  const { snapshot, prevSnapshot } = reloadSafeConfig();
+  const { projects, prevProjects } = reloadTrackedProjects();
+  logConfigReloadDiff(prevSnapshot, snapshot, prevProjects, projects);
+
   const ctx: PipelineContext = {
     stageResults: new Map(),
     reportMode: options?.reportMode ?? "daily",
