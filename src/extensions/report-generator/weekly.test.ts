@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, spyOn, afterEach } from "bun:test";
 
-// aggregateFromDigests is exported for testability
-const { aggregateFromDigests } = await import("./weekly");
+// aggregateFromDigests and fillAbsentDays are exported for testability
+const { aggregateFromDigests, fillAbsentDays } = await import("./weekly");
 import type { WeeklyReportData } from "./weekly";
 import type { DailyDigest } from "./daily";
 
@@ -407,5 +407,160 @@ describe("aggregateFromDigests", () => {
     expect(repoA).toBeDefined();
     expect(repoA.prCount).toBe(4); // 1 (digest) + 3 (fallback)
     expect(result.activitySummary.totalPrs).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 1: fillAbsentDays — absent days (no reports row) get synthetic null entries
+// ---------------------------------------------------------------------------
+
+describe("fillAbsentDays", () => {
+  it("returns 7 entries for an empty rows array (all absent)", () => {
+    const result = fillAbsentDays([], PERIOD_START, PERIOD_END);
+    expect(result).toHaveLength(7);
+    for (const row of result) {
+      expect(row.digest_json).toBeNull();
+    }
+  });
+
+  it("synthetic null entries span the full week with correct period bounds", () => {
+    const result = fillAbsentDays([], PERIOD_START, PERIOD_END);
+    expect(result[0]!.period_start).toBe(PERIOD_START);
+    expect(result[6]!.period_end).toBe(PERIOD_END);
+    // Each synthetic window is contiguous
+    for (let i = 0; i < 6; i++) {
+      expect(result[i + 1]!.period_start).toBe(result[i]!.period_start + 86400);
+    }
+  });
+
+  it("uses the real row for a covered day and null for absent days", () => {
+    const d2start = PERIOD_START + DAY;
+    const d2end = d2start + DAY - 1;
+    const realRow = {
+      digest_json: makeDigestJson(d2start, d2end, [
+        { prNumber: 1, projectId: "org/repo-a", title: "T", summary: "S", significance: "routine" as const, directionSignal: null, htmlUrl: "https://g.com/1" },
+      ]),
+      period_start: d2start,
+      period_end: d2end,
+    };
+
+    const result = fillAbsentDays([realRow], PERIOD_START, PERIOD_END);
+
+    expect(result).toHaveLength(7);
+    // Slot 1 (index 1) corresponds to PERIOD_START + DAY
+    expect(result[1]).toBe(realRow);
+    // All other slots are synthetic null
+    for (let i = 0; i < 7; i++) {
+      if (i !== 1) expect(result[i]!.digest_json).toBeNull();
+    }
+  });
+
+  it("absent-day analyses are included via per-day fallback when digest row is present for another day", () => {
+    // Day 1 has a real digest row; Day 2 is absent (no row in DB — synthetic null injected by fillAbsentDays)
+    const d1start = PERIOD_START;
+    const d1end = d1start + DAY - 1;
+    const d2start = PERIOD_START + DAY;
+    const d2end = d2start + DAY - 1;
+
+    const digestRow = {
+      digest_json: makeDigestJson(d1start, d1end, [
+        { prNumber: 1, projectId: "org/repo-a", title: "T1", summary: "S1", significance: "routine" as const, directionSignal: null, htmlUrl: "https://g.com/1" },
+      ]),
+      period_start: d1start,
+      period_end: d1end,
+    };
+
+    // Simulate: absent day becomes synthetic null row (as fillAbsentDays() produces)
+    const absentDaySyntheticRow = { digest_json: null, period_start: d2start, period_end: d2end };
+
+    const fallbackForAbsentDay: WeeklyReportData = {
+      directionChanges: [],
+      activitySummary: { totalPrs: 2, directionalShiftCount: 0, notableCount: 0, projectCount: 1 },
+      projectHighlights: [{
+        projectId: "org/absent-day-repo",
+        prCount: 2,
+        notableCount: 0,
+        directionalShiftCount: 0,
+        highlights: [{ prNumber: 9, title: "Absent PR", summary: "From absent day", significance: "routine", directionSignal: null, htmlUrl: "https://g.com/9" }],
+      }],
+      periodStartUnix: d2start,
+      periodEndUnix: d2end,
+    };
+
+    const fallback = mock((start: number, end: number): WeeklyReportData => {
+      if (start === d2start) return fallbackForAbsentDay;
+      return emptyFallback(start, end);
+    });
+
+    // Pass the augmented rows (as buildWeeklyReport would after fillAbsentDays)
+    const result = aggregateFromDigests(
+      [digestRow, absentDaySyntheticRow],
+      PERIOD_START, PERIOD_END, fallback
+    );
+
+    // Fallback must be called for the absent day
+    expect(fallback).toHaveBeenCalledWith(d2start, d2end);
+
+    // Analyses from the absent day are included in the weekly report
+    const projectIds = result.projectHighlights.map((p) => p.projectId);
+    expect(projectIds).toContain("org/repo-a");
+    expect(projectIds).toContain("org/absent-day-repo");
+    expect(result.activitySummary.totalPrs).toBe(3); // 1 (digest) + 2 (absent day fallback)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Finding 2: directionChanges signals must not be truncated by highlights cap
+// ---------------------------------------------------------------------------
+
+describe("aggregateFromDigests > mixed-mode directionChanges signals completeness", () => {
+  it("includes all directional signals from a null-digest fallback day even when highlights are capped at 2", () => {
+    const d1start = PERIOD_START;
+    const d1end = d1start + DAY - 1;
+    const d2start = PERIOD_START + DAY;
+    const d2end = d2start + DAY - 1;
+
+    const digestRow = {
+      digest_json: makeDigestJson(d1start, d1end, [
+        { prNumber: 1, projectId: "org/repo-a", title: "T1", summary: "S1", significance: "routine" as const, directionSignal: null, htmlUrl: "https://g.com/1" },
+      ]),
+      period_start: d1start,
+      period_end: d1end,
+    };
+
+    const nullRow = { digest_json: null, period_start: d2start, period_end: d2end };
+
+    // Fallback day has 3 directional-shift PRs, but highlights are capped at 2.
+    // The old code reconstructed signals from highlights and would miss "signal-gamma".
+    const fallbackResult: WeeklyReportData = {
+      directionChanges: [{
+        projectId: "org/repo-b",
+        prCount: 3,
+        signals: ["signal-alpha", "signal-beta", "signal-gamma"],
+      }],
+      activitySummary: { totalPrs: 3, directionalShiftCount: 3, notableCount: 0, projectCount: 1 },
+      projectHighlights: [{
+        projectId: "org/repo-b",
+        prCount: 3,
+        notableCount: 0,
+        directionalShiftCount: 3,
+        highlights: [
+          // Only 2 highlights (capped) — signal-gamma is NOT present here
+          { prNumber: 5, title: "PR 5", summary: "S5", significance: "directional_shift", directionSignal: "signal-alpha", htmlUrl: "https://g.com/5" },
+          { prNumber: 6, title: "PR 6", summary: "S6", significance: "directional_shift", directionSignal: "signal-beta", htmlUrl: "https://g.com/6" },
+        ],
+      }],
+      periodStartUnix: d2start,
+      periodEndUnix: d2end,
+    };
+
+    const result = aggregateFromDigests([digestRow, nullRow], PERIOD_START, PERIOD_END, () => fallbackResult);
+
+    const dc = result.directionChanges.find((d) => d.projectId === "org/repo-b")!;
+    expect(dc).toBeDefined();
+    expect(dc.signals).toContain("signal-alpha");
+    expect(dc.signals).toContain("signal-beta");
+    // This is the key assertion: signal-gamma must appear even though it's not in the capped highlights
+    expect(dc.signals).toContain("signal-gamma");
   });
 });

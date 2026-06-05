@@ -169,6 +169,24 @@ function queryWeeklyFromAnalyses(
   };
 }
 
+// Exported for testing. Fills in synthetic null entries for daily windows with no reports row.
+export function fillAbsentDays(
+  rows: DigestRow[],
+  periodStartUnix: number,
+  periodEndUnix: number
+): DigestRow[] {
+  const result: DigestRow[] = [];
+  for (let i = 0; i < 7; i++) {
+    const windowStart = periodStartUnix + i * 86400;
+    const windowEnd = i < 6 ? windowStart + 86400 - 1 : periodEndUnix;
+    const matchingRow = rows.find(
+      (r) => r.period_start >= windowStart && r.period_start <= windowEnd
+    );
+    result.push(matchingRow ?? { digest_json: null, period_start: windowStart, period_end: windowEnd });
+  }
+  return result;
+}
+
 function isEmptyDigest(digestJson: string | null): boolean {
   if (digestJson === null) return true;
   try {
@@ -252,15 +270,18 @@ export function aggregateFromDigests(
       }
     } else {
       const dayData = fallback(row.period_start, row.period_end);
+      // Build a map of projectId → full signals from directionChanges (not truncated by highlights cap)
+      const daySignalMap = new Map<string, string[]>();
+      for (const dc of dayData.directionChanges) {
+        daySignalMap.set(dc.projectId, dc.signals);
+      }
       for (const proj of dayData.projectHighlights) {
         mergeIntoMap(
           proj.projectId,
           proj.prCount,
           proj.notableCount,
           proj.directionalShiftCount,
-          proj.highlights
-            .filter((h) => h.directionSignal !== null)
-            .map((h) => h.directionSignal!),
+          daySignalMap.get(proj.projectId) ?? [],
           proj.highlights
         );
       }
@@ -332,8 +353,12 @@ export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportDat
     )
     .all(periodStartUnix, periodEndUnix);
 
+  // Inject synthetic null entries for daily windows with no reports row so absent days
+  // trigger the per-day fallback rather than being silently dropped.
+  const augmentedRows = fillAbsentDays(dailyRows, periodStartUnix, periodEndUnix);
+
   return aggregateFromDigests(
-    dailyRows,
+    augmentedRows,
     periodStartUnix,
     periodEndUnix,
     (start, end) => queryWeeklyFromAnalyses(db, start, end)
