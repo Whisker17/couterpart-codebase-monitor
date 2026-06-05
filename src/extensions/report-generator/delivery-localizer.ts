@@ -5,7 +5,7 @@ import { getSettings } from "../../config/settings";
 import type { GroupedAnalyses } from "./templates/daily-card";
 import type { WeeklyReportData } from "./weekly";
 
-const MAX_ITEMS_PER_CALL = 80;
+const MAX_ITEMS_PER_CALL = 25;
 
 const LocalizedDeliverySchema = z.object({
   entries: z.array(
@@ -153,7 +153,7 @@ async function localizeItems(items: TextItem[], deps?: LocalizeDeps): Promise<Ma
       ...(anthropic && settings ? { model: anthropic(settings.llm.model) } : {}),
       schema: LocalizedDeliverySchema,
       prompt: buildPrompt(batch, i, items.length),
-      maxOutputTokens: Math.min(settings?.llm.maxTokensPerCall ?? 4096, 4096),
+      maxOutputTokens: 4096,
       maxRetries: 2,
     });
 
