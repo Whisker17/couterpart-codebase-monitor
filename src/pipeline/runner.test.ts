@@ -1,9 +1,12 @@
-import { describe, it, expect, mock, afterEach } from "bun:test";
+import { describe, it, expect, mock, afterEach, beforeEach } from "bun:test";
 import { join } from "node:path";
 import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { runPipeline, writeHealthAndMaybeAlert } from "./runner";
 import type { PipelineContext, PipelineStage, StageResult } from "./runner";
+import { _resetSettingsCache, _setSettingsConfigPath } from "../config/settings";
+import { _resetProjectsCache, _setProjectsConfigPath } from "../config/projects";
 
 function makeStage(name: string, override?: Partial<StageResult> | (() => never)): PipelineStage {
   return {
@@ -252,5 +255,85 @@ describe("writeHealthAndMaybeAlert", () => {
       if (origUrl !== undefined) process.env.LARK_WEBHOOK_URL = origUrl;
       mock.restore();
     }
+  });
+});
+
+describe("runPipeline — config reload cold start failures", () => {
+  const validSettings = {
+    llm: {
+      model: "test-model",
+      baseUrlEnvVar: "LLM_BASE_URL",
+      apiKeyEnvVar: "LLM_API_KEY",
+      maxTokensPerCall: 4096,
+      diffTokenBudget: 8000,
+      maxManifestEntries: 100,
+    },
+    lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
+    github: { tokenEnvVar: "GITHUB_TOKEN" },
+    schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", timezone: "UTC" },
+    budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
+  };
+  const validProjects = [{ org: "base", repo: "base", url: "https://github.com/base/base" }];
+
+  let settingsTmp: string;
+  let projectsTmp: string;
+
+  beforeEach(() => {
+    const os = require("node:os");
+    settingsTmp = join(os.tmpdir(), `runner-settings-${Date.now()}.json`);
+    projectsTmp = join(os.tmpdir(), `runner-projects-${Date.now()}.json`);
+    writeFileSync(settingsTmp, JSON.stringify(validSettings));
+    writeFileSync(projectsTmp, JSON.stringify(validProjects));
+    _setSettingsConfigPath(settingsTmp);
+    _setProjectsConfigPath(projectsTmp);
+    _resetSettingsCache();
+    _resetProjectsCache();
+    process.env["LLM_BASE_URL"] = "https://example.com/v1";
+    process.env["LLM_API_KEY"] = "sk-test";
+    process.env["GITHUB_TOKEN"] = "ghp_test";
+  });
+
+  afterEach(() => {
+    _resetSettingsCache();
+    _resetProjectsCache();
+    _setSettingsConfigPath(null);
+    _setProjectsConfigPath(null);
+    try {
+      unlinkSync(settingsTmp);
+    } catch {}
+    try {
+      unlinkSync(projectsTmp);
+    } catch {}
+    delete process.env["LLM_BASE_URL"];
+    delete process.env["LLM_API_KEY"];
+    delete process.env["GITHUB_TOKEN"];
+  });
+
+  it("settings cold start failure throws before any stage executes", async () => {
+    writeFileSync(settingsTmp, "bad json");
+    let executed = false;
+    const stage: PipelineStage = {
+      name: "test",
+      execute: async () => {
+        executed = true;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+    await expect(runPipeline([stage])).rejects.toThrow("[config-reload]");
+    expect(executed).toBe(false);
+  });
+
+  it("projects cold start failure throws before any stage executes", async () => {
+    writeFileSync(projectsTmp, "bad json");
+    let executed = false;
+    const stage: PipelineStage = {
+      name: "test",
+      execute: async () => {
+        executed = true;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+    await expect(runPipeline([stage])).rejects.toThrow("[config-reload]");
+    expect(executed).toBe(false);
   });
 });

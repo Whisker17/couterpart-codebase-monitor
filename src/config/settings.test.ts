@@ -1,5 +1,14 @@
 import { describe, it, expect, spyOn, beforeEach, afterEach } from "bun:test";
-import { getSettings, validateEnv, _resetSettingsCache } from "./settings.ts";
+import { writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import {
+  getSettings,
+  validateEnv,
+  _resetSettingsCache,
+  reloadSafeConfig,
+  _setSettingsConfigPath,
+} from "./settings.ts";
 
 beforeEach(() => {
   _resetSettingsCache();
@@ -128,5 +137,196 @@ describe("validateEnv", () => {
     }) as never);
     expect(() => validateEnv()).toThrow("exit:1");
     spy.mockRestore();
+  });
+});
+
+describe("reloadSafeConfig", () => {
+  const baseConfig = {
+    llm: {
+      model: "test-model",
+      baseUrlEnvVar: "LLM_BASE_URL",
+      apiKeyEnvVar: "LLM_API_KEY",
+      maxTokensPerCall: 4096,
+      diffTokenBudget: 8000,
+      maxManifestEntries: 100,
+    },
+    lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
+    github: { tokenEnvVar: "GITHUB_TOKEN" },
+    schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", timezone: "UTC" },
+    budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
+  };
+
+  let tmpPath: string;
+
+  beforeEach(() => {
+    tmpPath = join(tmpdir(), `settings-reload-test-${Date.now()}.json`);
+    writeFileSync(tmpPath, JSON.stringify(baseConfig));
+    _setSettingsConfigPath(tmpPath);
+    _resetSettingsCache();
+    process.env["LLM_BASE_URL"] = "https://example.com/v1";
+    process.env["LLM_API_KEY"] = "sk-test";
+    process.env["GITHUB_TOKEN"] = "ghp_test";
+  });
+
+  afterEach(() => {
+    _resetSettingsCache();
+    _setSettingsConfigPath(null);
+    try {
+      unlinkSync(tmpPath);
+    } catch {}
+    delete process.env["LLM_BASE_URL"];
+    delete process.env["LLM_API_KEY"];
+    delete process.env["GITHUB_TOKEN"];
+  });
+
+  // Test 1: Successful settings reload — budget change reflected
+  it("warm reload reflects updated budget fields in snapshot and getSettings()", () => {
+    reloadSafeConfig();
+    expect(getSettings().budget.monthlyCap).toBe(80);
+
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({ ...baseConfig, budget: { monthlyCap: 120, warningThreshold: 0.9, cutoffThreshold: 1.0 } })
+    );
+
+    const { snapshot, changed } = reloadSafeConfig();
+    expect(snapshot.budget.monthlyCap).toBe(120);
+    expect(changed).toBe(true);
+    expect(getSettings().budget.monthlyCap).toBe(120);
+  });
+
+  // Test 2: Settings JSON parse failure (cache exists) — old cache kept, warning logged
+  it("warm reload with invalid JSON keeps old cache and logs a warning", () => {
+    reloadSafeConfig();
+    const original = getSettings().budget.monthlyCap;
+
+    writeFileSync(tmpPath, "{ not valid json }");
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    const { snapshot, changed } = reloadSafeConfig();
+    expect(changed).toBe(false);
+    expect(snapshot.budget.monthlyCap).toBe(original);
+    expect(getSettings().budget.monthlyCap).toBe(original);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[config-reload]"));
+    warnSpy.mockRestore();
+  });
+
+  // Test 3: Settings validation failure (cache exists) — old cache kept
+  it("warm reload with invalid safe field type keeps old cache", () => {
+    reloadSafeConfig();
+    const original = getSettings().budget.monthlyCap;
+
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({
+        ...baseConfig,
+        budget: { monthlyCap: "not_a_number", warningThreshold: 0.8, cutoffThreshold: 1.0 },
+      })
+    );
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    const { snapshot, changed } = reloadSafeConfig();
+    expect(changed).toBe(false);
+    expect(snapshot.budget.monthlyCap).toBe(original);
+    warnSpy.mockRestore();
+  });
+
+  // Test 4: Settings cold start failure — throws, no stage executed
+  it("cold start with invalid JSON throws without initialising Settings", () => {
+    writeFileSync(tmpPath, "not json at all");
+    expect(() => reloadSafeConfig()).toThrow("[config-reload]");
+  });
+
+  // Test 5: Settings cold start success — full Settings initialised
+  it("cold start with valid config initialises full Settings object", () => {
+    const { snapshot } = reloadSafeConfig();
+    expect(snapshot.budget.monthlyCap).toBe(80);
+    expect(snapshot.diffTokenBudget).toBe(8000);
+    expect(snapshot.maxManifestEntries).toBe(100);
+    const s = getSettings();
+    expect(s.llm.model).toBe("test-model");
+    expect(s.github.token).toBe("ghp_test");
+    expect(s.schedule.dailyCron).toBe("0 9 * * *");
+  });
+
+  // Test 6: Unsafe fields unchanged on warm reload
+  it("warm reload does not mutate llm.model, schedule, or github token", () => {
+    reloadSafeConfig();
+    const originalModel = getSettings().llm.model;
+    const originalCron = getSettings().schedule.dailyCron;
+    const originalToken = getSettings().github.token;
+
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({
+        llm: {
+          model: "gpt-4o",
+          baseUrlEnvVar: "OTHER_BASE_URL",
+          apiKeyEnvVar: "OTHER_API_KEY",
+          maxTokensPerCall: 8192,
+          diffTokenBudget: 12000,
+          maxManifestEntries: 200,
+        },
+        lark: { webhookUrlEnvVar: "OTHER_WEBHOOK" },
+        github: { tokenEnvVar: "OTHER_TOKEN" },
+        schedule: { dailyCron: "0 10 * * *", weeklyCron: "0 10 * * 1", timezone: "America/New_York" },
+        budget: { monthlyCap: 100, warningThreshold: 0.8, cutoffThreshold: 1.0 },
+      })
+    );
+
+    reloadSafeConfig();
+
+    const s = getSettings();
+    // Safe fields updated
+    expect(s.budget.monthlyCap).toBe(100);
+    expect(s.llm.diffTokenBudget).toBe(12000);
+    expect(s.llm.maxManifestEntries).toBe(200);
+    // Unsafe fields unchanged
+    expect(s.llm.model).toBe(originalModel);
+    expect(s.schedule.dailyCron).toBe(originalCron);
+    expect(s.github.token).toBe(originalToken);
+  });
+});
+
+describe("getSettings — validation path", () => {
+  let tmpPath: string;
+
+  beforeEach(() => {
+    tmpPath = join(tmpdir(), `settings-validation-test-${Date.now()}.json`);
+    _setSettingsConfigPath(tmpPath);
+    _resetSettingsCache();
+  });
+
+  afterEach(() => {
+    _resetSettingsCache();
+    _setSettingsConfigPath(null);
+    try {
+      unlinkSync(tmpPath);
+    } catch {}
+  });
+
+  // Regression: getSettings() must throw on invalid safe fields so that when
+  // a consumer (e.g. scheduler) calls getSettings() before runPipeline(), an
+  // invalid budget.monthlyCap is caught at cold-start — not silently cached and
+  // later treated as a warm-reload warning.
+  it("throws when budget.monthlyCap is not a number", () => {
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({
+        llm: {
+          model: "test-model",
+          baseUrlEnvVar: "LLM_BASE_URL",
+          apiKeyEnvVar: "LLM_API_KEY",
+          maxTokensPerCall: 4096,
+          diffTokenBudget: 8000,
+          maxManifestEntries: 100,
+        },
+        lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
+        github: { tokenEnvVar: "GITHUB_TOKEN" },
+        schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", timezone: "UTC" },
+        budget: { monthlyCap: "not_a_number", warningThreshold: 0.8, cutoffThreshold: 1.0 },
+      })
+    );
+    expect(() => getSettings()).toThrow("budget.monthlyCap must be a number");
   });
 });
