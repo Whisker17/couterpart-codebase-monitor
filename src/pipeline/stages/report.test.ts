@@ -445,11 +445,16 @@ describe("report stage", () => {
     expect(mockLocalizeWeeklyDelivery).toHaveBeenCalledTimes(1);
   });
 
-  it("does not create reports row when no analyses exist", async () => {
+  it("creates reports row with empty digest when no analyses exist", async () => {
     const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
-    const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports").get()!;
-    expect(count.n).toBe(0);
+    const row = testDb.query<{ digest_json: string; content: string }, []>("SELECT digest_json, content FROM reports WHERE type='daily'").get();
+    expect(row).toBeDefined();
+    const digest = JSON.parse(row!.digest_json);
+    expect(digest.projects).toHaveLength(0);
+    expect(digest.activitySummary.totalPrs).toBe(0);
+    expect(digest.activitySummary.directionalShiftCount).toBe(0);
+    expect(digest.activitySummary.notableCount).toBe(0);
   });
 
   it("does not create report_deliveries row when no analyses exist", async () => {

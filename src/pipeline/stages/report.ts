@@ -80,6 +80,18 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
   const deliverableGrouped = reportData.grouped.filter((g) => g.prs.length > 0);
   if (deliverableGrouped.length === 0) {
     console.log("[Report] Daily: no deliverable PRs for this period, skipping report and delivery");
+    try {
+      db.run(
+        `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness, digest_json)
+         VALUES ('daily', ?, ?, '[]', 'null', ?, ?)
+         ON CONFLICT(type, period_start, period_end)
+         DO UPDATE SET digest_json = excluded.digest_json,
+                       completeness = excluded.completeness`,
+        [reportData.periodStartUnix, reportData.periodEndUnix, JSON.stringify(completeness), JSON.stringify(reportData.digest)]
+      );
+    } catch (err) {
+      console.error(`[Report] Empty digest upsert failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     if (ctx.reportMode === "weekly") {
       const weeklyErrors = await generateWeeklyReport(db, completeness, localizeWeeklyDelivery, timezone);
       if (weeklyErrors.length > 0) {
