@@ -95,36 +95,83 @@ function significanceBadge(significance: ProjectAnalysis["prs"][number]["signifi
   return "⚪ ROUTINE";
 }
 
+function projectSignificanceRank(project: ProjectAnalysis): number {
+  if (project.directionalShiftCount > 0) return 0;
+  if (project.notableCount > 0) return 1;
+  return 2;
+}
+
+export function buildSummaryContent(
+  analyses: GroupedAnalyses,
+  options?: { partialWarning?: string; budgetLine?: string }
+): string {
+  const { partialWarning, budgetLine } = options ?? {};
+
+  // Metric summary line
+  const repoCount = analyses.length;
+  let totalPr = 0;
+  let directionalCount = 0;
+  let notableCount = 0;
+  let routineCount = 0;
+  for (const project of analyses) {
+    totalPr += project.prCount;
+    directionalCount += project.directionalShiftCount;
+    notableCount += project.notableCount;
+    routineCount += project.prCount - project.directionalShiftCount - project.notableCount;
+  }
+
+  const metricParts: string[] = [`${repoCount} repos`, `${totalPr} PR`];
+  if (directionalCount > 0) metricParts.push(`🔴 ×${directionalCount}`);
+  if (notableCount > 0) metricParts.push(`🟡 ×${notableCount}`);
+  if (routineCount > 0) metricParts.push(`⚪ ×${routineCount}`);
+  const metricLine = metricParts.join(" · ");
+
+  // Signal table sorted by significance: directional_shift > notable > routine-only
+  const sortedProjects = [...analyses].sort(
+    (a, b) => projectSignificanceRank(a) - projectSignificanceRank(b)
+  );
+
+  const signalRows: string[] = [];
+  for (const project of sortedProjects) {
+    const rank = projectSignificanceRank(project);
+    if (rank === 2) {
+      const routinePrCount = project.prCount - project.directionalShiftCount - project.notableCount;
+      signalRows.push(`⚪ ${project.projectId} — ${routinePrCount} routine PR`);
+    } else {
+      const emoji = rank === 0 ? "🔴" : "🟡";
+      const targetSig: "directional_shift" | "notable" =
+        rank === 0 ? "directional_shift" : "notable";
+      // Take first PR in array at the highest significance level
+      const targetPr = project.prs.find((pr) => pr.significance === targetSig)!;
+      const rawSignal = targetPr.directionSignal ?? targetPr.summary;
+      const strippedSignal = stripCounterpartRecommendations(rawSignal);
+      let signal = strippedSignal.length > 60 ? `${strippedSignal.slice(0, 60)}…` : strippedSignal;
+      signalRows.push(`${emoji} **${project.projectId}** — ${signal}`);
+    }
+  }
+
+  const signalTable =
+    signalRows.length > 0 ? signalRows.join("\n") : "_No projects to display._";
+
+  // Element order: partial warning → metric line → budget warning → signal table
+  const parts: string[] = [];
+  if (partialWarning) parts.push(`⚠ ${partialWarning}`);
+  parts.push(metricLine);
+  if (budgetLine?.includes("⚠")) parts.push(budgetLine);
+  parts.push(signalTable);
+
+  return parts.join("\n");
+}
+
 export function buildDailyCard(
   date: string,
   projectAnalyses: GroupedAnalyses,
   partialWarning?: string,
   budgetLine?: string
 ): LarkCard {
-  // Summary section
-  const summaryLines: string[] = [];
-  if (partialWarning) {
-    summaryLines.push(`⚠ ${partialWarning}`);
-    summaryLines.push("");
-  }
-
-  for (const project of projectAnalyses) {
-    const parts: string[] = [`${project.projectId}: ${project.prCount} PR${project.prCount !== 1 ? "s" : ""}`];
-    if (project.directionalShiftCount > 0) {
-      const signal = project.topDirectionSignal ? ` — ${project.topDirectionSignal}` : "";
-      parts.push(`${project.directionalShiftCount} directional shift${signal}`);
-    } else if (project.notableCount > 0) {
-      parts.push(`${project.notableCount} notable`);
-    } else {
-      parts.push("routine");
-    }
-    summaryLines.push(`* ${parts.join(", ")}`);
-  }
-
-  const summaryContent = `**Summary**\n${summaryLines.join("\n")}`;
+  const summaryContent = buildSummaryContent(projectAnalyses, { partialWarning, budgetLine });
 
   // Determine whether notable/directional PRs exist across all projects.
-  // The detail panel starts expanded when there is signal worth surfacing.
   const hasSignificantPrs = projectAnalyses.some(
     (p) => p.directionalShiftCount > 0 || p.notableCount > 0
   );
@@ -182,7 +229,8 @@ export function buildDailyCard(
     },
   ];
 
-  if (budgetLine) {
+  // Budget dedup: warning budget is in summary area; non-warning budget goes to card bottom only
+  if (budgetLine && !budgetLine.includes("⚠")) {
     elements.push({ tag: "hr" });
     elements.push({ tag: "markdown", content: budgetLine });
   }

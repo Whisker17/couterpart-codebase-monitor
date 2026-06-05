@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { buildDailyCard, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate } from "./daily-card";
+import { buildDailyCard, buildSummaryContent, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate } from "./daily-card";
 import type { GroupedAnalyses } from "./daily-card";
 
 const sampleAnalyses: GroupedAnalyses = [
@@ -112,25 +112,30 @@ describe("buildDailyCard", () => {
     expect(card.header.title.content).toContain("2026-06-05");
   });
 
-  it("elements include a markdown summary element", () => {
+  it("elements include a markdown summary element with metric line", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
     const markdown = card.elements.find((e) => e.tag === "markdown");
     expect(markdown).toBeDefined();
-    expect((markdown as { tag: "markdown"; content: string }).content).toContain("Summary");
+    const content = (markdown as { tag: "markdown"; content: string }).content;
+    expect(content).toContain("repos");
+    expect(content).toContain("PR");
   });
 
-  it("summary lists each project's PR count and notable changes", () => {
+  it("summary metric line and signal table list all projects with new format", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
     const markdown = card.elements.find((e) => e.tag === "markdown") as {
       tag: "markdown";
       content: string;
     };
-    expect(markdown.content).toContain("org/repo-a");
-    expect(markdown.content).toContain("2 PRs");
-    expect(markdown.content).toContain("directional shift");
+    // Metric line: 2 repos, 3 PRs (1 directional + 2 routine)
+    expect(markdown.content).toContain("2 repos");
+    expect(markdown.content).toContain("3 PR");
+    expect(markdown.content).toContain("🔴 ×1");
+    // Signal table: directional project bold, routine project plain
+    expect(markdown.content).toContain("**org/repo-a**");
     expect(markdown.content).toContain("migrating auth to OAuth2");
     expect(markdown.content).toContain("org/repo-b");
-    expect(markdown.content).toContain("routine");
+    expect(markdown.content).toContain("routine PR");
   });
 
   it("elements include an hr divider", () => {
