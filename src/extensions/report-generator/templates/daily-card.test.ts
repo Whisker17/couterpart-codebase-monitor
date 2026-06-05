@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { buildDailyCard, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink } from "./daily-card";
+import { buildDailyCard, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate } from "./daily-card";
 import type { GroupedAnalyses } from "./daily-card";
 
 const sampleAnalyses: GroupedAnalyses = [
@@ -384,6 +384,128 @@ describe("formatMarkdownLink", () => {
 
   it("returns plain label when URL is whitespace-only", () => {
     expect(formatMarkdownLink("#42 Some PR", "   ")).toBe("#42 Some PR");
+  });
+});
+
+describe("resolveHeaderTemplate", () => {
+  it("returns 'blue' for all routine analyses", () => {
+    expect(resolveHeaderTemplate(routineOnlyAnalyses)).toBe("blue");
+  });
+
+  it("returns 'blue' for empty analyses", () => {
+    expect(resolveHeaderTemplate([])).toBe("blue");
+  });
+
+  it("returns 'yellow' when only notable PRs are present (no directional_shift)", () => {
+    const notableAnalyses: GroupedAnalyses = [
+      {
+        projectId: "org/repo-n",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 600,
+            title: "Notable change",
+            htmlUrl: "https://github.com/org/repo-n/pull/600",
+            summary: "A notable improvement",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    expect(resolveHeaderTemplate(notableAnalyses)).toBe("yellow");
+  });
+
+  it("returns 'orange' when any PR has directional_shift", () => {
+    expect(resolveHeaderTemplate(sampleAnalyses)).toBe("orange");
+  });
+
+  it("returns 'orange' even if there are also notable and routine PRs", () => {
+    const mixed: GroupedAnalyses = [
+      {
+        projectId: "org/repo-m",
+        prCount: 3,
+        directionalShiftCount: 1,
+        notableCount: 1,
+        topDirectionSignal: "major shift",
+        prs: [
+          {
+            prNumber: 700,
+            title: "Routine fix",
+            htmlUrl: "https://github.com/org/repo-m/pull/700",
+            summary: "Routine",
+            technicalDetail: null,
+            significance: "routine",
+            directionSignal: null,
+          },
+          {
+            prNumber: 701,
+            title: "Notable feature",
+            htmlUrl: "https://github.com/org/repo-m/pull/701",
+            summary: "Notable",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+          {
+            prNumber: 702,
+            title: "Breaking change",
+            htmlUrl: "https://github.com/org/repo-m/pull/702",
+            summary: "Directional",
+            technicalDetail: null,
+            significance: "directional_shift",
+            directionSignal: "major shift",
+          },
+        ],
+      },
+    ];
+    expect(resolveHeaderTemplate(mixed)).toBe("orange");
+  });
+});
+
+describe("buildDailyCard header.template", () => {
+  it("uses 'blue' header for routine-only analyses", () => {
+    const card = buildDailyCard("2026-06-05", routineOnlyAnalyses);
+    expect(card.header.template).toBe("blue");
+  });
+
+  it("uses 'orange' header when directional_shift PRs are present", () => {
+    const card = buildDailyCard("2026-06-05", sampleAnalyses);
+    expect(card.header.template).toBe("orange");
+  });
+
+  it("uses 'yellow' header when only notable PRs are present", () => {
+    const notableAnalyses: GroupedAnalyses = [
+      {
+        projectId: "org/repo-n2",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 800,
+            title: "Notable",
+            htmlUrl: "https://github.com/org/repo-n2/pull/800",
+            summary: "Notable change",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    const card = buildDailyCard("2026-06-05", notableAnalyses);
+    expect(card.header.template).toBe("yellow");
+  });
+
+  it("uses 'blue' header for empty analyses", () => {
+    const card = buildDailyCard("2026-06-05", []);
+    expect(card.header.template).toBe("blue");
   });
 });
 
