@@ -4,13 +4,32 @@
 
 ## 前置
 
-如果服务跑在 Docker 里，先进容器：
+VPS 上没有 `sqlite3`，下面统一用 `docker compose exec monitor bun -e` 查库，数据库路径为 `/app/data/monitor.db`。
+
+---
+
+## Docker 运维
 
 ```bash
-docker compose exec monitor sh
-```
+# 查看容器状态
+docker compose ps
 
-如果 VPS 上没有 `sqlite3`，下面统一用 `bun -e` 查库。
+# 查看实时日志
+docker compose logs -f --tail=50
+
+# 查看最近 6 小时的关键事件
+docker compose logs --since 6h 2>&1 | grep -E '\[Scheduler\]|\[Pipeline\]|\[Report\]|\[Dispatch\]|\[Collect\]|\[Analyze\]'
+
+# 更新代码并重启（有代码变更时）
+git pull origin main
+docker compose down
+docker compose up -d --build
+
+# 强制重建（依赖有变更时）
+docker compose down
+docker system prune -a -f   # 清理旧镜像（磁盘紧张时用）
+docker compose up -d --build
+```
 
 ---
 
@@ -18,10 +37,15 @@ docker compose exec monitor sh
 
 ```bash
 # 最近一次运行是否成功
-cat data/health.json
+docker compose exec monitor cat data/health.json
 
-# Docker 日志（最近 6 小时的关键事件）
-docker compose logs --since 6h 2>&1 | grep -E '\[Scheduler\]|\[Pipeline\]|\[Report\]|\[Dispatch\]'
+# 查看最新的 collect 时间（各项目上次同步到哪里）
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+console.log(db.query('SELECT id, last_synced_at, datetime(last_synced_at, \"unixepoch\") as synced_utc FROM projects').all());
+db.close();
+"
 ```
 
 ---
@@ -54,23 +78,25 @@ console.log('weekly endUnix:  ', p.endUnix, ' →', new Date(p.endUnix*1000).toI
 
 ## 2. Collect 阶段 — 抓了多少 PR
 
+将 `$START` / `$END` 替换为第 1 步算出的 unix 秒数。
+
 ```bash
 # 按项目统计 PR 数量
-sqlite3 data/monitor.db "
-SELECT project_id, COUNT(*) as pr_count
-FROM pull_requests
-WHERE merged_at BETWEEN $START AND $END
-GROUP BY project_id;
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+const START = \$START, END = \$END;
+console.log(db.query('SELECT project_id, COUNT(*) as pr_count FROM pull_requests WHERE merged_at BETWEEN ? AND ? GROUP BY project_id').all(START, END));
+db.close();
 "
 
-# 查看具体 PR 列表
-sqlite3 data/monitor.db "
-SELECT project_id, pr_number, title, author,
-       datetime(merged_at, 'unixepoch') as merged_utc,
-       diff_status, analysis_status
-FROM pull_requests
-WHERE merged_at BETWEEN $START AND $END
-ORDER BY project_id, merged_at;
+# 查看具体 PR 列表（diff 状态 + 分析状态）
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+const START = \$START, END = \$END;
+console.log(db.query('SELECT project_id, pr_number, title, diff_status, analysis_status FROM pull_requests WHERE merged_at BETWEEN ? AND ? ORDER BY project_id, merged_at').all(START, END));
+db.close();
 "
 ```
 
@@ -83,24 +109,22 @@ ORDER BY project_id, merged_at;
 ## 3. Analyze 阶段 — LLM 分析结论
 
 ```bash
-# 每个 PR 的分析结果
-sqlite3 -header -column data/monitor.db "
-SELECT a.id, p.project_id, p.pr_number, p.title,
-       a.significance, a.direction_signal,
-       substr(a.summary, 1, 80) as summary_preview,
-       a.model_id,
-       a.input_tokens, a.output_tokens,
-       printf('\$%.4f', a.estimated_cost_usd) as cost
-FROM analyses a
-JOIN pull_requests p ON a.pr_id = p.id
-WHERE p.merged_at BETWEEN $START AND $END
-ORDER BY
-  CASE a.significance
-    WHEN 'directional_shift' THEN 0
-    WHEN 'notable' THEN 1
-    ELSE 2
-  END,
-  p.project_id;
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+const START = \$START, END = \$END;
+const rows = db.query(\`
+  SELECT a.id, p.project_id, p.pr_number, p.title,
+         a.significance, a.direction_signal,
+         substr(a.summary, 1, 100) as summary_preview,
+         a.input_tokens, a.output_tokens, a.estimated_cost_usd
+  FROM analyses a
+  JOIN pull_requests p ON a.pr_id = p.id
+  WHERE p.merged_at BETWEEN ? AND ?
+  ORDER BY CASE a.significance WHEN 'directional_shift' THEN 0 WHEN 'notable' THEN 1 ELSE 2 END, p.project_id
+\`).all(START, END);
+console.log(rows);
+db.close();
 "
 ```
 
@@ -114,18 +138,20 @@ ORDER BY
 ## 4. Analysis Inputs — LLM 实际看到了什么
 
 ```bash
-sqlite3 -header -column data/monitor.db "
-SELECT ai.analysis_id,
-       p.project_id, p.pr_number,
-       ai.input_quality,
-       ai.diff_included_files, ai.diff_total_files,
-       ai.diff_truncated,
-       ai.prompt_version
-FROM analysis_inputs ai
-JOIN analyses a ON ai.analysis_id = a.id
-JOIN pull_requests p ON a.pr_id = p.id
-WHERE p.merged_at BETWEEN $START AND $END
-ORDER BY p.project_id;
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+const START = \$START, END = \$END;
+console.log(db.query(\`
+  SELECT p.project_id, p.pr_number, ai.input_quality,
+         ai.diff_included_files, ai.diff_total_files, ai.diff_truncated
+  FROM analysis_inputs ai
+  JOIN analyses a ON ai.analysis_id = a.id
+  JOIN pull_requests p ON a.pr_id = p.id
+  WHERE p.merged_at BETWEEN ? AND ?
+  ORDER BY p.project_id
+\`).all(START, END));
+db.close();
 "
 ```
 
@@ -139,27 +165,24 @@ ORDER BY p.project_id;
 ## 5. Report 阶段 — 报告生成和投递
 
 ```bash
-# 查看报告记录
-sqlite3 -header -column data/monitor.db "
-SELECT id, type,
-       datetime(period_start, 'unixepoch') as period_start_utc,
-       datetime(period_end, 'unixepoch') as period_end_utc,
-       completeness,
-       datetime(created_at, 'unixepoch') as created_utc
-FROM reports
-ORDER BY created_at DESC
-LIMIT 10;
+# 查看最近报告记录
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+console.log(db.query('SELECT id, type, period_start, period_end, completeness FROM reports ORDER BY created_at DESC LIMIT 10').all());
+db.close();
 "
 
 # 查看投递状态
-sqlite3 -header -column data/monitor.db "
-SELECT r.type, r.id as report_id,
-       d.card_index, d.status, d.lark_message_id,
-       datetime(d.sent_at, 'unixepoch') as sent_utc
-FROM report_deliveries d
-JOIN reports r ON d.report_id = r.id
-ORDER BY d.id DESC
-LIMIT 10;
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+console.log(db.query(\`
+  SELECT r.type, r.id as report_id, d.card_index, d.status, d.lark_message_id
+  FROM report_deliveries d JOIN reports r ON d.report_id = r.id
+  ORDER BY d.id DESC LIMIT 10
+\`).all());
+db.close();
 "
 ```
 
@@ -174,19 +197,15 @@ LIMIT 10;
 
 ```bash
 # 列出所有报告文件
-ls -la data/reports/
+docker compose exec monitor ls -la data/reports/
 
-# 查看最新日报的卡片标题和摘要
-cat data/reports/daily-2026-06-03.json | python3 -m json.tool | head -40
-
-# 如果没有 python3，用 bun
-bun -e "
+# 查看某一天报告内容（替换日期）
+docker compose exec monitor bun -e "
 const text = await Bun.file('data/reports/daily-2026-06-03.json').text();
 const r = JSON.parse(text);
 const cards = Array.isArray(r) ? r : [r];
 for (const c of cards) {
   console.log('Title:', c.header?.title?.content);
-  console.log('Template:', c.header?.template);
   for (const el of c.elements ?? []) {
     if (el.tag === 'markdown') console.log(el.content.slice(0, 300), '\n');
   }
@@ -200,24 +219,21 @@ for (const c of cards) {
 
 ```bash
 # 本月 LLM 成本
-sqlite3 data/monitor.db "
-SELECT COUNT(*) as total_analyses,
-       SUM(input_tokens) as total_input,
-       SUM(output_tokens) as total_output,
-       printf('\$%.2f', SUM(estimated_cost_usd)) as total_cost
-FROM analyses
-WHERE analyzed_at >= unixepoch('now', 'start of month');
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+const monthStart = Math.floor(new Date(new Date().toISOString().slice(0,7) + '-01').getTime() / 1000);
+console.log(db.query('SELECT COUNT(*) as total_analyses, SUM(input_tokens) as total_input, SUM(output_tokens) as total_output, SUM(estimated_cost_usd) as total_cost FROM analyses WHERE analyzed_at >= ?').get(monthStart));
+db.close();
 "
 
-# 按天统计成本趋势
-sqlite3 -header -column data/monitor.db "
-SELECT date(analyzed_at, 'unixepoch') as day,
-       COUNT(*) as analyses,
-       printf('\$%.2f', SUM(estimated_cost_usd)) as cost
-FROM analyses
-WHERE analyzed_at >= unixepoch('now', '-30 days')
-GROUP BY day
-ORDER BY day;
+# 按天统计成本趋势（最近 30 天）
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+const since = Math.floor(Date.now()/1000) - 30*86400;
+console.log(db.query('SELECT date(analyzed_at, \"unixepoch\") as day, COUNT(*) as analyses, SUM(estimated_cost_usd) as cost FROM analyses WHERE analyzed_at >= ? GROUP BY day ORDER BY day').all(since));
+db.close();
 "
 ```
 
@@ -225,10 +241,8 @@ ORDER BY day;
 
 ## 8. 审计导出
 
-导出指定时间段的分析记录为 JSON 文件：
-
 ```bash
-bun run src/index.ts --export-audit \
+docker compose exec monitor bun run src/index.ts --export-audit \
   --since 2026-06-03 \
   --until 2026-06-04 \
   --output data/audit-20260603.json
@@ -239,15 +253,58 @@ bun run src/index.ts --export-audit \
 ## 9. 手动触发 pipeline
 
 ```bash
-# 日报模式（不发送 Lark）
-bun run src/e2e-run.ts --mode daily --no-dispatch
+# 日报（不发 Lark，用于调试）
+docker compose exec monitor bun run src/e2e-run.ts --mode daily --no-dispatch
 
-# 日报模式（发送 Lark）
-bun run src/e2e-run.ts --mode daily
+# 日报（发 Lark）
+docker compose exec monitor bun run src/e2e-run.ts --mode daily
 
-# 周报模式
-bun run src/e2e-run.ts --mode weekly
+# 周报
+docker compose exec monitor bun run src/e2e-run.ts --mode weekly
 ```
+
+---
+
+## 10. 重发 / 重跑某条报告
+
+如果 dispatch 跳过了（status 已是 sent），手动改回 pending 再跑：
+
+```bash
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+db.run(\"UPDATE report_deliveries SET status = 'pending', sent_at = NULL WHERE status = 'sent'\");
+db.run('UPDATE reports SET sent_at = NULL WHERE sent_at IS NOT NULL');
+console.log('after:', db.query('SELECT id, status FROM report_deliveries').all());
+db.close();
+"
+
+# 然后重新跑（只有 dispatch 会有实际动作）
+docker compose exec monitor bun run src/e2e-run.ts --mode daily
+```
+
+---
+
+## 11. 历史数据回填
+
+将某个日期之后的 PR 全部重新 collect + analyze（用于数据补录）：
+
+```bash
+# 把所有项目的 last_synced_at 设为指定日期（存秒）
+docker compose exec monitor bun -e "
+import { Database } from 'bun:sqlite';
+const db = new Database('/app/data/monitor.db');
+const since = Math.floor(new Date('2026-06-01T00:00:00Z').getTime() / 1000);
+db.run('UPDATE projects SET last_synced_at = ?', [since]);
+console.log('updated:', db.query('SELECT id, last_synced_at FROM projects').all());
+db.close();
+"
+
+# 然后跑 e2e，collect 会从该日期重新抓取
+docker compose exec monitor bun run src/e2e-run.ts --mode daily
+```
+
+注意：已经存在的 PR 会因为 `ON CONFLICT` 被 upsert 跳过分析，只有真正没有 analysis 记录的 PR 才会走 LLM。
 
 ---
 

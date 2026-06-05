@@ -38,6 +38,17 @@ Replace the current bullet-list summary with a two-part structure:
 ```
 Lark markdown renders in proportional fonts — CSS-style pill buttons are not achievable. Use `·`-separated plain text instead. Omit a segment if count is zero (e.g. no directional shifts → omit `🔴 ×0`).
 
+**Summary element ordering**
+
+The first markdown element should keep all above-the-fold status signals together:
+
+1. Partial warning, if present: `⚠ {partialWarning}`
+2. Metric summary
+3. High-budget warning, if `budgetLine` contains `⚠`
+4. Signal table
+
+Non-warning budget lines can remain at the bottom of the card, after the detail panels. This keeps routine budget visibility without pushing the day's engineering signal down.
+
 **Part 2 — Signal table**
 One row per project, always listing all projects. Lark markdown uses proportional fonts so column alignment is not attempted; format is:
 ```
@@ -61,7 +72,7 @@ Replace the single `collapsible_panel` with one panel per project that has at le
 **Panel header:** `{emoji} {projectId} · {N} PR`
 - emoji = 🔴 if any directional_shift, 🟡 if only notable
 
-**Default expanded:** repos with `directional_shift` or `notable` PRs → `expanded: true`
+**Default expanded:** repos with `directional_shift` PRs → `expanded: true`. Repos with only `notable` PRs default to collapsed, unless there are no directional panels, in which case expand the first one or two highest-priority notable repos. This keeps the first screen focused while still making the strongest signal immediately visible.
 
 **Panel body content (unchanged from current logic):**
 - Significant PRs (directional + notable) shown in full: link, badge, summary, direction signal
@@ -116,6 +127,6 @@ No changes to: `weekly-card.ts` (deferred — see §4), `formatter.ts` (size-bas
 
 - Card interactivity (Lark cards are read-only)
 - Changing what data is collected or analyzed
-- Mobile vs desktop layout (Lark renders `wide_screen_mode: true` per existing config)
+- Separate mobile-specific layout. The implementation still must verify Lark wrapping/readability with long repo names, Chinese signals, and a 10-repo sample; `wide_screen_mode: true` does not remove mobile readability risk.
 - Pagination or multi-card splitting logic (no change to `formatter.ts`)
 - Weekly card UX (deferred to WHI-136 digest architecture + WHI-141/143 Mantle counterpart check data structures)
