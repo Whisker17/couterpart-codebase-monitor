@@ -1,0 +1,23 @@
+{
+  "mantleTargets": [
+    {
+      "projectId": "mantle/reth",
+      "tags": ["reth", "execution-client", "l2", "ethereum"],
+      "notes": "Mantle reth-based sequencer/execution client target"
+    }
+  ],
+  "counterpartRelationships": [
+    {
+      "source": "base/base",
+      "targets": ["mantle/reth"],
+      "relationship": "manual",
+      "reason": "Base and Mantle both track reth / OP Stack execution-client evolution"
+    },
+    {
+      "source": "ethereum-optimism/op-geth",
+      "targets": ["mantle/reth"],
+      "relationship": "manual",
+      "reason": "OP Stack execution layer changes may affect Mantle execution-client strategy"
+    }
+  ]
+}
