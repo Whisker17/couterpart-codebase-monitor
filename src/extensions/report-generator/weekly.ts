@@ -5,6 +5,8 @@ import type { DailyDigest } from "./daily";
 import { getMantleConfig, getTrackedProjects } from "../../config/projects";
 import { scoreCandidate } from "./weekly-relevance";
 import type { WeeklyCandidate } from "./weekly-relevance";
+import { buildCounterpartChecks } from "./counterpart-check";
+import type { CounterpartCheckItem } from "./counterpart-check";
 
 interface WeeklyAnalysisRow {
   id: number;
@@ -49,6 +51,7 @@ export interface WeeklyReportData {
     projectCount: number;
   };
   projectHighlights: WeeklyProjectSummary[];
+  counterpartChecks: CounterpartCheckItem[];
   periodStartUnix: number;
   periodEndUnix: number;
 }
@@ -101,6 +104,7 @@ function queryWeeklyFromAnalyses(
       directionChanges: [],
       activitySummary: { totalPrs: 0, directionalShiftCount: 0, notableCount: 0, projectCount: 0 },
       projectHighlights: [],
+      counterpartChecks: [],
       periodStartUnix,
       periodEndUnix,
     };
@@ -167,6 +171,7 @@ function queryWeeklyFromAnalyses(
       projectCount: projectMap.size,
     },
     projectHighlights,
+    counterpartChecks: [],
     periodStartUnix,
     periodEndUnix,
   };
@@ -340,6 +345,7 @@ export function aggregateFromDigests(
       projectCount: projectMap.size,
     },
     projectHighlights,
+    counterpartChecks: [],
     periodStartUnix,
     periodEndUnix,
   };
@@ -360,12 +366,17 @@ export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportDat
   // trigger the per-day fallback rather than being silently dropped.
   const augmentedRows = fillAbsentDays(dailyRows, periodStartUnix, periodEndUnix);
 
-  return aggregateFromDigests(
+  const base = aggregateFromDigests(
     augmentedRows,
     periodStartUnix,
     periodEndUnix,
     (start, end) => queryWeeklyFromAnalyses(db, start, end)
   );
+
+  const candidates = selectWeeklyCandidates(timezone, now);
+  const counterpartChecks = buildCounterpartChecks(candidates);
+
+  return { ...base, counterpartChecks };
 }
 
 interface CandidateAnalysisRow {

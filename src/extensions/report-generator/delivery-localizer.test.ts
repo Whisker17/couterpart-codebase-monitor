@@ -56,6 +56,7 @@ const weeklyData: WeeklyReportData = {
       ],
     },
   ],
+  counterpartChecks: [],
   periodStartUnix: 1,
   periodEndUnix: 2,
 };

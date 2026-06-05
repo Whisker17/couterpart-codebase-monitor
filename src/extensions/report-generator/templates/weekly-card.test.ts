@@ -1,6 +1,30 @@
 import { describe, it, expect } from "bun:test";
 import { buildWeeklyCard } from "./weekly-card";
 import type { WeeklyReportData } from "../weekly";
+import type { CounterpartCheckItem } from "../counterpart-check";
+
+const sampleCounterpartChecks: CounterpartCheckItem[] = [
+  {
+    source: { projectId: "base/base", prNumber: 1234, title: "Fix critical vulnerability" },
+    signalType: "risk_signal",
+    targetProjectId: "mantle/reth",
+    whyItMatters: "Fix critical vulnerability in base/base may expose a similar risk in mantle/reth.",
+    evidence: "Security/reliability fix: patches critical vulnerability; Base and Mantle both track reth",
+    evidenceLabel: "metadata_supported",
+    confidence: "high",
+    suggestedAction: "Check whether mantle/reth has the same or similar issue.",
+  },
+  {
+    source: { projectId: "ethereum-optimism/op-geth", prNumber: 797, title: "Optimize gas estimation" },
+    signalType: "optimization_opportunity",
+    targetProjectId: "mantle/reth",
+    whyItMatters: "Optimize gas estimation in ethereum-optimism/op-geth represents an optimization potentially applicable to mantle/reth.",
+    evidence: "Performance optimization: gas estimation improvement; OP Stack changes affect Mantle strategy",
+    evidenceLabel: "recent_activity_supported",
+    confidence: "high",
+    suggestedAction: "Evaluate whether mantle/reth can adopt a similar approach.",
+  },
+];
 
 const sampleData: WeeklyReportData = {
   directionChanges: [
@@ -55,6 +79,7 @@ const sampleData: WeeklyReportData = {
       ],
     },
   ],
+  counterpartChecks: sampleCounterpartChecks,
   periodStartUnix: 1747008000, // ~2025-05-12
   periodEndUnix: 1747612800,   // ~2025-05-19
 };
@@ -63,6 +88,7 @@ const emptyData: WeeklyReportData = {
   directionChanges: [],
   activitySummary: { totalPrs: 0, directionalShiftCount: 0, notableCount: 0, projectCount: 0 },
   projectHighlights: [],
+  counterpartChecks: [],
   periodStartUnix: 1747008000,
   periodEndUnix: 1747612800,
 };
@@ -181,13 +207,108 @@ describe("buildWeeklyCard", () => {
     expect(panel.elements[0]!.content).toContain("NOTABLE");
   });
 
-  it("card has exactly 5 elements: direction, hr, activity, hr, highlights", () => {
+  it("card has exactly 7 elements: direction, hr, activity, hr, highlights, hr, counterpart-checks", () => {
     const card = buildWeeklyCard("May 12–19", sampleData);
-    expect(card.elements).toHaveLength(5);
+    expect(card.elements).toHaveLength(7);
   });
 
   it("serializes to valid JSON", () => {
     const card = buildWeeklyCard("May 12–19", sampleData);
     expect(() => JSON.stringify(card)).not.toThrow();
+  });
+});
+
+describe("buildWeeklyCard — Mantle Counterpart Checks section", () => {
+  it("counterpart checks section is an hr followed by a collapsible_panel", () => {
+    const card = buildWeeklyCard("May 12–19", sampleData);
+    expect(card.elements[5]!.tag).toBe("hr");
+    expect(card.elements[6]!.tag).toBe("collapsible_panel");
+  });
+
+  it("counterpart checks panel header contains 'Mantle Counterpart Checks'", () => {
+    const card = buildWeeklyCard("May 12–19", sampleData);
+    const panel = card.elements[6] as {
+      tag: "collapsible_panel";
+      header: { title: { content: string } };
+      elements: Array<{ tag: string; content: string }>;
+    };
+    expect(panel.header.title.content).toContain("Mantle Counterpart Checks");
+  });
+
+  it("counterpart checks panel content shows Risk Signals section", () => {
+    const card = buildWeeklyCard("May 12–19", sampleData);
+    const panel = card.elements[6] as {
+      tag: "collapsible_panel";
+      elements: Array<{ tag: string; content: string }>;
+    };
+    expect(panel.elements[0]!.content).toContain("Risk Signals");
+  });
+
+  it("counterpart checks panel content shows Optimization Opportunities section", () => {
+    const card = buildWeeklyCard("May 12–19", sampleData);
+    const panel = card.elements[6] as {
+      tag: "collapsible_panel";
+      elements: Array<{ tag: string; content: string }>;
+    };
+    expect(panel.elements[0]!.content).toContain("Optimization Opportunities");
+  });
+
+  it("renders source PR reference in counterpart check items", () => {
+    const card = buildWeeklyCard("May 12–19", sampleData);
+    const panel = card.elements[6] as {
+      tag: "collapsible_panel";
+      elements: Array<{ tag: string; content: string }>;
+    };
+    expect(panel.elements[0]!.content).toContain("base/base#1234");
+    expect(panel.elements[0]!.content).toContain("mantle/reth");
+  });
+
+  it("renders confidence and evidence label in brackets", () => {
+    const card = buildWeeklyCard("May 12–19", sampleData);
+    const panel = card.elements[6] as {
+      tag: "collapsible_panel";
+      elements: Array<{ tag: string; content: string }>;
+    };
+    expect(panel.elements[0]!.content).toContain("[high, metadata_supported]");
+  });
+
+  it("renders Why and Action lines for each item", () => {
+    const card = buildWeeklyCard("May 12–19", sampleData);
+    const panel = card.elements[6] as {
+      tag: "collapsible_panel";
+      elements: Array<{ tag: string; content: string }>;
+    };
+    const content = panel.elements[0]!.content;
+    expect(content).toContain("Why:");
+    expect(content).toContain("Action:");
+  });
+
+  it("shows 'No counterpart checks' when counterpartChecks is empty", () => {
+    const card = buildWeeklyCard("May 12–19", emptyData);
+    const panel = card.elements[6] as {
+      tag: "collapsible_panel";
+      elements: Array<{ tag: string; content: string }>;
+    };
+    expect(panel.elements[0]!.content).toContain("No counterpart checks");
+  });
+
+  it("top-N omission: shows omitted count when more than MAX items", () => {
+    const manyChecks: CounterpartCheckItem[] = Array.from({ length: 12 }, (_, i) => ({
+      source: { projectId: "org/repo", prNumber: i + 1, title: `PR ${i + 1}` },
+      signalType: "optimization_opportunity" as const,
+      targetProjectId: "mantle/reth",
+      whyItMatters: `Why ${i + 1}`,
+      evidence: `Evidence ${i + 1}`,
+      evidenceLabel: "metadata_supported" as const,
+      confidence: "medium" as const,
+      suggestedAction: `Evaluate action ${i + 1}`,
+    }));
+    const data: WeeklyReportData = { ...emptyData, counterpartChecks: manyChecks };
+    const card = buildWeeklyCard("May 12–19", data);
+    const panel = card.elements[6] as {
+      tag: "collapsible_panel";
+      elements: Array<{ tag: string; content: string }>;
+    };
+    expect(panel.elements[0]!.content).toContain("more");
   });
 });
