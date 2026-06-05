@@ -17,12 +17,40 @@ interface AnalysisRow {
   project_url: string;
 }
 
+export interface DigestPrSummary {
+  prNumber: number;
+  title: string;
+  summary: string;
+  significance: "routine" | "notable" | "directional_shift";
+  directionSignal: string | null;
+  htmlUrl: string;
+}
+
+export interface DailyDigest {
+  periodStart: number;
+  periodEnd: number;
+  projects: Array<{
+    projectId: string;
+    prCount: number;
+    notableCount: number;
+    directionalShiftCount: number;
+    topSignals: string[];
+    prs: DigestPrSummary[];
+  }>;
+  activitySummary: {
+    totalPrs: number;
+    directionalShiftCount: number;
+    notableCount: number;
+  };
+}
+
 export interface DailyReportData {
   analyses: AnalysisRow[];
   grouped: GroupedAnalyses;
   periodStartUnix: number;
   periodEndUnix: number;
   budgetLine?: string;
+  digest: DailyDigest;
 }
 
 export function buildDailyReport(timezone: string, now?: Date): DailyReportData {
@@ -57,7 +85,13 @@ export function buildDailyReport(timezone: string, now?: Date): DailyReportData 
   }
 
   if (rows.length === 0) {
-    return { analyses: [], grouped: [], periodStartUnix, periodEndUnix, budgetLine };
+    const digest: DailyDigest = {
+      periodStart: periodStartUnix,
+      periodEnd: periodEndUnix,
+      projects: [],
+      activitySummary: { totalPrs: 0, directionalShiftCount: 0, notableCount: 0 },
+    };
+    return { analyses: [], grouped: [], periodStartUnix, periodEndUnix, budgetLine, digest };
   }
 
   const projectMap = new Map<string, AnalysisRow[]>();
@@ -104,5 +138,30 @@ export function buildDailyReport(timezone: string, now?: Date): DailyReportData 
     return bRank - aRank;
   });
 
-  return { analyses: rows, grouped, periodStartUnix, periodEndUnix, budgetLine };
+  const digest: DailyDigest = {
+    periodStart: periodStartUnix,
+    periodEnd: periodEndUnix,
+    projects: grouped.map((g) => ({
+      projectId: g.projectId,
+      prCount: g.prCount,
+      notableCount: g.notableCount,
+      directionalShiftCount: g.directionalShiftCount,
+      topSignals: [...new Set(g.prs.map((p) => p.directionSignal).filter((s): s is string => s !== null))],
+      prs: g.prs.map((p) => ({
+        prNumber: p.prNumber,
+        title: p.title,
+        summary: p.summary,
+        significance: p.significance,
+        directionSignal: p.directionSignal,
+        htmlUrl: p.htmlUrl,
+      })),
+    })),
+    activitySummary: {
+      totalPrs: grouped.reduce((sum, g) => sum + g.prCount, 0),
+      directionalShiftCount: grouped.reduce((sum, g) => sum + g.directionalShiftCount, 0),
+      notableCount: grouped.reduce((sum, g) => sum + g.notableCount, 0),
+    },
+  };
+
+  return { analyses: rows, grouped, periodStartUnix, periodEndUnix, budgetLine, digest };
 }

@@ -80,6 +80,31 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
   const deliverableGrouped = reportData.grouped.filter((g) => g.prs.length > 0);
   if (deliverableGrouped.length === 0) {
     console.log("[Report] Daily: no deliverable PRs for this period, skipping report and delivery");
+    try {
+      db.run(
+        `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness, digest_json)
+         VALUES ('daily', ?, ?, '[]', 'null', ?, ?)
+         ON CONFLICT(type, period_start, period_end)
+         DO UPDATE SET content = excluded.content,
+                       project_ids = excluded.project_ids,
+                       completeness = excluded.completeness,
+                       digest_json = excluded.digest_json`,
+        [reportData.periodStartUnix, reportData.periodEndUnix, JSON.stringify(completeness), JSON.stringify(reportData.digest)]
+      );
+      const emptyReportRow = db
+        .query<{ id: number }, [string, number, number]>(
+          "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
+        )
+        .get("daily", reportData.periodStartUnix, reportData.periodEndUnix);
+      if (emptyReportRow) {
+        db.run(
+          "DELETE FROM report_deliveries WHERE report_id = ? AND status != 'sent'",
+          [emptyReportRow.id]
+        );
+      }
+    } catch (err) {
+      console.error(`[Report] Empty digest upsert failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     if (ctx.reportMode === "weekly") {
       const weeklyErrors = await generateWeeklyReport(db, completeness, localizeWeeklyDelivery, timezone);
       if (weeklyErrors.length > 0) {
@@ -111,13 +136,14 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
 
   try {
     db.run(
-      `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness)
-       VALUES ('daily', ?, ?, ?, ?, ?)
+      `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness, digest_json)
+       VALUES ('daily', ?, ?, ?, ?, ?, ?)
        ON CONFLICT(type, period_start, period_end)
        DO UPDATE SET content = excluded.content,
                      completeness = excluded.completeness,
-                     project_ids = excluded.project_ids`,
-      [reportData.periodStartUnix, reportData.periodEndUnix, projectIds, cardContent, completenessJson]
+                     project_ids = excluded.project_ids,
+                     digest_json = excluded.digest_json`,
+      [reportData.periodStartUnix, reportData.periodEndUnix, projectIds, cardContent, completenessJson, JSON.stringify(reportData.digest)]
     );
 
     const reportRow = db
