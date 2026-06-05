@@ -98,6 +98,7 @@ function applySchema(db: Database): void {
       project_ids TEXT,
       content TEXT NOT NULL,
       completeness TEXT,
+      digest_json TEXT,
       sent_at INTEGER,
       created_at INTEGER DEFAULT (unixepoch()),
       UNIQUE(type, period_start, period_end)
@@ -540,6 +541,53 @@ describe("report stage", () => {
     const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
     expect(row.content).toContain("https://github.com/org/repo-trailing/pull/10");
     expect(row.content).not.toContain("//pull/");
+  });
+
+  it("stores digest_json in reports table when analyses exist", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+    const row = testDb.query<{ digest_json: string }, []>("SELECT digest_json FROM reports WHERE type='daily'").get()!;
+    expect(row.digest_json).toBeDefined();
+    const digest = JSON.parse(row.digest_json);
+    expect(digest).toHaveProperty("periodStart");
+    expect(digest).toHaveProperty("periodEnd");
+    expect(digest).toHaveProperty("projects");
+    expect(digest).toHaveProperty("activitySummary");
+  });
+
+  it("digest_json contains all PRs including routine ones", async () => {
+    const yesterdayMid = getYesterdayStartUnix() + 3600;
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-a', 'org', 'repo-a', 'https://github.com/org/repo-a')`);
+    // Insert a directional_shift PR
+    testDb.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-a', 1, 'Directional PR', ?, 'complete')`, [yesterdayMid]);
+    const pr1 = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+    testDb.run(`INSERT INTO analyses (pr_id, project_id, summary, direction_signal, significance, analyzed_at) VALUES (?, 'org/repo-a', 'Big change summary', 'major shift signal', 'directional_shift', ?)`, [pr1.id, yesterdayMid]);
+    // Insert a routine PR
+    testDb.run(`INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status) VALUES ('org/repo-a', 2, 'Routine PR', ?, 'complete')`, [yesterdayMid]);
+    const pr2 = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+    testDb.run(`INSERT INTO analyses (pr_id, project_id, summary, direction_signal, significance, analyzed_at) VALUES (?, 'org/repo-a', 'Routine summary', null, 'routine', ?)`, [pr2.id, yesterdayMid]);
+
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+    const row = testDb.query<{ digest_json: string }, []>("SELECT digest_json FROM reports WHERE type='daily'").get()!;
+    const digest = JSON.parse(row.digest_json);
+    const project = digest.projects[0];
+    expect(project.prs).toHaveLength(2);
+    expect(project.topSignals).toContain("major shift signal");
+    expect(digest.activitySummary.totalPrs).toBe(2);
+    expect(digest.activitySummary.directionalShiftCount).toBe(1);
+  });
+
+  it("digest_json is updated on upsert re-run", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+    await execute(ctx);
+    const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='daily'").get()!;
+    expect(count.n).toBe(1);
+    const row = testDb.query<{ digest_json: string }, []>("SELECT digest_json FROM reports WHERE type='daily'").get()!;
+    expect(row.digest_json).toBeDefined();
   });
 
   it("project_ids contains only projects whose PRs are in yesterday's window", async () => {

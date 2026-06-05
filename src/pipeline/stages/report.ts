@@ -111,13 +111,14 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
 
   try {
     db.run(
-      `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness)
-       VALUES ('daily', ?, ?, ?, ?, ?)
+      `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness, digest_json)
+       VALUES ('daily', ?, ?, ?, ?, ?, ?)
        ON CONFLICT(type, period_start, period_end)
        DO UPDATE SET content = excluded.content,
                      completeness = excluded.completeness,
-                     project_ids = excluded.project_ids`,
-      [reportData.periodStartUnix, reportData.periodEndUnix, projectIds, cardContent, completenessJson]
+                     project_ids = excluded.project_ids,
+                     digest_json = excluded.digest_json`,
+      [reportData.periodStartUnix, reportData.periodEndUnix, projectIds, cardContent, completenessJson, JSON.stringify(reportData.digest)]
     );
 
     const reportRow = db
