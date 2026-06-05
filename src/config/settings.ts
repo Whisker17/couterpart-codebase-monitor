@@ -125,6 +125,7 @@ function snapshotFromSettings(s: Settings): SafeConfigSnapshot {
 export function getSettings(): Settings {
   if (_settings) return _settings;
   const cfg = readAndParseSettingsConfig();
+  validateSafeFields(cfg);
   _settings = buildSettingsFromConfig(cfg);
   return _settings;
 }

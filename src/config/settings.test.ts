@@ -287,3 +287,46 @@ describe("reloadSafeConfig", () => {
     expect(s.github.token).toBe(originalToken);
   });
 });
+
+describe("getSettings — validation path", () => {
+  let tmpPath: string;
+
+  beforeEach(() => {
+    tmpPath = join(tmpdir(), `settings-validation-test-${Date.now()}.json`);
+    _setSettingsConfigPath(tmpPath);
+    _resetSettingsCache();
+  });
+
+  afterEach(() => {
+    _resetSettingsCache();
+    _setSettingsConfigPath(null);
+    try {
+      unlinkSync(tmpPath);
+    } catch {}
+  });
+
+  // Regression: getSettings() must throw on invalid safe fields so that when
+  // a consumer (e.g. scheduler) calls getSettings() before runPipeline(), an
+  // invalid budget.monthlyCap is caught at cold-start — not silently cached and
+  // later treated as a warm-reload warning.
+  it("throws when budget.monthlyCap is not a number", () => {
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({
+        llm: {
+          model: "test-model",
+          baseUrlEnvVar: "LLM_BASE_URL",
+          apiKeyEnvVar: "LLM_API_KEY",
+          maxTokensPerCall: 4096,
+          diffTokenBudget: 8000,
+          maxManifestEntries: 100,
+        },
+        lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
+        github: { tokenEnvVar: "GITHUB_TOKEN" },
+        schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", timezone: "UTC" },
+        budget: { monthlyCap: "not_a_number", warningThreshold: 0.8, cutoffThreshold: 1.0 },
+      })
+    );
+    expect(() => getSettings()).toThrow("budget.monthlyCap must be a number");
+  });
+});
