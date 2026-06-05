@@ -344,6 +344,348 @@ describe("buildDailyCard", () => {
   });
 });
 
+// Shared fixture for buildSummaryContent tests
+const mixedAnalyses: GroupedAnalyses = [
+  {
+    projectId: "reth",
+    prCount: 2,
+    directionalShiftCount: 2,
+    notableCount: 0,
+    topDirectionSignal: null,
+    prs: [
+      {
+        prNumber: 1,
+        title: "Async executor migration",
+        htmlUrl: "https://github.com/paradigmxyz/reth/pull/1",
+        summary: "async executor migration summary",
+        technicalDetail: null,
+        significance: "directional_shift",
+        directionSignal: "async executor 架构迁移，下游兼容性风险",
+      },
+      {
+        prNumber: 2,
+        title: "Remove legacy sync path",
+        htmlUrl: "https://github.com/paradigmxyz/reth/pull/2",
+        summary: "removes legacy sync path",
+        technicalDetail: null,
+        significance: "directional_shift",
+        directionSignal: "removes legacy sync executor",
+      },
+    ],
+  },
+  {
+    projectId: "geth",
+    prCount: 3,
+    directionalShiftCount: 0,
+    notableCount: 3,
+    topDirectionSignal: null,
+    prs: [
+      {
+        prNumber: 10,
+        title: "EIP-7702 support",
+        htmlUrl: "https://github.com/ethereum/go-ethereum/pull/10",
+        summary: "EIP-7702 支持新增",
+        technicalDetail: null,
+        significance: "notable",
+        directionSignal: null,
+      },
+      {
+        prNumber: 11,
+        title: "Another notable",
+        htmlUrl: "https://github.com/ethereum/go-ethereum/pull/11",
+        summary: "Second notable PR",
+        technicalDetail: null,
+        significance: "notable",
+        directionSignal: "second direction signal",
+      },
+      {
+        prNumber: 12,
+        title: "Third notable",
+        htmlUrl: "https://github.com/ethereum/go-ethereum/pull/12",
+        summary: "Third notable PR",
+        technicalDetail: null,
+        significance: "notable",
+        directionSignal: null,
+      },
+    ],
+  },
+  {
+    projectId: "revm",
+    prCount: 2,
+    directionalShiftCount: 0,
+    notableCount: 0,
+    topDirectionSignal: null,
+    prs: [
+      {
+        prNumber: 20,
+        title: "Bump deps",
+        htmlUrl: "https://github.com/bluealloy/revm/pull/20",
+        summary: "Routine update",
+        technicalDetail: null,
+        significance: "routine",
+        directionSignal: null,
+      },
+      {
+        prNumber: 21,
+        title: "Fix lint",
+        htmlUrl: "https://github.com/bluealloy/revm/pull/21",
+        summary: "Routine fix",
+        technicalDetail: null,
+        significance: "routine",
+        directionSignal: null,
+      },
+    ],
+  },
+];
+
+describe("buildSummaryContent", () => {
+  it("metric line: correct repo count, PR count, per-level counts", () => {
+    // 3 repos, 7 PRs: 2 directional + 3 notable + 2 routine
+    const content = buildSummaryContent(mixedAnalyses);
+    expect(content).toContain("3 repos");
+    expect(content).toContain("7 PR");
+    expect(content).toContain("🔴 ×2");
+    expect(content).toContain("🟡 ×3");
+    expect(content).toContain("⚪ ×2");
+  });
+
+  it("zero count omission: all-routine → no 🔴 or 🟡 in metric line", () => {
+    const content = buildSummaryContent(routineOnlyAnalyses);
+    expect(content).not.toContain("🔴 ×");
+    expect(content).not.toContain("🟡 ×");
+    expect(content).toContain("⚪ ×4");
+  });
+
+  it("signal table sorts: directional > notable > routine", () => {
+    const content = buildSummaryContent(mixedAnalyses);
+    const rethPos = content.indexOf("reth");
+    const gethPos = content.indexOf("geth");
+    const revmPos = content.indexOf("revm");
+    expect(rethPos).toBeLessThan(gethPos);
+    expect(gethPos).toBeLessThan(revmPos);
+  });
+
+  it("notable/directional rows use bold project id", () => {
+    const content = buildSummaryContent(mixedAnalyses);
+    expect(content).toContain("**reth**");
+    expect(content).toContain("**geth**");
+  });
+
+  it("routine-only rows use plain project id without bold", () => {
+    const content = buildSummaryContent(mixedAnalyses);
+    expect(content).not.toContain("**revm**");
+    expect(content).toContain("⚪ revm — 2 routine PR");
+  });
+
+  it("signal text determinism: same-level multi-PR → first in array is used", () => {
+    // geth has 3 notable PRs; first (pr 10) has no directionSignal → uses summary "EIP-7702 支持新增"
+    // second PR (pr 11) has directionSignal "second direction signal" — must NOT appear
+    const content = buildSummaryContent(mixedAnalyses);
+    expect(content).toContain("EIP-7702 支持新增");
+    expect(content).not.toContain("second direction signal");
+  });
+
+  it("signal text uses directionSignal over summary when directionSignal is set", () => {
+    // reth PR #1: directionSignal has "下游兼容性风险" which is absent from summary
+    const content = buildSummaryContent(mixedAnalyses);
+    expect(content).toContain("下游兼容性风险");
+  });
+
+  it("signal text is truncated to 60 chars with ellipsis when longer", () => {
+    const longSignalAnalyses: GroupedAnalyses = [
+      {
+        projectId: "longrepo",
+        prCount: 1,
+        directionalShiftCount: 1,
+        notableCount: 0,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "Long signal PR",
+            htmlUrl: "https://github.com/org/longrepo/pull/1",
+            summary: "not used",
+            technicalDetail: null,
+            significance: "directional_shift",
+            directionSignal: "A".repeat(70),
+          },
+        ],
+      },
+    ];
+    const content = buildSummaryContent(longSignalAnalyses);
+    expect(content).toContain("A".repeat(60) + "…");
+    expect(content).not.toContain("A".repeat(61));
+  });
+
+  it("signal text under 60 chars is not truncated", () => {
+    const content = buildSummaryContent(mixedAnalyses);
+    // reth signal "async executor 架构迁移，下游兼容性风险" is under 60 chars — no ellipsis
+    expect(content).toContain("async executor 架构迁移，下游兼容性风险");
+    expect(content).not.toContain("async executor 架构迁移，下游兼容性风险…");
+  });
+
+  it("partial warning appears at top before metric line", () => {
+    const content = buildSummaryContent(routineOnlyAnalyses, {
+      partialWarning: "2 projects failed",
+    });
+    const warnPos = content.indexOf("⚠");
+    const metricPos = content.indexOf("repos");
+    expect(warnPos).toBeGreaterThanOrEqual(0);
+    expect(warnPos).toBeLessThan(metricPos);
+    expect(content).toContain("2 projects failed");
+  });
+
+  it("empty analyses: metric shows 0 repos and 0 PR, signal table shows placeholder", () => {
+    const content = buildSummaryContent([]);
+    expect(content).toContain("0 repos");
+    expect(content).toContain("0 PR");
+    expect(content).not.toContain("🔴 ×");
+    expect(content).not.toContain("🟡 ×");
+    expect(content).not.toContain("⚪ ×");
+    expect(content).toContain("_No projects to display._");
+  });
+
+  it("⚠ budget line appears after metric line and before signal table", () => {
+    const warnBudget = "⚠ Budget exceeded: $95.00 / $80.00 (119%)";
+    const content = buildSummaryContent(mixedAnalyses, { budgetLine: warnBudget });
+    const metricPos = content.indexOf("repos");
+    const budgetPos = content.indexOf("Budget exceeded");
+    const signalPos = content.indexOf("reth");
+    expect(metricPos).toBeLessThan(budgetPos);
+    expect(budgetPos).toBeLessThan(signalPos);
+  });
+
+  it("non-⚠ budget line does not appear in summary content", () => {
+    const normalBudget = "Budget: $5.00 / $80.00 (6%)";
+    const content = buildSummaryContent(mixedAnalyses, { budgetLine: normalBudget });
+    expect(content).not.toContain(normalBudget);
+  });
+
+  it("mobile readability: 10-repo sample with long names and Chinese signals — no table syntax, no fake pills, no column alignment", () => {
+    const mobileAnalyses: GroupedAnalyses = [
+      {
+        projectId: "ethereum-optimism/op-geth",
+        prCount: 2,
+        directionalShiftCount: 1,
+        notableCount: 0,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "New consensus API",
+            htmlUrl: "https://github.com/ethereum-optimism/op-geth/pull/1",
+            summary: "新 consensus API 接口引入",
+            technicalDetail: null,
+            significance: "directional_shift",
+            directionSignal: "新 consensus API 接口引入，需要下游适配",
+          },
+          {
+            prNumber: 2,
+            title: "Routine bump",
+            htmlUrl: "https://github.com/ethereum-optimism/op-geth/pull/2",
+            summary: "Routine dependency bump",
+            technicalDetail: null,
+            significance: "routine",
+            directionSignal: null,
+          },
+        ],
+      },
+      ...Array.from({ length: 9 }, (_, i) => ({
+        projectId: `ethereum-optimism/long-repo-name-${i + 1}`,
+        prCount: 3,
+        directionalShiftCount: 0,
+        notableCount: 0,
+        topDirectionSignal: null,
+        prs: Array.from({ length: 3 }, (__, j) => ({
+          prNumber: 100 + i * 3 + j,
+          title: `Routine PR ${i + 1}-${j + 1}`,
+          htmlUrl: `https://github.com/org/repo/pull/${100 + i * 3 + j}`,
+          summary: `例行维护 PR ${i + 1}，更新依赖项版本`,
+          technicalDetail: null,
+          significance: "routine" as const,
+          directionSignal: null,
+        })),
+      })),
+    ];
+
+    const content = buildSummaryContent(mobileAnalyses);
+
+    // No markdown table syntax (pipes)
+    expect(content).not.toContain("|");
+    // No fake pill buttons (backtick-wrapped emoji)
+    expect(content).not.toContain("`🔴`");
+    expect(content).not.toContain("`🟡`");
+    expect(content).not.toContain("`⚪`");
+    // No 3+ consecutive spaces for column alignment
+    expect(content).not.toMatch(/   /);
+    // All 10 projects appear
+    expect(content).toContain("ethereum-optimism/op-geth");
+    for (let i = 1; i <= 9; i++) {
+      expect(content).toContain(`ethereum-optimism/long-repo-name-${i}`);
+    }
+    // Chinese signal appears naturally
+    expect(content).toContain("新 consensus API 接口引入");
+  });
+});
+
+describe("buildDailyCard budget line dedup", () => {
+  it("⚠ budget line appears in summary only, not at card bottom", () => {
+    const warnBudget = "⚠ Budget exceeded: $95.00 / $80.00 (119%)";
+    const card = buildDailyCard("2026-06-05", sampleAnalyses, undefined, warnBudget);
+    const firstMarkdown = card.elements.find((e) => e.tag === "markdown") as {
+      tag: "markdown";
+      content: string;
+    };
+    expect(firstMarkdown.content).toContain("Budget exceeded");
+    // Budget must appear exactly once across the whole card
+    const cardJson = JSON.stringify(card);
+    const occurrences = (cardJson.match(/Budget exceeded/g) || []).length;
+    expect(occurrences).toBe(1);
+  });
+
+  it("non-⚠ budget line appears at card bottom only, not in summary", () => {
+    const normalBudget = "Budget: $5.00 / $80.00 (6%)";
+    const card = buildDailyCard("2026-06-05", sampleAnalyses, undefined, normalBudget);
+    const firstMarkdown = card.elements.find((e) => e.tag === "markdown") as {
+      tag: "markdown";
+      content: string;
+    };
+    expect(firstMarkdown.content).not.toContain(normalBudget);
+    const lastElement = card.elements[card.elements.length - 1] as { tag: string; content: string };
+    expect(lastElement.tag).toBe("markdown");
+    expect(lastElement.content).toBe(normalBudget);
+  });
+});
+
+describe("buildDailyCard summary element order", () => {
+  it("partial warning appears before metric line", () => {
+    const card = buildDailyCard("2026-06-05", sampleAnalyses, "2 projects failed");
+    const firstMarkdown = card.elements.find((e) => e.tag === "markdown") as {
+      tag: "markdown";
+      content: string;
+    };
+    const warnPos = firstMarkdown.content.indexOf("⚠");
+    const metricPos = firstMarkdown.content.indexOf("repos");
+    expect(warnPos).toBeLessThan(metricPos);
+  });
+
+  it("⚠ budget warning appears after metric line and before signal table", () => {
+    const warnBudget = "⚠ Budget critical";
+    const card = buildDailyCard("2026-06-05", sampleAnalyses, undefined, warnBudget);
+    const firstMarkdown = card.elements.find((e) => e.tag === "markdown") as {
+      tag: "markdown";
+      content: string;
+    };
+    const content = firstMarkdown.content;
+    const metricPos = content.indexOf("repos");
+    const budgetPos = content.indexOf("Budget critical");
+    // Signal table contains the project name
+    const signalPos = content.indexOf("org/repo-a");
+    expect(metricPos).toBeLessThan(budgetPos);
+    expect(budgetPos).toBeLessThan(signalPos);
+  });
+});
+
 describe("buildPrHtmlUrl", () => {
   it("builds URL from project URL and PR number", () => {
     expect(buildPrHtmlUrl("https://github.com/org/repo", 42)).toBe("https://github.com/org/repo/pull/42");
