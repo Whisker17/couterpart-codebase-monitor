@@ -14,6 +14,7 @@ function makeCandidate(overrides: Partial<WeeklyCandidate> = {}): WeeklyCandidat
     summary: "Patches a reliability issue in the network handler",
     significance: "notable",
     categories: [],
+    directionSignal: null,
     candidateType: "large_technical_change",
     mantleRelevanceScore: 50,
     selectionReason: "Notable refactor or migration",
@@ -310,5 +311,60 @@ describe("buildCounterpartChecks — produces one item per (candidate × target)
     const targetIds = items.map((i) => i.targetProjectId);
     expect(targetIds).toContain("mantle/reth");
     expect(targetIds).toContain("mantle/op-geth");
+  });
+});
+
+describe("buildCounterpartChecks — directionSignal risk keyword classification", () => {
+  it("classifies as risk_signal when directionSignal contains risk keyword, even if candidateType is not risk_fix", () => {
+    const candidate = makeCandidate({
+      candidateType: "architecture_direction",
+      categories: ["architecture"],
+      mantleRelevanceScore: 65,
+      directionSignal: "Fixes potential consensus compatibility issue",
+    });
+    const items = buildCounterpartChecks([candidate]);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.signalType).toBe("risk_signal");
+  });
+
+  it("classifies as risk_signal when directionSignal contains 'fix' keyword", () => {
+    const candidate = makeCandidate({
+      candidateType: "transferable_optimization",
+      categories: ["performance"],
+      directionSignal: "Fixes a regression in block validation",
+    });
+    const items = buildCounterpartChecks([candidate]);
+    expect(items[0]!.signalType).toBe("risk_signal");
+  });
+
+  it("classifies as risk_signal when directionSignal contains 'vulnerability'", () => {
+    const candidate = makeCandidate({
+      candidateType: "large_technical_change",
+      categories: ["dependency"],
+      directionSignal: "Patches a known vulnerability in the JSON-RPC handler",
+    });
+    const items = buildCounterpartChecks([candidate]);
+    expect(items[0]!.signalType).toBe("risk_signal");
+  });
+
+  it("classifies as optimization_opportunity when directionSignal has no risk keywords", () => {
+    const candidate = makeCandidate({
+      candidateType: "architecture_direction",
+      categories: ["architecture"],
+      directionSignal: "Refactors gas estimation for better throughput",
+    });
+    const items = buildCounterpartChecks([candidate]);
+    expect(items[0]!.signalType).toBe("optimization_opportunity");
+  });
+
+  it("does not affect confidence — risk-keyword directionSignal with manual relationship retains medium confidence for architecture_direction", () => {
+    const candidate = makeCandidate({
+      candidateType: "architecture_direction",
+      categories: ["architecture"],
+      mantleRelevanceScore: 65,
+      directionSignal: "Fixes potential consensus compatibility issue",
+    });
+    const items = buildCounterpartChecks([candidate]);
+    expect(items[0]!.confidence).toBe("medium");
   });
 });

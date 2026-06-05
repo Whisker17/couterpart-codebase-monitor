@@ -10,6 +10,7 @@ export interface WeeklyCandidate {
   summary: string;
   significance: "routine" | "notable" | "directional_shift";
   categories: string[];
+  directionSignal: string | null;
   candidateType:
     | "risk_fix"
     | "transferable_optimization"
@@ -177,6 +178,7 @@ export function scoreCandidate(
     summary: input.summary,
     significance: input.significance,
     categories: input.categories,
+    directionSignal: input.directionSignal ?? null,
     candidateType,
     mantleRelevanceScore,
     selectionReason,

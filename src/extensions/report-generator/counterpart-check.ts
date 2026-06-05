@@ -15,11 +15,17 @@ export interface CounterpartCheckItem {
   suggestedAction: string;
 }
 
+const RISK_SIGNAL_KEYWORDS = /\b(risk|fix|bug|vuln|compat|regression|crash|failure|consensus)/i;
+
 function determineSignalType(
   candidateType: WeeklyCandidate["candidateType"],
-  categories: string[]
+  categories: string[],
+  directionSignal: string | null
 ): CounterpartCheckItem["signalType"] {
   if (candidateType === "risk_fix" || categories.includes("security")) {
+    return "risk_signal";
+  }
+  if (directionSignal !== null && RISK_SIGNAL_KEYWORDS.test(directionSignal)) {
     return "risk_signal";
   }
   return "optimization_opportunity";
@@ -107,7 +113,7 @@ export function buildCounterpartChecks(candidates: WeeklyCandidate[]): Counterpa
         tagOverlapCount
       );
 
-      const signalType = determineSignalType(candidate.candidateType, candidate.categories);
+      const signalType = determineSignalType(candidate.candidateType, candidate.categories, candidate.directionSignal);
 
       // Low-confidence items: only include for risk signals
       if (confidence === "low" && signalType !== "risk_signal") continue;
