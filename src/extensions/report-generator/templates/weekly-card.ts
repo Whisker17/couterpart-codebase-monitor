@@ -1,6 +1,53 @@
 import type { LarkCard, LarkElement } from "./daily-card";
 import { formatMarkdownLink } from "./daily-card";
 import type { WeeklyReportData } from "../weekly";
+import type { CounterpartCheckItem } from "../counterpart-check";
+
+const MAX_COUNTERPART_ITEMS = 10;
+
+function buildCounterpartChecksContent(checks: CounterpartCheckItem[]): string {
+  if (checks.length === 0) {
+    return "_No counterpart checks this week._";
+  }
+
+  const shown = checks.slice(0, MAX_COUNTERPART_ITEMS);
+  const omitted = checks.length - shown.length;
+
+  const riskItems = shown.filter((c) => c.signalType === "risk_signal");
+  const optItems = shown.filter((c) => c.signalType === "optimization_opportunity");
+
+  const parts: string[] = [];
+
+  if (riskItems.length > 0) {
+    parts.push("**Risk Signals**");
+    for (const item of riskItems) {
+      parts.push(
+        `- ${item.source.projectId}#${item.source.prNumber} → ${item.targetProjectId} [${item.confidence}, ${item.evidenceLabel}]`
+      );
+      parts.push(`  Why: ${item.whyItMatters}`);
+      parts.push(`  Action: ${item.suggestedAction}`);
+    }
+  }
+
+  if (optItems.length > 0) {
+    if (parts.length > 0) parts.push("");
+    parts.push("**Optimization Opportunities**");
+    for (const item of optItems) {
+      parts.push(
+        `- ${item.source.projectId}#${item.source.prNumber} → ${item.targetProjectId} [${item.confidence}, ${item.evidenceLabel}]`
+      );
+      parts.push(`  Why: ${item.whyItMatters}`);
+      parts.push(`  Action: ${item.suggestedAction}`);
+    }
+  }
+
+  if (omitted > 0) {
+    parts.push("");
+    parts.push(`_+${omitted} more item${omitted !== 1 ? "s" : ""} not shown_`);
+  }
+
+  return parts.join("\n");
+}
 
 export function buildWeeklyCard(dateRange: string, data: WeeklyReportData): LarkCard {
   const elements: LarkElement[] = [];
@@ -58,6 +105,20 @@ export function buildWeeklyCard(dateRange: string, data: WeeklyReportData): Lark
       {
         tag: "markdown",
         content: highlightParts.join("\n").trim() || "_No highlights available._",
+      },
+    ],
+  });
+
+  // Mantle Counterpart Checks section
+  elements.push({ tag: "hr" });
+  elements.push({
+    tag: "collapsible_panel",
+    expanded: false,
+    header: { title: { tag: "plain_text", content: "Mantle Counterpart Checks" } },
+    elements: [
+      {
+        tag: "markdown",
+        content: buildCounterpartChecksContent(data.counterpartChecks),
       },
     ],
   });

@@ -65,6 +65,7 @@ function emptyFallback(start: number, end: number): WeeklyReportData {
     directionChanges: [],
     activitySummary: { totalPrs: 0, directionalShiftCount: 0, notableCount: 0, projectCount: 0 },
     projectHighlights: [],
+    counterpartChecks: [],
     periodStartUnix: start,
     periodEndUnix: end,
   };
@@ -289,6 +290,7 @@ describe("aggregateFromDigests", () => {
       directionChanges: [{ projectId: "org/repo-z", prCount: 1, signals: ["signal"] }],
       activitySummary: { totalPrs: 5, directionalShiftCount: 1, notableCount: 2, projectCount: 1 },
       projectHighlights: [{ projectId: "org/repo-z", prCount: 5, notableCount: 2, directionalShiftCount: 1, highlights: [] }],
+      counterpartChecks: [],
       periodStartUnix: PERIOD_START,
       periodEndUnix: PERIOD_END,
     };
@@ -354,6 +356,7 @@ describe("aggregateFromDigests", () => {
           ],
         },
       ],
+      counterpartChecks: [],
       periodStartUnix: d2start,
       periodEndUnix: d2end,
     };
@@ -397,6 +400,7 @@ describe("aggregateFromDigests", () => {
           highlights: [],
         },
       ],
+      counterpartChecks: [],
       periodStartUnix: d2start,
       periodEndUnix: d2end,
     };
@@ -483,6 +487,7 @@ describe("fillAbsentDays", () => {
         directionalShiftCount: 0,
         highlights: [{ prNumber: 9, title: "Absent PR", summary: "From absent day", significance: "routine", directionSignal: null, htmlUrl: "https://g.com/9" }],
       }],
+      counterpartChecks: [],
       periodStartUnix: d2start,
       periodEndUnix: d2end,
     };
@@ -550,6 +555,7 @@ describe("aggregateFromDigests > mixed-mode directionChanges signals completenes
           { prNumber: 6, title: "PR 6", summary: "S6", significance: "directional_shift", directionSignal: "signal-beta", htmlUrl: "https://g.com/6" },
         ],
       }],
+      counterpartChecks: [],
       periodStartUnix: d2start,
       periodEndUnix: d2end,
     };
