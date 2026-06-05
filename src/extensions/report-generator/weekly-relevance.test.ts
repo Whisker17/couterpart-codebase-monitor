@@ -185,6 +185,19 @@ describe("scoreCandidate — risk_fix ranks above transferable_optimization", ()
     expect(riskFix.mantleRelevanceScore).toBeGreaterThan(optimization.mantleRelevanceScore);
   });
 
+  it("transferable_optimization score > architecture_direction score (same significance, no boost)", () => {
+    const optimization = scoreCandidate(
+      makeInput({ significance: "notable", categories: ["performance"] }),
+      BASE_CONFIG
+    );
+    // Use notable significance for arch too so neither gets the directional_shift boost
+    const arch = scoreCandidate(
+      makeInput({ significance: "notable", categories: ["architecture"] }),
+      BASE_CONFIG
+    );
+    expect(optimization.mantleRelevanceScore).toBeGreaterThan(arch.mantleRelevanceScore);
+  });
+
   it("risk_fix score > architecture_direction score", () => {
     const riskFix = scoreCandidate(
       makeInput({ significance: "notable", categories: ["security"] }),
@@ -195,6 +208,14 @@ describe("scoreCandidate — risk_fix ranks above transferable_optimization", ()
       BASE_CONFIG
     );
     expect(riskFix.mantleRelevanceScore).toBeGreaterThan(arch.mantleRelevanceScore);
+  });
+
+  it("directional_shift with performance categories classifies as transferable_optimization, not architecture_direction", () => {
+    const result = scoreCandidate(
+      makeInput({ significance: "directional_shift", categories: ["performance"] }),
+      BASE_CONFIG
+    );
+    expect(result.candidateType).toBe("transferable_optimization");
   });
 });
 

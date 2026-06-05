@@ -411,9 +411,14 @@ export function selectWeeklyCandidates(timezone: string, now?: Date): WeeklyCand
   const candidates: WeeklyCandidate[] = [];
 
   for (const row of rows) {
-    const categories = row.categories
-      ? (JSON.parse(row.categories) as string[])
-      : [];
+    let categories: string[] = [];
+    if (row.categories) {
+      try {
+        categories = JSON.parse(row.categories) as string[];
+      } catch {
+        categories = [];
+      }
+    }
     const sourceTags =
       trackedProjects.find((p) => `${p.org}/${p.repo}` === row.project_id)
         ?.tags ?? [];

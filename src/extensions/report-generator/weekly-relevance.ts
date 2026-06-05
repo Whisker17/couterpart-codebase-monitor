@@ -1,6 +1,8 @@
 import { getMantleConfig } from "../../config/projects";
 import type { MantleConfig } from "../../config/projects";
 
+export type { MantleConfig };
+
 export interface WeeklyCandidate {
   sourceProjectId: string;
   prNumber: number;
@@ -36,10 +38,11 @@ export interface ScoringInput {
 
 // Base scores per candidateType (0–100). routine_pattern base is non-zero;
 // suppression to 0 is applied after for PRs not part of a pattern.
+// Priority order: risk_fix > transferable_optimization > architecture_direction > large_technical_change > routine_pattern
 const BASE_SCORES: Record<WeeklyCandidate["candidateType"], number> = {
   risk_fix: 90,
-  architecture_direction: 75,
-  transferable_optimization: 65,
+  transferable_optimization: 75,
+  architecture_direction: 65,
   large_technical_change: 50,
   routine_pattern: 20,
 };
@@ -51,6 +54,9 @@ function determineCandidateType(
   // Priority 1: risk_fix — security category always wins
   if (categories.includes("security")) return "risk_fix";
 
+  // Priority 2: transferable_optimization — performance takes precedence over directional_shift
+  if (categories.includes("performance")) return "transferable_optimization";
+
   // Priority 3: architecture_direction — directional_shift or arch/dep/api categories
   if (
     significance === "directional_shift" ||
@@ -58,9 +64,6 @@ function determineCandidateType(
   ) {
     return "architecture_direction";
   }
-
-  // Priority 2: transferable_optimization — performance
-  if (categories.includes("performance")) return "transferable_optimization";
 
   // Priority 4: large_technical_change — notable but not already classified
   if (significance === "notable") return "large_technical_change";
