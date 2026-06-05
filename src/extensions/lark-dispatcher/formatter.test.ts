@@ -51,9 +51,10 @@ describe("formatReport", () => {
   });
 
   it("removes routine-only projects and appends omit note when full card exceeds 20KB but trimmed < 28KB", () => {
-    // 30 notable-only projects with long summaries push the full card over 20KB.
+    // 30 notable-only projects with summaries push the full card over 20KB.
     // 10 routine-only projects are filtered out by Level 2, bringing the card under 28KB.
-    const longSummary = "x".repeat(600);
+    // Per-project panels add overhead vs the old single panel; 400-char summaries keep trimmed < 28KB.
+    const longSummary = "x".repeat(400);
     const notableProjects: GroupedAnalyses = Array.from({ length: 30 }, (_, i) => ({
       projectId: `org/notable-project-${i}`,
       prCount: 1,

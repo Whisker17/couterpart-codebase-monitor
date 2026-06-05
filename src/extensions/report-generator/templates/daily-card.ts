@@ -163,6 +163,77 @@ export function buildSummaryContent(
   return parts.join("\n");
 }
 
+export function buildRepoPanels(analyses: GroupedAnalyses): LarkElement[] {
+  const directionalProjects = analyses.filter((p) => p.directionalShiftCount > 0);
+  const notableOnlyProjects = analyses.filter(
+    (p) => p.directionalShiftCount === 0 && p.notableCount > 0
+  );
+
+  if (directionalProjects.length === 0 && notableOnlyProjects.length === 0) {
+    return [{ tag: "markdown", content: "_All PRs are routine today._" }];
+  }
+
+  const hasDirectionalPanels = directionalProjects.length > 0;
+
+  // Determine which notable-only panels expand: sort by notableCount desc → prCount desc → original order
+  const indexedNotable = notableOnlyProjects.map((p, i) => ({ p, i }));
+  indexedNotable.sort((a, b) => {
+    if (b.p.notableCount !== a.p.notableCount) return b.p.notableCount - a.p.notableCount;
+    if (b.p.prCount !== a.p.prCount) return b.p.prCount - a.p.prCount;
+    return a.i - b.i;
+  });
+
+  const expandedNotable = new Set<string>();
+  if (!hasDirectionalPanels) {
+    const expandCount = Math.min(2, indexedNotable.length);
+    for (let i = 0; i < expandCount; i++) {
+      expandedNotable.add(indexedNotable[i]!.p.projectId);
+    }
+  }
+
+  const panels: LarkElement[] = [];
+  for (const project of analyses) {
+    const isDirectional = project.directionalShiftCount > 0;
+    const isNotableOnly = project.directionalShiftCount === 0 && project.notableCount > 0;
+    if (!isDirectional && !isNotableOnly) continue;
+
+    const emoji = isDirectional ? "🔴" : "🟡";
+    const expanded = isDirectional ? true : expandedNotable.has(project.projectId);
+
+    const significantPrs = project.prs.filter((pr) => pr.significance !== "routine");
+    const routinePrs = project.prs.filter((pr) => pr.significance === "routine");
+
+    const bodyParts: string[] = [];
+    for (const pr of significantPrs) {
+      const directionSignal = pr.directionSignal
+        ? stripCounterpartRecommendations(pr.directionSignal)
+        : null;
+      bodyParts.push(`\n${formatMarkdownLink(`#${pr.prNumber} ${pr.title}`, pr.htmlUrl)}`);
+      bodyParts.push(`${significanceBadge(pr.significance)} — ${pr.summary}`);
+      if (directionSignal) {
+        bodyParts.push(`Direction: ${directionSignal}`);
+      }
+    }
+    if (routinePrs.length > 0) {
+      bodyParts.push(`_${routinePrs.length} routine PR${routinePrs.length !== 1 ? "s" : ""} not expanded_`);
+    }
+
+    panels.push({
+      tag: "collapsible_panel",
+      expanded,
+      header: {
+        title: {
+          tag: "plain_text",
+          content: `${emoji} ${project.projectId} · ${project.prCount} PR`,
+        },
+      },
+      elements: [{ tag: "markdown", content: bodyParts.join("\n").trim() || "_No details available._" }],
+    });
+  }
+
+  return panels;
+}
+
 export function buildDailyCard(
   date: string,
   projectAnalyses: GroupedAnalyses,
@@ -171,62 +242,10 @@ export function buildDailyCard(
 ): LarkCard {
   const summaryContent = buildSummaryContent(projectAnalyses, { partialWarning, budgetLine });
 
-  // Determine whether notable/directional PRs exist across all projects.
-  const hasSignificantPrs = projectAnalyses.some(
-    (p) => p.directionalShiftCount > 0 || p.notableCount > 0
-  );
-
-  // Detail section: significant PRs (directional_shift + notable) are shown in full.
-  // Routine PRs are never expanded — for routine-only projects one representative
-  // is shown compactly with a count note for the rest.
-  const detailParts: string[] = [];
-  for (const project of projectAnalyses) {
-    const significantPrs = project.prs.filter((pr) => pr.significance !== "routine");
-    const routinePrs = project.prs.filter((pr) => pr.significance === "routine");
-
-    const visiblePrs = significantPrs.length > 0 ? significantPrs : routinePrs.slice(0, 1);
-
-    if (visiblePrs.length === 0) continue;
-
-    detailParts.push(`**[${project.projectId}]** · ${project.prCount} PR${project.prCount !== 1 ? "s" : ""}`);
-
-    for (const pr of visiblePrs) {
-      // Strip cross-repo counterpart recommendations before rendering
-      const directionSignal = pr.directionSignal
-        ? stripCounterpartRecommendations(pr.directionSignal)
-        : null;
-
-      detailParts.push(`\n${formatMarkdownLink(`#${pr.prNumber} ${pr.title}`, pr.htmlUrl)}`);
-      detailParts.push(`${significanceBadge(pr.significance)} — ${pr.summary}`);
-      if (directionSignal) {
-        detailParts.push(`Direction: ${directionSignal}`);
-      }
-    }
-
-    // Omit notes for routine PRs not shown
-    if (significantPrs.length > 0 && routinePrs.length > 0) {
-      detailParts.push(`_${routinePrs.length} routine PR${routinePrs.length !== 1 ? "s" : ""} not expanded_`);
-    } else if (significantPrs.length === 0 && routinePrs.length > 1) {
-      const rest = routinePrs.length - 1;
-      detailParts.push(`_${rest} more routine PR${rest !== 1 ? "s" : ""}_`);
-    }
-
-    detailParts.push("");
-  }
-
-  const detailContent = detailParts.join("\n").trim();
-
   const elements: LarkElement[] = [
     { tag: "markdown", content: summaryContent },
     { tag: "hr" },
-    {
-      tag: "collapsible_panel",
-      expanded: hasSignificantPrs,
-      header: {
-        title: { tag: "plain_text", content: hasSignificantPrs ? "Notable PRs" : "PR Details" },
-      },
-      elements: [{ tag: "markdown", content: detailContent || "_No PRs to display._" }],
-    },
+    ...buildRepoPanels(projectAnalyses),
   ];
 
   // Budget dedup: warning budget is in summary area; non-warning budget goes to card bottom only

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import { buildDailyCard, buildSummaryContent, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate } from "./daily-card";
-import type { GroupedAnalyses } from "./daily-card";
+import { buildDailyCard, buildSummaryContent, buildRepoPanels, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate } from "./daily-card";
+import type { GroupedAnalyses, LarkCollapsiblePanel, LarkMarkdownElement } from "./daily-card";
 
 const sampleAnalyses: GroupedAnalyses = [
   {
@@ -144,53 +144,46 @@ describe("buildDailyCard", () => {
     expect(hr).toBeDefined();
   });
 
-  it("detail panel is labeled 'Notable PRs' when significant PRs exist", () => {
+  it("per-project panel generated for directional project with correct emoji and header", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
-      tag: "collapsible_panel";
-      expanded: boolean;
-      header: { title: { tag: string; content: string } };
-      elements: Array<{ tag: string; content: string }>;
-    };
+    const panel = card.elements.find(
+      (e) => e.tag === "collapsible_panel"
+    ) as LarkCollapsiblePanel;
     expect(panel).toBeDefined();
-    expect(panel.header.title.content).toBe("Notable PRs");
-    expect(panel.elements[0]!.content).toContain("org/repo-a");
-    expect(panel.elements[0]!.content).toContain("#101");
+    expect(panel.header.title.content).toContain("🔴");
+    expect(panel.header.title.content).toContain("org/repo-a");
+    expect(panel.header.title.content).toContain("2 PR");
   });
 
-  it("detail panel is labeled 'PR Details' when only routine PRs exist", () => {
-    const card = buildDailyCard("2026-06-05", routineOnlyAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
-      tag: "collapsible_panel";
-      header: { title: { tag: string; content: string } };
-    };
-    expect(panel.header.title.content).toBe("PR Details");
-  });
-
-  it("panel starts expanded when significant (notable/directional_shift) PRs are present", () => {
+  it("no panel generated for routine-only project", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
-      tag: "collapsible_panel";
-      expanded: boolean;
-    };
+    const panels = card.elements.filter((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel[];
+    const repoBPanel = panels.find((p) => p.header.title.content.includes("org/repo-b"));
+    expect(repoBPanel).toBeUndefined();
+  });
+
+  it("all-routine analyses: no collapsible panels, fallback markdown present", () => {
+    const card = buildDailyCard("2026-06-05", routineOnlyAnalyses);
+    const panels = card.elements.filter((e) => e.tag === "collapsible_panel");
+    expect(panels).toHaveLength(0);
+    const fallback = card.elements.find(
+      (e): e is LarkMarkdownElement =>
+        e.tag === "markdown" && (e as LarkMarkdownElement).content.includes("All PRs are routine today")
+    );
+    expect(fallback).toBeDefined();
+  });
+
+  it("directional panel starts expanded", () => {
+    const card = buildDailyCard("2026-06-05", sampleAnalyses);
+    const panel = card.elements.find(
+      (e) => e.tag === "collapsible_panel"
+    ) as LarkCollapsiblePanel;
     expect(panel.expanded).toBe(true);
   });
 
-  it("panel starts collapsed when only routine PRs are present", () => {
-    const card = buildDailyCard("2026-06-05", routineOnlyAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
-      tag: "collapsible_panel";
-      expanded: boolean;
-    };
-    expect(panel.expanded).toBe(false);
-  });
-
-  it("shows significant PRs in detail; routine PRs in same project are not expanded", () => {
+  it("shows significant PRs in detail panel; routine PR shown as hint", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
-      tag: "collapsible_panel";
-      elements: Array<{ content: string }>;
-    };
+    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel;
     const detail = panel.elements[0]!.content;
     expect(detail).toContain("#101");
     expect(detail).toContain("Add OAuth2 support");
@@ -202,59 +195,9 @@ describe("buildDailyCard", () => {
 
   it("PR title is rendered as a markdown link in detail panel", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
-      tag: "collapsible_panel";
-      elements: Array<{ content: string }>;
-    };
+    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel;
     const detail = panel.elements[0]!.content;
     expect(detail).toContain("[#101 Add OAuth2 support](https://github.com/org/repo-a/pull/101)");
-  });
-
-  it("routine-only project shows exactly one representative PR in detail", () => {
-    const card = buildDailyCard("2026-06-05", routineOnlyAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
-      tag: "collapsible_panel";
-      elements: Array<{ content: string }>;
-    };
-    const detail = panel.elements[0]!.content;
-    expect(detail).toContain("#300");
-    expect(detail).toContain("Bump lodash");
-    expect(detail).not.toContain("#301");
-    expect(detail).not.toContain("#302");
-    expect(detail).not.toContain("#303");
-    expect(detail).toContain("3 more routine PR");
-  });
-
-  it("routine-only project with exactly 1 PR shows no 'N more' count note", () => {
-    const singleRoutineAnalyses: GroupedAnalyses = [
-      {
-        projectId: "org/repo-e",
-        prCount: 1,
-        directionalShiftCount: 0,
-        notableCount: 0,
-        topDirectionSignal: null,
-        prs: [
-          {
-            prNumber: 400,
-            title: "Only routine PR",
-            htmlUrl: "https://github.com/org/repo-e/pull/400",
-            summary: "Single routine change",
-            technicalDetail: null,
-            significance: "routine",
-            directionSignal: null,
-          },
-        ],
-      },
-    ];
-
-    const card = buildDailyCard("2026-06-05", singleRoutineAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as {
-      tag: "collapsible_panel";
-      elements: Array<{ content: string }>;
-    };
-    const detail = panel.elements[0]!.content;
-    expect(detail).toContain("#400");
-    expect(detail).not.toContain("more routine");
   });
 
   it("daily report does not output counterpart action recommendations", () => {
@@ -901,5 +844,395 @@ describe("stripCounterpartRecommendations", () => {
     );
     expect(result).not.toContain("Mantle should");
     expect(result).toContain("source repo also removes legacy sync path");
+  });
+});
+
+describe("buildRepoPanels", () => {
+  it("returns fallback markdown for all-routine analyses", () => {
+    const panels = buildRepoPanels(routineOnlyAnalyses);
+    expect(panels).toHaveLength(1);
+    expect(panels[0]!.tag).toBe("markdown");
+    expect((panels[0] as LarkMarkdownElement).content).toBe("_All PRs are routine today._");
+  });
+
+  it("returns fallback markdown for empty analyses", () => {
+    const panels = buildRepoPanels([]);
+    expect(panels).toHaveLength(1);
+    expect((panels[0] as LarkMarkdownElement).content).toBe("_All PRs are routine today._");
+  });
+
+  it("generates one panel per significant project, skipping routine-only", () => {
+    const panels = buildRepoPanels(sampleAnalyses);
+    // org/repo-a has directional → 1 panel; org/repo-b is routine-only → no panel
+    expect(panels).toHaveLength(1);
+    expect(panels[0]!.tag).toBe("collapsible_panel");
+  });
+
+  it("directional panel has 🔴 emoji in header", () => {
+    const panels = buildRepoPanels(sampleAnalyses);
+    const panel = panels[0] as LarkCollapsiblePanel;
+    expect(panel.header.title.content).toContain("🔴");
+    expect(panel.header.title.content).toContain("org/repo-a");
+    expect(panel.header.title.content).toContain("2 PR");
+  });
+
+  it("directional panel is expanded: true", () => {
+    const panels = buildRepoPanels(sampleAnalyses);
+    const panel = panels[0] as LarkCollapsiblePanel;
+    expect(panel.expanded).toBe(true);
+  });
+
+  it("notable-only panel has 🟡 emoji in header", () => {
+    const notableAnalyses: GroupedAnalyses = [
+      {
+        projectId: "org/notable-repo",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 10,
+            title: "Notable feature",
+            htmlUrl: "https://github.com/org/notable-repo/pull/10",
+            summary: "A notable improvement",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    const panels = buildRepoPanels(notableAnalyses);
+    const panel = panels[0] as LarkCollapsiblePanel;
+    expect(panel.header.title.content).toContain("🟡");
+    expect(panel.header.title.content).toContain("org/notable-repo");
+  });
+
+  it("notable panel expanded: false when directional panels exist", () => {
+    const mixed: GroupedAnalyses = [
+      {
+        projectId: "org/directional",
+        prCount: 1,
+        directionalShiftCount: 1,
+        notableCount: 0,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "Directional PR",
+            htmlUrl: "https://github.com/org/directional/pull/1",
+            summary: "Directional change",
+            technicalDetail: null,
+            significance: "directional_shift",
+            directionSignal: "big shift",
+          },
+        ],
+      },
+      {
+        projectId: "org/notable",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 2,
+            title: "Notable PR",
+            htmlUrl: "https://github.com/org/notable/pull/2",
+            summary: "Notable change",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    const panels = buildRepoPanels(mixed);
+    expect(panels).toHaveLength(2);
+    const directionalPanel = panels.find(
+      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/directional")
+    ) as LarkCollapsiblePanel;
+    const notablePanel = panels.find(
+      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/notable")
+    ) as LarkCollapsiblePanel;
+    expect(directionalPanel.expanded).toBe(true);
+    expect(notablePanel.expanded).toBe(false);
+  });
+
+  it("notable panel expanded: true (top 2) when no directional panels exist — single notable", () => {
+    const notableOnly: GroupedAnalyses = [
+      {
+        projectId: "org/notable-a",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "Notable A",
+            htmlUrl: "https://github.com/org/notable-a/pull/1",
+            summary: "Notable",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    const panels = buildRepoPanels(notableOnly);
+    expect(panels).toHaveLength(1);
+    expect((panels[0] as LarkCollapsiblePanel).expanded).toBe(true);
+  });
+
+  it("expand rule determinism: no directional panels — sorts by notableCount desc then expands top min(2, n)", () => {
+    // 3 notable-only repos: repo-b has most notable PRs → should be expanded first
+    const notableOnly: GroupedAnalyses = [
+      {
+        projectId: "org/repo-a",
+        prCount: 2,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "Notable A",
+            htmlUrl: "https://github.com/org/repo-a/pull/1",
+            summary: "Notable",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+          {
+            prNumber: 2,
+            title: "Routine A",
+            htmlUrl: "https://github.com/org/repo-a/pull/2",
+            summary: "Routine",
+            technicalDetail: null,
+            significance: "routine",
+            directionSignal: null,
+          },
+        ],
+      },
+      {
+        projectId: "org/repo-b",
+        prCount: 3,
+        directionalShiftCount: 0,
+        notableCount: 3,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 10,
+            title: "Notable B1",
+            htmlUrl: "https://github.com/org/repo-b/pull/10",
+            summary: "Notable",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+          {
+            prNumber: 11,
+            title: "Notable B2",
+            htmlUrl: "https://github.com/org/repo-b/pull/11",
+            summary: "Notable",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+          {
+            prNumber: 12,
+            title: "Notable B3",
+            htmlUrl: "https://github.com/org/repo-b/pull/12",
+            summary: "Notable",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+        ],
+      },
+      {
+        projectId: "org/repo-c",
+        prCount: 2,
+        directionalShiftCount: 0,
+        notableCount: 2,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 20,
+            title: "Notable C1",
+            htmlUrl: "https://github.com/org/repo-c/pull/20",
+            summary: "Notable",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+          {
+            prNumber: 21,
+            title: "Notable C2",
+            htmlUrl: "https://github.com/org/repo-c/pull/21",
+            summary: "Notable",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    const panels = buildRepoPanels(notableOnly);
+    expect(panels).toHaveLength(3);
+    const panelA = panels.find(
+      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/repo-a")
+    ) as LarkCollapsiblePanel;
+    const panelB = panels.find(
+      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/repo-b")
+    ) as LarkCollapsiblePanel;
+    const panelC = panels.find(
+      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/repo-c")
+    ) as LarkCollapsiblePanel;
+    // repo-b (3 notable) and repo-c (2 notable) are the top 2 by notableCount
+    expect(panelB.expanded).toBe(true);
+    expect(panelC.expanded).toBe(true);
+    // repo-a (1 notable) is outside top 2
+    expect(panelA.expanded).toBe(false);
+  });
+
+  it("panel body: significant PRs shown with link, badge, summary; routine appended as hint", () => {
+    const panels = buildRepoPanels(sampleAnalyses);
+    const panel = panels[0] as LarkCollapsiblePanel;
+    const body = panel.elements[0]!.content;
+    expect(body).toContain("[#101 Add OAuth2 support](https://github.com/org/repo-a/pull/101)");
+    expect(body).toContain("🔴 DIRECTIONAL");
+    expect(body).toContain("Adds OAuth2 authentication flow");
+    expect(body).toContain("Direction: migrating auth to OAuth2");
+    expect(body).toContain("1 routine PR not expanded");
+    expect(body).not.toContain("#102");
+  });
+
+  it("panel body: direction signal stripped of counterpart recommendations", () => {
+    const analyses: GroupedAnalyses = [
+      {
+        projectId: "org/reth",
+        prCount: 1,
+        directionalShiftCount: 1,
+        notableCount: 0,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "Migration",
+            htmlUrl: "https://github.com/org/reth/pull/1",
+            summary: "Executor migrated",
+            technicalDetail: null,
+            significance: "directional_shift",
+            directionSignal: "switching to async; Mantle should update its adapter",
+          },
+        ],
+      },
+    ];
+    const panels = buildRepoPanels(analyses);
+    const body = (panels[0] as LarkCollapsiblePanel).elements[0]!.content;
+    expect(body).not.toContain("Mantle should");
+    expect(body).toContain("switching to async");
+  });
+
+  it("mobile readability: long repo name and Chinese signal in panel header and body do not use table syntax", () => {
+    const analyses: GroupedAnalyses = [
+      {
+        projectId: "ethereum-optimism/op-geth",
+        prCount: 2,
+        directionalShiftCount: 1,
+        notableCount: 0,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "New consensus API",
+            htmlUrl: "https://github.com/ethereum-optimism/op-geth/pull/1",
+            summary: "新 consensus API 接口引入",
+            technicalDetail: null,
+            significance: "directional_shift",
+            directionSignal: "新 consensus API 接口引入，需要下游适配",
+          },
+          {
+            prNumber: 2,
+            title: "Routine bump",
+            htmlUrl: "https://github.com/ethereum-optimism/op-geth/pull/2",
+            summary: "Routine dependency bump",
+            technicalDetail: null,
+            significance: "routine",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    const panels = buildRepoPanels(analyses);
+    const panel = panels[0] as LarkCollapsiblePanel;
+    expect(panel.header.title.content).toContain("ethereum-optimism/op-geth");
+    const body = panel.elements[0]!.content;
+    expect(body).toContain("新 consensus API 接口引入");
+    // No pipe characters (no table syntax)
+    expect(body).not.toContain("|");
+    expect(panel.header.title.content).not.toContain("|");
+  });
+
+  it("formatter.ts Level 3 single-project mode: notable project gets one panel", () => {
+    const singleNotable: GroupedAnalyses = [
+      {
+        projectId: "org/single",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "Notable",
+            htmlUrl: "https://github.com/org/single/pull/1",
+            summary: "Notable change",
+            technicalDetail: null,
+            significance: "notable",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    const card = buildDailyCard("2026-06-05", singleNotable);
+    const panels = card.elements.filter((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel[];
+    expect(panels).toHaveLength(1);
+    expect(panels[0]!.header.title.content).toContain("🟡");
+    expect(panels[0]!.header.title.content).toContain("org/single");
+  });
+
+  it("formatter.ts Level 3 single-project mode: routine-only project gets fallback markdown, no panel", () => {
+    const singleRoutine: GroupedAnalyses = [
+      {
+        projectId: "org/routine-only",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 0,
+        topDirectionSignal: null,
+        prs: [
+          {
+            prNumber: 1,
+            title: "Routine",
+            htmlUrl: "https://github.com/org/routine-only/pull/1",
+            summary: "Routine change",
+            technicalDetail: null,
+            significance: "routine",
+            directionSignal: null,
+          },
+        ],
+      },
+    ];
+    const card = buildDailyCard("2026-06-05", singleRoutine);
+    const panels = card.elements.filter((e) => e.tag === "collapsible_panel");
+    expect(panels).toHaveLength(0);
+    const fallback = card.elements.find(
+      (e): e is LarkMarkdownElement =>
+        e.tag === "markdown" && (e as LarkMarkdownElement).content.includes("All PRs are routine today")
+    );
+    expect(fallback).toBeDefined();
   });
 });
