@@ -1,6 +1,7 @@
 import { getDb } from "../../storage/db";
 import { buildPrHtmlUrl } from "./templates/daily-card";
 import { getWeekPeriod } from "../../utils/time-window";
+import type { DailyDigest } from "./daily";
 
 interface WeeklyAnalysisRow {
   id: number;
@@ -49,10 +50,29 @@ export interface WeeklyReportData {
   periodEndUnix: number;
 }
 
-export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportData {
-  const db = getDb();
-  const { startUnix: periodStartUnix, endUnix: periodEndUnix } = getWeekPeriod(timezone, now);
+interface DigestRow {
+  digest_json: string | null;
+  period_start: number;
+  period_end: number;
+}
 
+interface AccProject {
+  prCount: number;
+  notableCount: number;
+  directionalShiftCount: number;
+  signals: Set<string>;
+  highlights: WeeklyProjectSummary["highlights"];
+}
+
+function signRank(s: "routine" | "notable" | "directional_shift"): number {
+  return s === "directional_shift" ? 2 : s === "notable" ? 1 : 0;
+}
+
+function queryWeeklyFromAnalyses(
+  db: ReturnType<typeof getDb>,
+  periodStartUnix: number,
+  periodEndUnix: number
+): WeeklyReportData {
   const rows = db
     .query<WeeklyAnalysisRow, [number, number]>(
       `SELECT a.id, a.pr_id, a.project_id, a.summary, a.technical_detail,
@@ -127,10 +147,8 @@ export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportDat
     });
   }
 
-  // Sort direction changes: most PRs first
   directionChanges.sort((a, b) => b.prCount - a.prCount);
 
-  // Sort highlights: directional_shift projects first, then notable, then routine-only
   projectHighlights.sort((a, b) => {
     const aRank = a.directionalShiftCount > 0 ? 2 : a.notableCount > 0 ? 1 : 0;
     const bRank = b.directionalShiftCount > 0 ? 2 : b.notableCount > 0 ? 1 : 0;
@@ -149,4 +167,175 @@ export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportDat
     periodStartUnix,
     periodEndUnix,
   };
+}
+
+function isEmptyDigest(digestJson: string | null): boolean {
+  if (digestJson === null) return true;
+  try {
+    const d = JSON.parse(digestJson) as DailyDigest;
+    return d.projects.length === 0;
+  } catch {
+    return true;
+  }
+}
+
+export function aggregateFromDigests(
+  rows: DigestRow[],
+  periodStartUnix: number,
+  periodEndUnix: number,
+  fallback: (start: number, end: number) => WeeklyReportData
+): WeeklyReportData {
+  if (rows.length === 0) {
+    return fallback(periodStartUnix, periodEndUnix);
+  }
+
+  const nullCount = rows.filter((r) => r.digest_json === null).length;
+
+  if (nullCount === rows.length) {
+    console.log(`[Report] Weekly: ${nullCount}/${rows.length} daily digests missing, falling back to analyses query`);
+    return fallback(periodStartUnix, periodEndUnix);
+  }
+
+  // If all rows are effectively empty (null or zero-project digests), fall back to analyses.
+  // This handles the migration window where daily reports ran but found nothing, and PRs from
+  // earlier days were never captured in any digest.
+  const effectivelyEmptyCount = rows.filter((r) => isEmptyDigest(r.digest_json)).length;
+  if (effectivelyEmptyCount === rows.length) {
+    return fallback(periodStartUnix, periodEndUnix);
+  }
+
+  // Mixed mode: at least one digest present
+  const projectMap = new Map<string, AccProject>();
+
+  function mergeIntoMap(
+    projectId: string,
+    prCount: number,
+    notableCount: number,
+    directionalShiftCount: number,
+    signals: string[],
+    highlights: WeeklyProjectSummary["highlights"]
+  ): void {
+    const acc = projectMap.get(projectId) ?? {
+      prCount: 0,
+      notableCount: 0,
+      directionalShiftCount: 0,
+      signals: new Set<string>(),
+      highlights: [],
+    };
+    acc.prCount += prCount;
+    acc.notableCount += notableCount;
+    acc.directionalShiftCount += directionalShiftCount;
+    for (const s of signals) acc.signals.add(s);
+    acc.highlights.push(...highlights);
+    projectMap.set(projectId, acc);
+  }
+
+  for (const row of rows) {
+    if (row.digest_json !== null) {
+      const digest: DailyDigest = JSON.parse(row.digest_json);
+      for (const proj of digest.projects) {
+        mergeIntoMap(
+          proj.projectId,
+          proj.prCount,
+          proj.notableCount,
+          proj.directionalShiftCount,
+          proj.topSignals,
+          proj.prs.map((p) => ({
+            prNumber: p.prNumber,
+            title: p.title,
+            summary: p.summary,
+            significance: p.significance,
+            directionSignal: p.directionSignal,
+            htmlUrl: p.htmlUrl,
+          }))
+        );
+      }
+    } else {
+      const dayData = fallback(row.period_start, row.period_end);
+      for (const proj of dayData.projectHighlights) {
+        mergeIntoMap(
+          proj.projectId,
+          proj.prCount,
+          proj.notableCount,
+          proj.directionalShiftCount,
+          proj.highlights
+            .filter((h) => h.directionSignal !== null)
+            .map((h) => h.directionSignal!),
+          proj.highlights
+        );
+      }
+    }
+  }
+
+  let totalPrs = 0;
+  let totalNotable = 0;
+  let totalDirectionalShifts = 0;
+  const directionChanges: WeeklyDirectionChange[] = [];
+  const projectHighlights: WeeklyProjectSummary[] = [];
+
+  for (const [projectId, acc] of projectMap.entries()) {
+    totalPrs += acc.prCount;
+    totalNotable += acc.notableCount;
+    totalDirectionalShifts += acc.directionalShiftCount;
+
+    if (acc.directionalShiftCount > 0) {
+      directionChanges.push({
+        projectId,
+        prCount: acc.directionalShiftCount,
+        signals: Array.from(acc.signals),
+      });
+    }
+
+    const sortedHighlights = acc.highlights
+      .sort((a, b) => signRank(b.significance) - signRank(a.significance))
+      .slice(0, 2);
+
+    projectHighlights.push({
+      projectId,
+      prCount: acc.prCount,
+      notableCount: acc.notableCount,
+      directionalShiftCount: acc.directionalShiftCount,
+      highlights: sortedHighlights,
+    });
+  }
+
+  directionChanges.sort((a, b) => b.prCount - a.prCount);
+
+  projectHighlights.sort((a, b) => {
+    const aRank = a.directionalShiftCount > 0 ? 2 : a.notableCount > 0 ? 1 : 0;
+    const bRank = b.directionalShiftCount > 0 ? 2 : b.notableCount > 0 ? 1 : 0;
+    return bRank - aRank;
+  });
+
+  return {
+    directionChanges,
+    activitySummary: {
+      totalPrs,
+      directionalShiftCount: totalDirectionalShifts,
+      notableCount: totalNotable,
+      projectCount: projectMap.size,
+    },
+    projectHighlights,
+    periodStartUnix,
+    periodEndUnix,
+  };
+}
+
+export function buildWeeklyReport(timezone: string, now?: Date): WeeklyReportData {
+  const db = getDb();
+  const { startUnix: periodStartUnix, endUnix: periodEndUnix } = getWeekPeriod(timezone, now);
+
+  const dailyRows = db
+    .query<DigestRow, [number, number]>(
+      `SELECT digest_json, period_start, period_end FROM reports
+       WHERE type = 'daily' AND period_start >= ? AND period_end <= ?`
+    )
+    .all(periodStartUnix, periodEndUnix);
+
+  return aggregateFromDigests(
+    dailyRows,
+    periodStartUnix,
+    periodEndUnix,
+    (start, end) => queryWeeklyFromAnalyses(db, start, end)
+  );
 }
