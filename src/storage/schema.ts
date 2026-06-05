@@ -16,3 +16,8 @@ export const MIGRATION_003 = readFileSync(
   join(import.meta.dir, "migrations/003_budget_skipped.sql"),
   "utf-8"
 );
+
+export const MIGRATION_004 = readFileSync(
+  join(import.meta.dir, "migrations/004_add_report_digest.sql"),
+  "utf-8"
+);
