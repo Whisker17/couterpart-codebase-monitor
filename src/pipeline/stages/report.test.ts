@@ -464,6 +464,44 @@ describe("report stage", () => {
     expect(count.n).toBe(0);
   });
 
+  it("empty-path rerun over non-empty period resets row and removes unsent deliveries", async () => {
+    // First run: non-empty — creates reports row and report_deliveries rows
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+
+    const beforeRow = testDb.query<{ content: string; project_ids: string }, []>(
+      "SELECT content, project_ids FROM reports WHERE type='daily'"
+    ).get()!;
+    expect(beforeRow.content).not.toBe("null");
+
+    const deliveriesBefore = testDb.query<{ n: number }, []>(
+      "SELECT COUNT(*) as n FROM report_deliveries"
+    ).get()!;
+    expect(deliveriesBefore.n).toBeGreaterThan(0);
+
+    // Second run: empty — analyses are gone (delete them), rerun execute()
+    testDb.run("DELETE FROM analyses");
+    testDb.run("DELETE FROM pull_requests");
+    await execute(ctx);
+
+    // reports row must be fully reset
+    const afterRow = testDb.query<{ content: string; project_ids: string; digest_json: string }, []>(
+      "SELECT content, project_ids, digest_json FROM reports WHERE type='daily'"
+    ).get()!;
+    expect(afterRow.content).toBe("null");
+    expect(afterRow.project_ids).toBe("[]");
+    const digest = JSON.parse(afterRow.digest_json);
+    expect(digest.projects).toHaveLength(0);
+    expect(digest.activitySummary.totalPrs).toBe(0);
+
+    // all unsent report_deliveries must be gone
+    const deliveriesAfter = testDb.query<{ n: number }, []>(
+      "SELECT COUNT(*) as n FROM report_deliveries WHERE status != 'sent'"
+    ).get()!;
+    expect(deliveriesAfter.n).toBe(0);
+  });
+
   it("does not call writeReportFile when no deliverable PRs", async () => {
     const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
