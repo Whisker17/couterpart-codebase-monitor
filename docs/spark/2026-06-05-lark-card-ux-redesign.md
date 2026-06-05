@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-05  
 **Status:** Approved  
-**Scope:** Daily card + weekly card visual overhaul — no pipeline or data model changes
+**Scope:** Daily card UX overhaul only — weekly card changes deferred (see WHI-136/139/141/143)
 
 ---
 
@@ -32,11 +32,11 @@ Implementation: add `resolveHeaderTemplate(analyses: GroupedAnalyses): string` i
 
 Replace the current bullet-list summary with a two-part structure:
 
-**Part 1 — Metric pills (one line)**
+**Part 1 — Metric summary (one line)**
 ```
-[5 repos] [12 PR] [🔴 ×2] [🟡 ×3] [⚪ ×7]
+5 repos · 12 PR · 🔴 ×2 · 🟡 ×3 · ⚪ ×7
 ```
-Omit pill if count is zero (e.g. no directional shifts → omit `🔴 ×0`).
+Lark markdown renders in proportional fonts — CSS-style pill buttons are not achievable. Use `·`-separated plain text instead. Omit a segment if count is zero (e.g. no directional shifts → omit `🔴 ×0`).
 
 **Part 2 — Signal table**
 One row per project, always listing all projects. Lark markdown uses proportional fonts so column alignment is not attempted; format is:
@@ -76,16 +76,27 @@ Implementation: `buildRepoPanels(analyses: GroupedAnalyses): LarkElement[]` — 
 
 ---
 
-### 4. Weekly Card — Per-repo Collapsible Panels
+### 4. Weekly Card — Deferred
 
-Replace the single `collapsible_panel` ("Per-project Highlights") with one panel per project.
+Weekly card changes are **not in scope for this spec**.
 
-- All panels default to **collapsed** (weekly has Direction Changes + Activity Summary always visible, which already surfaces the key signals)
-- Panel header: `{projectId} · {N} PR`
-- Panel body: same as current (PR list with badge + summary + direction signal)
-- Weekly header color: **unchanged** (`purple`) — distinct from daily cadence
+WHI-136 explicitly requires `weekly-card.ts` to remain unchanged while the digest aggregation architecture is built. More importantly, WHI-139/141/143 redefine the weekly report's product semantics entirely: it is a **Mantle action-intelligence layer**, not a PR-list-by-repo. The future weekly card structure (per WHI-143) is:
 
-Implementation: refactor `buildWeeklyCard()` in `weekly-card.ts` to iterate `data.projectHighlights` and emit one `collapsible_panel` per project instead of one combined panel.
+```
+Mantle Counterpart Checks
+
+Risk Signals
+- base/base#1234 -> mantle/reth [medium, metadata_supported]
+  Why: ...
+  Action: Check whether ...
+
+Optimization Opportunities
+- op-geth#797 -> mantle/reth [high, recent_activity_supported]
+  Why: ...
+  Action: Evaluate whether ...
+```
+
+Applying per-repo collapsible panels to the current `projectHighlights` structure would be immediately thrown away when WHI-141/143 land. Weekly card UX should be designed after WHI-136 digest architecture and WHI-141/143 counterpart check data structures are stable.
 
 ---
 
@@ -94,12 +105,10 @@ Implementation: refactor `buildWeeklyCard()` in `weekly-card.ts` to iterate `dat
 | File | Change |
 |------|--------|
 | `src/extensions/report-generator/templates/daily-card.ts` | `resolveHeaderTemplate()`, `buildSummaryContent()`, `buildRepoPanels()` — replaces summary + panel logic in `buildDailyCard()` |
-| `src/extensions/report-generator/templates/weekly-card.ts` | Per-repo panels in `buildWeeklyCard()` |
 | `src/extensions/report-generator/templates/daily-card.test.ts` | Update assertions for new summary format, panel structure, header color |
-| `src/extensions/report-generator/templates/weekly-card.test.ts` | Update assertions for per-repo panels |
 | `src/extensions/lark-dispatcher/formatter.test.ts` | Minor: card structure assertions if any reference the old single-panel shape |
 
-No changes to: `formatter.ts` (size-based fallback still works), `delivery-localizer.ts`, pipeline stages, data model, or Lark webhook.
+No changes to: `weekly-card.ts` (deferred — see §4), `formatter.ts` (size-based fallback still works), `delivery-localizer.ts`, pipeline stages, data model, or Lark webhook.
 
 ---
 
@@ -109,3 +118,4 @@ No changes to: `formatter.ts` (size-based fallback still works), `delivery-local
 - Changing what data is collected or analyzed
 - Mobile vs desktop layout (Lark renders `wide_screen_mode: true` per existing config)
 - Pagination or multi-card splitting logic (no change to `formatter.ts`)
+- Weekly card UX (deferred to WHI-136 digest architecture + WHI-141/143 Mantle counterpart check data structures)
