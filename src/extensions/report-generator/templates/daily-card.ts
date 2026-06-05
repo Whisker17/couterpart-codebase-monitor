@@ -78,6 +78,17 @@ export function stripCounterpartRecommendations(text: string): string {
     .trim();
 }
 
+export function resolveHeaderTemplate(analyses: GroupedAnalyses): string {
+  let hasNotable = false;
+  for (const project of analyses) {
+    for (const pr of project.prs) {
+      if (pr.significance === "directional_shift") return "orange";
+      if (pr.significance === "notable") hasNotable = true;
+    }
+  }
+  return hasNotable ? "yellow" : "blue";
+}
+
 function significanceBadge(significance: ProjectAnalysis["prs"][number]["significance"]): string {
   if (significance === "directional_shift") return "🔴 DIRECTIONAL";
   if (significance === "notable") return "🟡 NOTABLE";
@@ -183,7 +194,7 @@ export function buildDailyCard(
         tag: "plain_text",
         content: `Counterpart Monitor · Daily Digest · ${date}`,
       },
-      template: "blue",
+      template: resolveHeaderTemplate(projectAnalyses),
     },
     elements,
   };
