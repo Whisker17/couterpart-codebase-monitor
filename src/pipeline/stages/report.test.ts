@@ -16,6 +16,10 @@ mock.module("../../config/projects", () => ({
     { org: "org", repo: "repo-a", url: "https://github.com/org/repo-a" },
     { org: "org", repo: "repo-b", url: "https://github.com/org/repo-b" },
   ],
+  getMantleConfig: () => ({
+    mantleTargets: [],
+    counterpartRelationships: [],
+  }),
 }));
 
 const mockWriteReportFile = mock((_content: unknown) => "data/reports/daily-2026-01-01.json");
@@ -128,6 +132,22 @@ function insertTestData(db: Database): void {
   db.run(
     `INSERT INTO analyses (pr_id, project_id, summary, technical_detail, direction_signal, significance, analyzed_at)
      VALUES (?, 'org/repo-a', 'Test summary', 'Test detail', null, 'routine', ?)`,
+    [pr.id, yesterdayMid]
+  );
+}
+
+function insertNotableTestData(db: Database): void {
+  const yesterdayMid = getYesterdayStartUnix() + 3600;
+  db.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo-a', 'org', 'repo-a', 'https://github.com/org/repo-a')`);
+  db.run(
+    `INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status)
+     VALUES ('org/repo-a', 1, 'Test PR', ?, 'complete')`,
+    [yesterdayMid]
+  );
+  const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+  db.run(
+    `INSERT INTO analyses (pr_id, project_id, summary, technical_detail, direction_signal, significance, analyzed_at)
+     VALUES (?, 'org/repo-a', 'Test summary', 'Test detail', null, 'notable', ?)`,
     [pr.id, yesterdayMid]
   );
 }
@@ -257,9 +277,12 @@ describe("report stage", () => {
     const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
 
-    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
-    expect(row.content).toContain("Yesterday PR");
-    expect(row.content).not.toContain("Old PR");
+    // Per-project panels omit routine PRs; check digest_json which stores all PR detail
+    const row = testDb.query<{ digest_json: string }, []>("SELECT digest_json FROM reports WHERE type='daily'").get()!;
+    const digest = JSON.parse(row.digest_json);
+    const prTitles = digest.projects.flatMap((p: any) => p.prs.map((pr: any) => pr.title));
+    expect(prTitles).toContain("Yesterday PR");
+    expect(prTitles).not.toContain("Old PR");
   });
 
   it("does not write weekly report row when reportMode is daily", async () => {
@@ -369,7 +392,8 @@ describe("report stage", () => {
   });
 
   it("stores localized daily delivery content before dispatch", async () => {
-    insertTestData(testDb);
+    // Use a notable PR so the localized summary appears in the per-project panel body
+    insertNotableTestData(testDb);
     mockLocalizeDailyDelivery.mockImplementation(async (analyses: any) =>
       analyses.map((project: any) => ({
         ...project,
@@ -392,7 +416,8 @@ describe("report stage", () => {
   });
 
   it("updates existing unsent delivery content when report content changes", async () => {
-    insertTestData(testDb);
+    // Use a notable PR so the localized summary appears in the per-project panel body
+    insertNotableTestData(testDb);
     const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
 
@@ -547,12 +572,15 @@ describe("report stage", () => {
     expect(row).toBeDefined();
   });
 
-  it("daily report content contains full GitHub PR URL", async () => {
+  it("daily report digest contains full GitHub PR URL", async () => {
     insertTestData(testDb);
     const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
-    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
-    expect(row.content).toContain("https://github.com/org/repo-a/pull/1");
+    // Per-project panels omit routine PRs from the visible card; check digest_json which stores all PR detail
+    const row = testDb.query<{ digest_json: string }, []>("SELECT digest_json FROM reports WHERE type='daily'").get()!;
+    const digest = JSON.parse(row.digest_json);
+    const allUrls = digest.projects.flatMap((p: any) => p.prs.map((pr: any) => pr.htmlUrl));
+    expect(allUrls).toContain("https://github.com/org/repo-a/pull/1");
   });
 
   it("weekly report content contains full GitHub PR URL", async () => {
@@ -581,9 +609,12 @@ describe("report stage", () => {
 
     const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
-    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
-    expect(row.content).toContain("https://github.com/org/repo-trailing/pull/10");
-    expect(row.content).not.toContain("//pull/");
+    // Per-project panels omit routine PRs from the visible card; check digest_json for URL format
+    const row = testDb.query<{ digest_json: string }, []>("SELECT digest_json FROM reports WHERE type='daily'").get()!;
+    const digest = JSON.parse(row.digest_json);
+    const allUrls = digest.projects.flatMap((p: any) => p.prs.map((pr: any) => pr.htmlUrl));
+    expect(allUrls).toContain("https://github.com/org/repo-trailing/pull/10");
+    expect(allUrls.every((url: string) => !url.includes("//pull/"))).toBe(true);
   });
 
   it("stores digest_json in reports table when analyses exist", async () => {
@@ -699,9 +730,10 @@ describe("buildFinalCard", () => {
   });
 
   it("removes routine-only projects and adds omit note when card exceeds 20KB", () => {
-    // 30 notable-only projects with long summaries push the full card over 20KB.
+    // 30 notable-only projects with summaries push the full card over 20KB.
     // 10 routine-only projects are filtered by formatter Level 2, adding the omit note.
-    const longSummary = "x".repeat(600);
+    // Per-project panels add overhead vs old single panel; 400-char summaries keep trimmed < 28KB.
+    const longSummary = "x".repeat(400);
     const notableProjects = Array.from({ length: 30 }, (_, i) => ({
       projectId: `org/notable-project-${i}`,
       prCount: 1,
