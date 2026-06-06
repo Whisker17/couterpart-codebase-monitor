@@ -5,15 +5,22 @@ import type { GroupedAnalyses } from "./templates/daily-card";
 
 const REPORTS_DIR = "data/reports";
 
+export interface ReportCompleteness {
+  total: number;
+  success: number;
+  failed: string[];
+  status?: string;
+  prTotal?: number;
+  prComplete?: number;
+  prIncomplete?: number;
+  collectionIncomplete?: boolean;
+}
+
 export interface ReportFileContent {
   date: string;
   card: LarkCard | LarkCard[];
   analyses: GroupedAnalyses;
-  completeness: {
-    total: number;
-    success: number;
-    failed: string[];
-  };
+  completeness: ReportCompleteness;
 }
 
 export function writeReportFile(content: ReportFileContent): string {
