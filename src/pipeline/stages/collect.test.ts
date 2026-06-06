@@ -8,8 +8,8 @@ import type { CollectDeps, CollectOptions } from "./collect";
 const TEST_DB_PATH = "data/test-collect-stage.db";
 let testDb: Database;
 
-// Use explicit return types so mockResolvedValueOnce accepts the right shapes.
-const mockFetchMergedPRs = mock(async (): Promise<PRData[]> => []);
+// Use explicit parameter + return types so TS can index mock.calls[0]![2] as Date.
+const mockFetchMergedPRs = mock(async (_org: string, _repo: string, _since: Date): Promise<PRData[]> => []);
 const mockFetchRepoMetadata = mock(
   async (): Promise<RepoMetadata> => ({
     description: "Test repo",
