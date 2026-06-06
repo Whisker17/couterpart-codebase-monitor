@@ -165,7 +165,7 @@ describe("delivery localizer", () => {
 
     const localized = await localizeDailyDelivery(manyPrs, { generateFn, skipCredentialCheck: true });
 
-    expect(generateFn).toHaveBeenCalledTimes(2);
+    expect(generateFn).toHaveBeenCalledTimes(4);
     expect(localized[0]!.prs[80]!.summary).toBe("中文 daily:pr:org/repo:81:summary");
   });
 });

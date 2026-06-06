@@ -22,11 +22,11 @@ services:
         - "sh"
         - "-c"
         - >-
-          test -f data/health.json &&
-          bun -e "const h=JSON.parse(require('fs').readFileSync('data/health.json','utf8'));
-          const age=Date.now()-new Date(h.lastRun).getTime();
-          if(!h.lastRun||age>7200000||h.success===false)process.exit(1)"
-      interval: 5m
+          test -f data/readiness.json &&
+          bun -e "const h=JSON.parse(require('fs').readFileSync('data/readiness.json','utf8'));
+          const age=Date.now()-new Date(h.updatedAt).getTime();
+          if(h.status!=='ready'||!h.updatedAt||age>120000)process.exit(1)"
+      interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 2m
+      start_period: 10s

@@ -36,8 +36,41 @@ export interface HealthRecord {
   consecutiveFailures: number;
 }
 
+export interface ReadinessRecord {
+  updatedAt: string;
+  status: "ready";
+}
+
 const DEFAULT_HEALTH_PATH = "data/health.json";
+const DEFAULT_READINESS_PATH = "data/readiness.json";
 const CONSECUTIVE_FAILURE_THRESHOLD = 3;
+const READINESS_HEARTBEAT_MS = 30_000;
+
+function dirname(path: string): string {
+  return path.includes("/") ? path.split("/").slice(0, -1).join("/") : ".";
+}
+
+export async function writeReadiness(readinessPath = DEFAULT_READINESS_PATH): Promise<void> {
+  const dir = dirname(readinessPath);
+  await mkdir(dir, { recursive: true });
+  const record: ReadinessRecord = {
+    updatedAt: new Date().toISOString(),
+    status: "ready",
+  };
+  await Bun.write(readinessPath, JSON.stringify(record, null, 2) + "\n");
+}
+
+export async function startReadinessHeartbeat(
+  readinessPath = DEFAULT_READINESS_PATH,
+  intervalMs = READINESS_HEARTBEAT_MS
+): Promise<ReturnType<typeof setInterval>> {
+  await writeReadiness(readinessPath);
+  return setInterval(() => {
+    void writeReadiness(readinessPath).catch((err) => {
+      console.error("[Readiness] Failed to write readiness heartbeat:", err);
+    });
+  }, intervalMs);
+}
 
 async function readExistingHealth(healthPath: string): Promise<HealthRecord | null> {
   try {
@@ -94,7 +127,7 @@ export async function writeHealthAndMaybeAlert(
     consecutiveFailures,
   };
 
-  const dir = healthPath.includes("/") ? healthPath.split("/").slice(0, -1).join("/") : ".";
+  const dir = dirname(healthPath);
   await mkdir(dir, { recursive: true });
   await Bun.write(healthPath, JSON.stringify(record, null, 2) + "\n");
 

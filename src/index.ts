@@ -4,6 +4,7 @@ import { validateEnv } from "./config/settings.ts";
 import { getDb } from "./storage/db";
 import { register as registerHello } from "./extensions/hello/index.ts";
 import { registerScheduler } from "./scheduler/cron";
+import { startReadinessHeartbeat } from "./pipeline/runner";
 import { exportAnalyses } from "./utils/audit-export";
 
 function buildModel() {
@@ -76,6 +77,7 @@ async function main() {
 
   console.log("Session ready. Hot-reload: modify a handler and re-register the extension to pick up changes.");
 
+  await startReadinessHeartbeat();
   registerScheduler();
 }
 

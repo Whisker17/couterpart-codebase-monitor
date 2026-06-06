@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { writeFileSync, unlinkSync } from "node:fs";
-import { runPipeline, writeHealthAndMaybeAlert } from "./runner";
+import {
+  runPipeline,
+  startReadinessHeartbeat,
+  writeHealthAndMaybeAlert,
+  writeReadiness,
+} from "./runner";
 import type { PipelineContext, PipelineStage, StageResult } from "./runner";
 import { _resetSettingsCache, _setSettingsConfigPath } from "../config/settings";
 import { _resetProjectsCache, _setProjectsConfigPath } from "../config/projects";
@@ -254,6 +259,64 @@ describe("writeHealthAndMaybeAlert", () => {
     } finally {
       if (origUrl !== undefined) process.env.LARK_WEBHOOK_URL = origUrl;
       mock.restore();
+    }
+  });
+});
+
+describe("writeReadiness", () => {
+  let tmpDir: string;
+
+  afterEach(async () => {
+    if (tmpDir) await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function makeTmpFile(fileName: string): Promise<string> {
+    if (!tmpDir) tmpDir = await mkdtemp(join(tmpdir(), "readiness-"));
+    return join(tmpDir, fileName);
+  }
+
+  async function readJson(path: string) {
+    return JSON.parse(await Bun.file(path).text());
+  }
+
+  it("creates readiness.json for Docker health checks", async () => {
+    const readinessPath = await makeTmpFile("readiness.json");
+    await writeReadiness(readinessPath);
+    const h = await readJson(readinessPath);
+    expect(h.status).toBe("ready");
+    const age = Date.now() - new Date(h.updatedAt).getTime();
+    expect(age).toBeLessThan(5000);
+  });
+
+  it("does not rewrite pipeline health.json during startup readiness", async () => {
+    const healthPath = await makeTmpFile("health.json");
+    const readinessPath = await makeTmpFile("readiness.json");
+    const existing = {
+      lastRun: new Date().toISOString(),
+      success: false,
+      prsProcessed: 0,
+      errors: ["pipeline failed"],
+      consecutiveFailures: 2,
+    };
+    await Bun.write(healthPath, JSON.stringify(existing));
+
+    await writeReadiness(readinessPath);
+    const h = await readJson(healthPath);
+    expect(h).toEqual(existing);
+  });
+
+  it("refreshes readiness.json on a heartbeat", async () => {
+    const readinessPath = await makeTmpFile("readiness.json");
+    const timer = await startReadinessHeartbeat(readinessPath, 5);
+    try {
+      const first = await readJson(readinessPath);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const second = await readJson(readinessPath);
+      expect(new Date(second.updatedAt).getTime()).toBeGreaterThan(
+        new Date(first.updatedAt).getTime()
+      );
+    } finally {
+      clearInterval(timer);
     }
   });
 });
