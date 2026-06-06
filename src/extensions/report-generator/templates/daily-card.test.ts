@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { buildDailyCard, buildSummaryContent, buildRepoPanels, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate } from "./daily-card";
+import { buildDailyCard, buildSummaryContent, buildRepoPanels, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate, truncateAtSentenceBoundary } from "./daily-card";
 import type { GroupedAnalyses, LarkCollapsiblePanel, LarkMarkdownElement } from "./daily-card";
 
 const sampleAnalyses: GroupedAnalyses = [
@@ -434,7 +434,7 @@ describe("buildSummaryContent", () => {
     expect(content).toContain("下游兼容性风险");
   });
 
-  it("signal text is truncated to 60 chars with ellipsis when longer", () => {
+  it("long signal text (> 500 bytes) is truncated with ellipsis", () => {
     const longSignalAnalyses: GroupedAnalyses = [
       {
         projectId: "longrepo",
@@ -450,19 +450,19 @@ describe("buildSummaryContent", () => {
             summary: "not used",
             technicalDetail: null,
             significance: "directional_shift",
-            directionSignal: "A".repeat(70),
+            directionSignal: "A".repeat(600),
           },
         ],
       },
     ];
     const content = buildSummaryContent(longSignalAnalyses);
-    expect(content).toContain("A".repeat(60) + "…");
-    expect(content).not.toContain("A".repeat(61));
+    expect(content).toContain("A".repeat(500) + "…");
+    expect(content).not.toContain("A".repeat(501));
   });
 
-  it("signal text under 60 chars is not truncated", () => {
+  it("short signal text (< 500 bytes) is preserved unchanged", () => {
     const content = buildSummaryContent(mixedAnalyses);
-    // reth signal "async executor 架构迁移，下游兼容性风险" is under 60 chars — no ellipsis
+    // reth signal "async executor 架构迁移，下游兼容性风险" is well under 500 bytes — no ellipsis
     expect(content).toContain("async executor 架构迁移，下游兼容性风险");
     expect(content).not.toContain("async executor 架构迁移，下游兼容性风险…");
   });
@@ -796,6 +796,164 @@ describe("buildDailyCard header.template", () => {
   it("uses 'blue' header for empty analyses", () => {
     const card = buildDailyCard("2026-06-05", []);
     expect(card.header.template).toBe("blue");
+  });
+});
+
+describe("truncateAtSentenceBoundary", () => {
+  it("under cap passthrough: text < 500 bytes returned unchanged", () => {
+    const short = "hello world";
+    expect(truncateAtSentenceBoundary(short, 500)).toBe(short);
+  });
+
+  it("exact cap: text == 500 bytes returned unchanged", () => {
+    const exact = "A".repeat(500);
+    expect(truncateAtSentenceBoundary(exact, 500)).toBe(exact);
+  });
+
+  it("chinese-heavy: full Chinese text (3 bytes/char) truncated at ~166 chars", () => {
+    // 200 Chinese chars = 600 bytes — exceeds 500-byte cap
+    const chinese = "测".repeat(200);
+    const result = truncateAtSentenceBoundary(chinese, 500);
+    // charLimit = 166 (166 * 3 = 498 <= 500, 167 * 3 = 501 > 500); no boundary → hard cut
+    expect(result).toBe("测".repeat(166) + "…");
+  });
+
+  it("english-heavy: full English text truncated at ~500 chars", () => {
+    // 600 ASCII chars = 600 bytes — exceeds 500-byte cap; no boundary → hard cut
+    const english = "x".repeat(600);
+    const result = truncateAtSentenceBoundary(english, 500);
+    expect(result).toBe("x".repeat(500) + "…");
+  });
+
+  it("mixed: Chinese/English mixed, byte calculation is byte-aware not char-aware", () => {
+    // 100 Chinese (300 bytes) + 250 English (250 bytes) = 550 bytes total
+    const mixed = "中".repeat(100) + "a".repeat(250);
+    // 500 bytes = 100 Chinese (300) + 200 English (200)
+    const result = truncateAtSentenceBoundary(mixed, 500);
+    // charLimit: 100 Chinese (300 bytes) + 200 ASCII (200 bytes) = 500 bytes → charLimit = 300
+    // no boundary → hard cut at 300 chars
+    expect(result).toBe("中".repeat(100) + "a".repeat(200) + "…");
+  });
+
+  it("sentence boundary found: 。 within cap → truncate at boundary", () => {
+    // 100 Chinese + 。+ 80 Chinese = 181 chars = 543 bytes; charLimit = 166; 。at index 100
+    const text = "你".repeat(100) + "。" + "好".repeat(80);
+    const result = truncateAtSentenceBoundary(text, 500);
+    // boundary at index 101 (after 。); 101 > 166 * 0.4 = 66.4 → truncate at boundary
+    expect(result).toBe("你".repeat(100) + "。");
+  });
+
+  it("sentence boundary found: '. ' within cap → truncate at boundary (trailing space trimmed)", () => {
+    // 250 + '. ' + 300 = 552 bytes total; charLimit = 500
+    // Boundary at 252; 252 > 500 * 0.4 = 200 → truncate; trailing space trimmed
+    const text2 = "a".repeat(250) + ". " + "b".repeat(300);
+    const result2 = truncateAtSentenceBoundary(text2, 500);
+    expect(result2).toBe("a".repeat(250) + ".");
+  });
+
+  it("no boundary found (< 40%): boundary too early → hard cut + …", () => {
+    // Put 。 at position 10, charLimit = 166 Chinese chars, threshold = 66
+    // 10 + 1 = 11 < 66.4 → hard cut
+    const text = "你".repeat(10) + "。" + "好".repeat(190); // 201 chars = 603 bytes
+    const result = truncateAtSentenceBoundary(text, 500);
+    // charLimit = 166; boundary at pos 11; 11 <= 66.4 → hard cut
+    expect(result).toBe("你".repeat(10) + "。" + "好".repeat(155) + "…");
+  });
+
+  it("no boundary at all → hard cut + …", () => {
+    const text = "a".repeat(600);
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("a".repeat(500) + "…");
+  });
+
+  it("multiple boundaries: last one is taken", () => {
+    // Three 。 at positions 70, 100, 140 (all > 40% of charLimit=166 → last wins)
+    const text =
+      "你".repeat(70) + "。" + "好".repeat(30) + "。" + "啊".repeat(40) + "。" + "吧".repeat(30);
+    // 172 chars = 516 bytes; charLimit = 166
+    // boundaries at 71, 102, 143; all > 66.4; last is 143
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("你".repeat(70) + "。" + "好".repeat(30) + "。" + "啊".repeat(40) + "。");
+  });
+
+  it("中文句号 recognized as boundary", () => {
+    const text = "一二三四五六七八九十".repeat(15) + "。" + "a".repeat(200);
+    // 150 Chinese + 。 + 200 ASCII = 651 bytes; charLimit ≈ 166 (498 bytes)
+    // 。at pos 150; 151 > 66.4 → use boundary
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("一二三四五六七八九十".repeat(15) + "。");
+  });
+
+  it("英文句号 ('. ') recognized as boundary (trailing space trimmed)", () => {
+    const text = "a".repeat(300) + ". " + "b".repeat(300);
+    // charLimit = 500; boundary at 302; 302 > 200 → use boundary; trailing space trimmed
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("a".repeat(300) + ".");
+  });
+
+  it("exclamation mark ！ recognized as boundary", () => {
+    const text = "你".repeat(100) + "！" + "好".repeat(80);
+    // charLimit = 166; boundary at 101 > 66.4 → truncate
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("你".repeat(100) + "！");
+  });
+
+  it("exclamation mark '! ' recognized as boundary (trailing space trimmed)", () => {
+    const text = "a".repeat(300) + "! " + "b".repeat(300);
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("a".repeat(300) + "!");
+  });
+
+  it("question mark ？ recognized as boundary", () => {
+    const text = "你".repeat(100) + "？" + "好".repeat(80);
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("你".repeat(100) + "？");
+  });
+
+  it("question mark '? ' recognized as boundary (trailing space trimmed)", () => {
+    const text = "a".repeat(300) + "? " + "b".repeat(300);
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("a".repeat(300) + "?");
+  });
+
+  it("trailing whitespace removed: '. ' boundary trims the trailing space", () => {
+    // Place '. ' at a valid boundary position; the trailing space must be trimmed
+    const text = "a".repeat(300) + ". " + "b".repeat(300);
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).not.toMatch(/\s$/);
+    expect(result).toMatch(/\.$/);
+  });
+
+  it("hard-cut result has no trailing whitespace", () => {
+    // Spaces before the cut point should not appear after trim()
+    const text = "a".repeat(495) + "     " + "b".repeat(100);
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).not.toMatch(/\s+…$/);
+    expect(result).toMatch(/…$/);
+  });
+
+  it("astral character (🙂) fits exactly within cap → included in full, no truncation", () => {
+    // 🙂 is U+1F642: 4 UTF-8 bytes, 2 UTF-16 code units; 496 + 4 = 500 exactly
+    const text = "a".repeat(496) + "🙂";
+    expect(truncateAtSentenceBoundary(text, 500)).toBe(text);
+  });
+
+  it("astral character would push byte count over cap → excluded entirely, no unpaired surrogates", () => {
+    // 🙂 starts at byte offset 498; 498 + 4 = 502 > 500 → excluded; hard cut
+    const text = "a".repeat(498) + "🙂" + "b";
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("a".repeat(498) + "…");
+    const hasUnpairedSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result);
+    expect(hasUnpairedSurrogate).toBe(false);
+  });
+
+  it("repro: a.repeat(498) + 🙂 + b with cap 500 → clean output, no surrogate in truncated result", () => {
+    const text = "a".repeat(498) + "🙂" + "b";
+    const result = truncateAtSentenceBoundary(text, 500);
+    const hasUnpairedSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result);
+    expect(hasUnpairedSurrogate).toBe(false);
+    expect(result).toMatch(/…$/);
+    expect(result).not.toContain("🙂");
   });
 });
 
