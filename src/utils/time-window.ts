@@ -83,3 +83,28 @@ export function getWeekPeriod(
     endUnix: Math.floor(endMs / 1000),
   };
 }
+
+export function getDayPeriod(
+  timezone: string,
+  dayString: string
+): { startUnix: number; endUnix: number } {
+  const match = dayString.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    throw new Error(`Invalid dayString format: "${dayString}". Expected YYYY-MM-DD.`);
+  }
+  const year = parseInt(match[1]!, 10);
+  const month = parseInt(match[2]!, 10);
+  const day = parseInt(match[3]!, 10);
+  const startMs = localMidnightToUTC(timezone, year, month, day);
+  const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
+  const endMs = localMidnightToUTC(
+    timezone,
+    nextDay.getUTCFullYear(),
+    nextDay.getUTCMonth() + 1,
+    nextDay.getUTCDate()
+  ) - 1000;
+  return {
+    startUnix: Math.floor(startMs / 1000),
+    endUnix: Math.floor(endMs / 1000),
+  };
+}
