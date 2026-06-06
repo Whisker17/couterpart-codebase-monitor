@@ -931,6 +931,30 @@ describe("truncateAtSentenceBoundary", () => {
     expect(result).not.toMatch(/\s+…$/);
     expect(result).toMatch(/…$/);
   });
+
+  it("astral character (🙂) fits exactly within cap → included in full, no truncation", () => {
+    // 🙂 is U+1F642: 4 UTF-8 bytes, 2 UTF-16 code units; 496 + 4 = 500 exactly
+    const text = "a".repeat(496) + "🙂";
+    expect(truncateAtSentenceBoundary(text, 500)).toBe(text);
+  });
+
+  it("astral character would push byte count over cap → excluded entirely, no unpaired surrogates", () => {
+    // 🙂 starts at byte offset 498; 498 + 4 = 502 > 500 → excluded; hard cut
+    const text = "a".repeat(498) + "🙂" + "b";
+    const result = truncateAtSentenceBoundary(text, 500);
+    expect(result).toBe("a".repeat(498) + "…");
+    const hasUnpairedSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result);
+    expect(hasUnpairedSurrogate).toBe(false);
+  });
+
+  it("repro: a.repeat(498) + 🙂 + b with cap 500 → clean output, no surrogate in truncated result", () => {
+    const text = "a".repeat(498) + "🙂" + "b";
+    const result = truncateAtSentenceBoundary(text, 500);
+    const hasUnpairedSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result);
+    expect(hasUnpairedSurrogate).toBe(false);
+    expect(result).toMatch(/…$/);
+    expect(result).not.toContain("🙂");
+  });
 });
 
 describe("stripCounterpartRecommendations", () => {

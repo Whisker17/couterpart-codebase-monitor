@@ -72,11 +72,11 @@ export function truncateAtSentenceBoundary(text: string, byteCap: number): strin
 
   let byteCount = 0;
   let charLimit = 0;
-  for (let i = 0; i < text.length; i++) {
-    const charBytes = Buffer.byteLength(text[i]!, "utf-8");
+  for (const ch of text) {
+    const charBytes = Buffer.byteLength(ch, "utf-8");
     if (byteCount + charBytes > byteCap) break;
     byteCount += charBytes;
-    charLimit++;
+    charLimit += ch.length; // 1 for BMP code points, 2 for astral (surrogate pairs)
   }
 
   const substr = text.slice(0, charLimit);
