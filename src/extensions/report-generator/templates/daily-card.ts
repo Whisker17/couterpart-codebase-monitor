@@ -16,7 +16,7 @@ export interface LarkCollapsiblePanel {
   tag: "collapsible_panel";
   expanded: boolean;
   header: { title: LarkText };
-  elements: LarkMarkdownElement[];
+  elements: (LarkMarkdownElement | LarkCollapsiblePanel)[];
 }
 
 export type LarkElement = LarkMarkdownElement | LarkHrElement | LarkCollapsiblePanel;
@@ -194,72 +194,100 @@ export function buildSummaryContent(
   return parts.join("\n");
 }
 
-export function buildRepoPanels(analyses: GroupedAnalyses): LarkElement[] {
+function buildInnerRepoPanel(project: ProjectAnalysis): LarkCollapsiblePanel {
+  const significantPrs = project.prs.filter((pr) => pr.significance !== "routine");
+  const routinePrs = project.prs.filter((pr) => pr.significance === "routine");
+
+  const S = project.directionalShiftCount + project.notableCount;
+  const R = routinePrs.length;
+
+  const headerContent =
+    R === 0
+      ? `${project.projectId} · ${S} PR`
+      : `${project.projectId} · ${S} significant · ${R} routine`;
+
+  const bodyParts: string[] = [];
+  for (const pr of significantPrs) {
+    const directionSignal = pr.directionSignal
+      ? stripCounterpartRecommendations(pr.directionSignal)
+      : null;
+    bodyParts.push(`\n${formatMarkdownLink(`#${pr.prNumber} ${pr.title}`, pr.htmlUrl)}`);
+    bodyParts.push(`${significanceBadge(pr.significance)} — ${pr.summary}`);
+    if (directionSignal) {
+      bodyParts.push(`Direction: ${directionSignal}`);
+    }
+  }
+  if (R > 0) {
+    bodyParts.push(`_${R} routine PR${R !== 1 ? "s" : ""} not expanded_`);
+  }
+
+  return {
+    tag: "collapsible_panel",
+    expanded: false,
+    header: { title: { tag: "plain_text", content: headerContent } },
+    elements: [{ tag: "markdown", content: bodyParts.join("\n").trim() || "_No details available._" }],
+  };
+}
+
+function buildOuterTierPanel(
+  tier: "directional" | "notable",
+  projects: ProjectAnalysis[],
+  expanded: boolean
+): LarkCollapsiblePanel {
+  const sorted = [...projects].sort((a, b) => {
+    const aKey = tier === "directional" ? a.directionalShiftCount : a.notableCount;
+    const bKey = tier === "directional" ? b.directionalShiftCount : b.notableCount;
+    if (bKey !== aKey) return bKey - aKey;
+    if (b.prCount !== a.prCount) return b.prCount - a.prCount;
+    return a.projectId.localeCompare(b.projectId);
+  });
+
+  let tierCount = 0;
+  let otherCount = 0;
+  for (const p of projects) {
+    if (tier === "directional") {
+      tierCount += p.directionalShiftCount;
+      otherCount += p.prCount - p.directionalShiftCount;
+    } else {
+      tierCount += p.notableCount;
+      otherCount += p.prCount - p.notableCount;
+    }
+  }
+
+  const N = projects.length;
+  const emoji = tier === "directional" ? "🔴" : "🟡";
+  const tierLabel = tier === "directional" ? "DIRECTIONAL" : "NOTABLE";
+  const countLabel = tier === "directional" ? "directional" : "notable";
+
+  let headerContent = `${emoji} ${tierLabel} · ${N} repo${N !== 1 ? "s" : ""} · ${tierCount} ${countLabel}`;
+  if (otherCount > 0) headerContent += ` · ${otherCount} other`;
+
+  return {
+    tag: "collapsible_panel",
+    expanded,
+    header: { title: { tag: "plain_text", content: headerContent } },
+    elements: sorted.map(buildInnerRepoPanel),
+  };
+}
+
+export function buildSignificancePanels(analyses: GroupedAnalyses): LarkElement[] {
   const directionalProjects = analyses.filter((p) => p.directionalShiftCount > 0);
-  const notableOnlyProjects = analyses.filter(
+  const notableProjects = analyses.filter(
     (p) => p.directionalShiftCount === 0 && p.notableCount > 0
   );
 
-  if (directionalProjects.length === 0 && notableOnlyProjects.length === 0) {
+  if (directionalProjects.length === 0 && notableProjects.length === 0) {
     return [{ tag: "markdown", content: "_All PRs are routine today._" }];
   }
 
-  const hasDirectionalPanels = directionalProjects.length > 0;
-
-  // Determine which notable-only panels expand: sort by notableCount desc → prCount desc → original order
-  const indexedNotable = notableOnlyProjects.map((p, i) => ({ p, i }));
-  indexedNotable.sort((a, b) => {
-    if (b.p.notableCount !== a.p.notableCount) return b.p.notableCount - a.p.notableCount;
-    if (b.p.prCount !== a.p.prCount) return b.p.prCount - a.p.prCount;
-    return a.i - b.i;
-  });
-
-  const expandedNotable = new Set<string>();
-  if (!hasDirectionalPanels) {
-    const expandCount = Math.min(2, indexedNotable.length);
-    for (let i = 0; i < expandCount; i++) {
-      expandedNotable.add(indexedNotable[i]!.p.projectId);
-    }
-  }
-
   const panels: LarkElement[] = [];
-  for (const project of analyses) {
-    const isDirectional = project.directionalShiftCount > 0;
-    const isNotableOnly = project.directionalShiftCount === 0 && project.notableCount > 0;
-    if (!isDirectional && !isNotableOnly) continue;
+  const hasDirectional = directionalProjects.length > 0;
 
-    const emoji = isDirectional ? "🔴" : "🟡";
-    const expanded = isDirectional ? true : expandedNotable.has(project.projectId);
-
-    const significantPrs = project.prs.filter((pr) => pr.significance !== "routine");
-    const routinePrs = project.prs.filter((pr) => pr.significance === "routine");
-
-    const bodyParts: string[] = [];
-    for (const pr of significantPrs) {
-      const directionSignal = pr.directionSignal
-        ? stripCounterpartRecommendations(pr.directionSignal)
-        : null;
-      bodyParts.push(`\n${formatMarkdownLink(`#${pr.prNumber} ${pr.title}`, pr.htmlUrl)}`);
-      bodyParts.push(`${significanceBadge(pr.significance)} — ${pr.summary}`);
-      if (directionSignal) {
-        bodyParts.push(`Direction: ${directionSignal}`);
-      }
-    }
-    if (routinePrs.length > 0) {
-      bodyParts.push(`_${routinePrs.length} routine PR${routinePrs.length !== 1 ? "s" : ""} not expanded_`);
-    }
-
-    panels.push({
-      tag: "collapsible_panel",
-      expanded,
-      header: {
-        title: {
-          tag: "plain_text",
-          content: `${emoji} ${project.projectId} · ${project.prCount} PR`,
-        },
-      },
-      elements: [{ tag: "markdown", content: bodyParts.join("\n").trim() || "_No details available._" }],
-    });
+  if (hasDirectional) {
+    panels.push(buildOuterTierPanel("directional", directionalProjects, true));
+  }
+  if (notableProjects.length > 0) {
+    panels.push(buildOuterTierPanel("notable", notableProjects, !hasDirectional));
   }
 
   return panels;
@@ -276,7 +304,7 @@ export function buildDailyCard(
   const elements: LarkElement[] = [
     { tag: "markdown", content: summaryContent },
     { tag: "hr" },
-    ...buildRepoPanels(projectAnalyses),
+    ...buildSignificancePanels(projectAnalyses),
   ];
 
   // Budget dedup: warning budget is in summary area; non-warning budget goes to card bottom only
