@@ -15,6 +15,11 @@ export interface CollectDeps {
   fetchAndStoreDiff: (org: string, repo: string, prNumber: number) => Promise<DiffResult>;
 }
 
+export interface CollectOptions {
+  dateRangeOverride?: { startUnix: number; endUnix: number };
+  skipSyncUpdate?: boolean;
+}
+
 const defaultDeps: CollectDeps = {
   fetchMergedPRs,
   fetchRepoMetadata,
@@ -41,7 +46,8 @@ function ensureProjectsLoaded(): void {
 
 export async function execute(
   _ctx: PipelineContext,
-  deps: CollectDeps = defaultDeps
+  deps: CollectDeps = defaultDeps,
+  options: CollectOptions = {}
 ): Promise<StageResult> {
   const db = getDb();
   const projects = getTrackedProjects();
@@ -68,17 +74,21 @@ export async function execute(
     }
 
     try {
-      // Determine since: last_synced_at or 7 days ago
-      const row = db
-        .query<{ last_synced_at: number | null }, [string]>(
-          "SELECT last_synced_at FROM projects WHERE id = ?"
-        )
-        .get(pid);
-
-      const sinceMs = row?.last_synced_at
-        ? row.last_synced_at * 1000
-        : Date.now() - SEVEN_DAYS_MS;
-      const since = new Date(sinceMs);
+      // Determine since: dateRangeOverride, last_synced_at, or 7 days ago
+      let since: Date;
+      if (options.dateRangeOverride) {
+        since = new Date((options.dateRangeOverride.startUnix - 1) * 1000);
+      } else {
+        const row = db
+          .query<{ last_synced_at: number | null }, [string]>(
+            "SELECT last_synced_at FROM projects WHERE id = ?"
+          )
+          .get(pid);
+        const sinceMs = row?.last_synced_at
+          ? row.last_synced_at * 1000
+          : Date.now() - SEVEN_DAYS_MS;
+        since = new Date(sinceMs);
+      }
 
       // Fetch repo metadata and update projects table.
       // RepoNotFoundError is re-thrown so the outer catch marks the project inactive.
@@ -96,8 +106,16 @@ export async function execute(
       }
 
       // Fetch merged PRs since last sync
-      const prs = await deps.fetchMergedPRs(project.org, project.repo, since);
+      let prs = await deps.fetchMergedPRs(project.org, project.repo, since);
       console.log(`[Collect] ${pid}: fetched ${prs.length} merged PRs since ${since.toISOString()}`);
+
+      if (options.dateRangeOverride) {
+        const { startUnix, endUnix } = options.dateRangeOverride;
+        prs = prs.filter((pr) => {
+          const mergedAtUnix = Math.floor(pr.merged_at.getTime() / 1000);
+          return mergedAtUnix >= startUnix && mergedAtUnix <= endUnix;
+        });
+      }
 
       let maxMergedAt: number | null = null;
 
@@ -150,7 +168,7 @@ export async function execute(
 
       // Advance last_synced_at to max(merged_at) from this batch, not wall-clock now,
       // to avoid skipping PRs that were ingested late into GitHub's API.
-      if (maxMergedAt !== null) {
+      if (maxMergedAt !== null && !options.skipSyncUpdate) {
         db.run(`UPDATE projects SET last_synced_at = ? WHERE id = ?`, [maxMergedAt, pid]);
       }
 

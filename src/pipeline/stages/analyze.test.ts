@@ -401,4 +401,44 @@ describe("analyze stage", () => {
     ).get();
     expect(inputs?.input_quality).toBe("metadata_only");
   });
+
+  it("dateRange: only analyzes PRs whose merged_at is within the given range", async () => {
+    const startUnix = 1700000000;
+    const endUnix = 1700086400;
+
+    // pending PR inside range — should be analyzed
+    testDb.run(
+      `INSERT INTO pull_requests (project_id, pr_number, title, analysis_status, retry_count, diff_status, merged_at, files_changed, additions, deletions)
+       VALUES ('org/repo', 101, 'In-range PR', 'pending', 0, 'missing', ?, 1, 1, 0)`,
+      [startUnix + 100]
+    );
+    // pending PR outside range — must NOT leak through (proves parenthesization)
+    testDb.run(
+      `INSERT INTO pull_requests (project_id, pr_number, title, analysis_status, retry_count, diff_status, merged_at, files_changed, additions, deletions)
+       VALUES ('org/repo', 102, 'Out-of-range PR', 'pending', 0, 'missing', ?, 1, 1, 0)`,
+      [endUnix + 1000]
+    );
+
+    const result = await execute(
+      { stageResults: new Map(), reportMode: "daily" as const },
+      { dateRange: { startUnix, endUnix } }
+    );
+
+    expect(result.itemsProcessed).toBe(1);
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+
+    const inRange = testDb
+      .query<{ analysis_status: string }, [number]>(
+        "SELECT analysis_status FROM pull_requests WHERE pr_number = ?"
+      )
+      .get(101);
+    expect(inRange?.analysis_status).toBe("complete");
+
+    const outOfRange = testDb
+      .query<{ analysis_status: string }, [number]>(
+        "SELECT analysis_status FROM pull_requests WHERE pr_number = ?"
+      )
+      .get(102);
+    expect(outOfRange?.analysis_status).toBe("pending");
+  });
 });
