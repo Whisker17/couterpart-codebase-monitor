@@ -33,4 +33,10 @@ describe("redispatch script safety guards", () => {
     expect(source).toContain("--dispatch-only re-sends stored report_deliveries.content");
     expect(source).toContain("does not regenerate card JSON");
   });
+
+  it("supports report-only mode that regenerates card JSON without collect/analyze", () => {
+    expect(source).toContain("const reportOnly = args.includes(\"--report-only\");");
+    expect(source).toContain("const stages: PipelineStage[] = reportOnly ? [report] : [collect, analyze, report];");
+    expect(source).toContain("--report-only skips collect/analyze");
+  });
 });

@@ -4,6 +4,7 @@
  * Usage:
  *   bun run scripts/redispatch.ts                        # dry-run: show what would be reset
  *   bun run scripts/redispatch.ts --yes                   # reset + full daily E2E
+ *   bun run scripts/redispatch.ts --yes --report-only     # reset + regenerate report card only (--report-only skips collect/analyze)
  *   bun run scripts/redispatch.ts --yes --dispatch-only   # reset + dispatch only (--dispatch-only re-sends stored report_deliveries.content; does not regenerate card JSON)
  */
 import { validateEnv, getSettings } from "../src/config/settings";
@@ -234,6 +235,7 @@ async function main(): Promise<number> {
   const args = process.argv.slice(2);
   const confirmed = args.includes("--yes");
   const dispatchOnly = args.includes("--dispatch-only");
+  const reportOnly = args.includes("--report-only");
 
   validateEnv();
 
@@ -280,8 +282,12 @@ async function main(): Promise<number> {
     return failed > 0 ? 1 : 0;
   }
 
-  console.log("\n[Redispatch] Running full daily E2E pipeline...\n");
-  const stages: PipelineStage[] = [collect, analyze, report];
+  if (reportOnly) {
+    console.warn("[Redispatch] --report-only skips collect/analyze and regenerates card JSON from existing analyses.");
+  }
+
+  console.log(reportOnly ? "\n[Redispatch] Regenerating daily report card...\n" : "\n[Redispatch] Running full daily E2E pipeline...\n");
+  const stages: PipelineStage[] = reportOnly ? [report] : [collect, analyze, report];
   const stageNames = [...stages.map((s) => s.name), "dispatch (scoped)"].join(" → ");
   console.log(`[E2E] Stages: ${stageNames}`);
 
