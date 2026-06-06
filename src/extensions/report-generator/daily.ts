@@ -53,9 +53,10 @@ export interface DailyReportData {
   digest: DailyDigest;
 }
 
-export function buildDailyReport(timezone: string, now?: Date): DailyReportData {
+export function buildDailyReportForPeriod(startUnix: number, endUnix: number): DailyReportData {
   const db = getDb();
-  const { startUnix: periodStartUnix, endUnix: periodEndUnix } = getYesterdayPeriod(timezone, now);
+  const periodStartUnix = startUnix;
+  const periodEndUnix = endUnix;
 
   const rows = db
     .query<AnalysisRow, [number, number]>(
@@ -169,4 +170,9 @@ export function buildDailyReport(timezone: string, now?: Date): DailyReportData 
   };
 
   return { analyses: rows, grouped, periodStartUnix, periodEndUnix, budgetLine, digest };
+}
+
+export function buildDailyReport(timezone: string, now?: Date): DailyReportData {
+  const { startUnix, endUnix } = getYesterdayPeriod(timezone, now);
+  return buildDailyReportForPeriod(startUnix, endUnix);
 }
