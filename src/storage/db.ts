@@ -7,6 +7,12 @@ const DB_PATH = "data/monitor.db";
 
 let db: Database | null = null;
 
+interface ClosableDatabase {
+  fileControl: (op: number, value: number) => unknown;
+  exec: (sql: string) => unknown;
+  close: () => unknown;
+}
+
 function applyPragmas(database: Database): void {
   database.exec("PRAGMA journal_mode=WAL");
   database.exec("PRAGMA foreign_keys=ON");
@@ -66,14 +72,22 @@ export function getDb(): Database {
 export function closeDb(): void {
   if (!db) return;
 
+  closeDatabaseHandle(db);
+  db = null;
+}
+
+export function closeDatabaseHandle(database: ClosableDatabase): void {
   try {
-    db.fileControl(constants.SQLITE_FCNTL_PERSIST_WAL, 0);
+    database.fileControl(constants.SQLITE_FCNTL_PERSIST_WAL, 0);
   } catch {
     // fileControl not available on this platform — continue to checkpoint
   }
-  db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  db.close();
-  db = null;
+  try {
+    database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } catch {
+    // checkpoint may fail if db is read-only or locked by another process
+  }
+  database.close();
 }
 
 process.on("SIGTERM", () => {

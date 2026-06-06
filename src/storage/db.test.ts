@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
+import { closeDatabaseHandle } from "./db";
 import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004 } from "./schema";
 
 function buildTestDb(): Database {
@@ -121,5 +122,45 @@ describe("MIGRATION_004 — digest_json column", () => {
       .get()!;
 
     expect(row.digest_json).toBeNull();
+  });
+});
+
+describe("closeDatabaseHandle", () => {
+  it("closes the database when wal checkpoint fails", () => {
+    const calls: string[] = [];
+    const database = {
+      fileControl: () => {
+        calls.push("fileControl");
+      },
+      exec: (sql: string) => {
+        calls.push(sql);
+        throw new Error("readonly");
+      },
+      close: () => {
+        calls.push("close");
+      },
+    };
+
+    expect(() => closeDatabaseHandle(database)).not.toThrow();
+    expect(calls).toEqual(["fileControl", "PRAGMA wal_checkpoint(TRUNCATE)", "close"]);
+  });
+
+  it("still attempts checkpoint and close when fileControl is unavailable", () => {
+    const calls: string[] = [];
+    const database = {
+      fileControl: () => {
+        calls.push("fileControl");
+        throw new Error("unsupported");
+      },
+      exec: (sql: string) => {
+        calls.push(sql);
+      },
+      close: () => {
+        calls.push("close");
+      },
+    };
+
+    expect(() => closeDatabaseHandle(database)).not.toThrow();
+    expect(calls).toEqual(["fileControl", "PRAGMA wal_checkpoint(TRUNCATE)", "close"]);
   });
 });
