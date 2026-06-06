@@ -1,78 +1,12 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { rmSync } from "fs";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import type { StageResult } from "../src/pipeline/runner";
+import type { CollectDeps, CollectOptions } from "../src/pipeline/stages/collect";
+import type { DailyReportData, DailyDigest } from "../src/extensions/report-generator/daily";
+import type { FinalCardResult } from "../src/pipeline/stages/report";
 import { getDayPeriod } from "../src/utils/time-window";
-
-const TEST_DB_PATH = "data/test-backfill.db";
-let testDb: Database;
-
-// --- Module mocks (must be declared before await import) ---
-
-const defaultSettings = {
-  schedule: { timezone: "UTC", dailyCron: "0 0 * * *", weeklyCron: "0 0 * * 0" },
-  llm: { model: "test", baseUrl: "", apiKey: "", maxTokensPerCall: 1000, diffTokenBudget: 1000, maxManifestEntries: 10 },
-  lark: { webhookUrl: undefined },
-  github: { token: "" },
-  budget: { monthlyCap: 10, warningThreshold: 0.8, cutoffThreshold: 1.0 },
-};
-
-const mockGetSettings = mock(() => ({ ...defaultSettings }));
-
-mock.module("../src/config/settings", () => ({
-  getSettings: mockGetSettings,
-  validateEnv: () => {},
-  _resetSettingsCache: () => {},
-  _setSettingsConfigPath: () => {},
-}));
-
-mock.module("../src/storage/db", () => ({
-  getDb: () => testDb,
-  closeDb: () => {},
-}));
-
-const mockCollectExecute = mock(
-  async (_ctx: unknown, _deps: unknown, _options: unknown): Promise<StageResult> => ({
-    success: true,
-    itemsProcessed: 0,
-    errors: [],
-    durationMs: 0,
-    failedProjects: [],
-  })
-);
-
-mock.module("../src/pipeline/stages/collect", () => ({
-  execute: mockCollectExecute,
-}));
-
-const mockAnalyzeExecute = mock(
-  async (_ctx: unknown, _options: unknown): Promise<StageResult> => ({
-    success: true,
-    itemsProcessed: 0,
-    errors: [],
-    durationMs: 0,
-  })
-);
-
-mock.module("../src/pipeline/stages/analyze", () => ({
-  execute: mockAnalyzeExecute,
-}));
-
-const mockWriteReportFile = mock((_content: unknown) => "data/reports/test.json");
-mock.module("../src/extensions/report-generator/file-writer", () => ({
-  writeReportFile: mockWriteReportFile,
-}));
-
-mock.module("../src/config/projects", () => ({
-  getTrackedProjects: () => [
-    { org: "org", repo: "repo", url: "https://github.com/org/repo" },
-  ],
-  getMantleConfig: () => ({ mantleTargets: [], counterpartRelationships: [] }),
-  reloadTrackedProjects: () => ({ projects: [], prevProjects: null }),
-}));
-
-// Import after all mocks are registered
-const { runBackfill } = await import("./backfill");
+import { runBackfill } from "./backfill";
+import type { BackfillDeps } from "./backfill";
 
 // --- DB schema helpers ---
 
@@ -127,65 +61,93 @@ function applySchema(db: Database): void {
 // 2026-05-15 UTC boundaries (pre-computed for test clarity)
 const DAY = "2026-05-15";
 const { startUnix: DAY_START, endUnix: DAY_END } = getDayPeriod("UTC", DAY);
-const DAY_MID = DAY_START + 3600; // one hour into the day
+const DAY_MID = DAY_START + 3600;
+
+function makeTestDeps(db: Database, overrides?: Partial<BackfillDeps>): BackfillDeps {
+  const defaultReportData = (startUnix: number, endUnix: number): DailyReportData => {
+    const digest: DailyDigest = {
+      periodStart: startUnix,
+      periodEnd: endUnix,
+      projects: [],
+      activitySummary: { totalPrs: 0, directionalShiftCount: 0, notableCount: 0 },
+    };
+    return { analyses: [], grouped: [], periodStartUnix: startUnix, periodEndUnix: endUnix, digest };
+  };
+
+  const defaultFinalCard = (): FinalCardResult => ({
+    card: {
+      config: { wide_screen_mode: true },
+      header: { title: { tag: "plain_text", content: "Test" }, template: "blue" },
+      elements: [],
+    },
+    content: "{}",
+    errors: [],
+  });
+
+  return {
+    timezone: "UTC",
+    db,
+    collectExecute: async (_ctx, _deps, _options): Promise<StageResult> => ({
+      success: true,
+      itemsProcessed: 0,
+      errors: [],
+      durationMs: 0,
+      failedProjects: [],
+    }),
+    analyzeExecute: async (_ctx, _options): Promise<StageResult> => ({
+      success: true,
+      itemsProcessed: 0,
+      errors: [],
+      durationMs: 0,
+    }),
+    collectDeps: {} as unknown as CollectDeps,
+    getTrackedProjects: () => [{ org: "org", repo: "repo", url: "https://github.com/org/repo" }],
+    buildDailyReportForPeriod: defaultReportData,
+    buildFinalCard: (_date, _grouped, _partialWarning) => defaultFinalCard(),
+    writeReportFile: () => "data/reports/test.json",
+    ...overrides,
+  };
+}
 
 describe("backfill script", () => {
+  let testDb: Database;
+
   beforeEach(() => {
-    testDb = new Database(TEST_DB_PATH);
+    testDb = new Database(":memory:");
     applySchema(testDb);
-
-    mockCollectExecute.mockClear();
-    mockAnalyzeExecute.mockClear();
-    mockWriteReportFile.mockClear();
-
-    mockGetSettings.mockImplementation(() => ({
-      ...defaultSettings,
-      schedule: { ...defaultSettings.schedule, timezone: "UTC" },
-    }));
-    mockCollectExecute.mockImplementation(
-      async (_ctx, _deps, _options): Promise<StageResult> => ({
-        success: true, itemsProcessed: 0, errors: [], durationMs: 0, failedProjects: [],
-      })
-    );
-    mockAnalyzeExecute.mockImplementation(
-      async (_ctx, _options): Promise<StageResult> => ({
-        success: true, itemsProcessed: 0, errors: [], durationMs: 0,
-      })
-    );
   });
 
   afterEach(() => {
     testDb.close();
-    try { rmSync(TEST_DB_PATH); } catch { /* ignore */ }
   });
 
   // --- Timezone source ---
 
   it("uses timezone from getSettings().schedule.timezone for day boundary computation", async () => {
     const tz = "America/New_York";
-    mockGetSettings.mockImplementation(() => ({
-      ...defaultSettings,
-      schedule: { ...defaultSettings.schedule, timezone: tz },
-    }));
+    let capturedOpts: CollectOptions | undefined;
 
-    await runBackfill("2026-01-01", "2026-01-01", false);
+    const deps = makeTestDeps(testDb, {
+      timezone: tz,
+      collectExecute: async (_ctx, _deps, options): Promise<StageResult> => {
+        capturedOpts = options;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0, failedProjects: [] };
+      },
+    });
 
-    expect(mockCollectExecute).toHaveBeenCalledTimes(1);
-    const collectCall = mockCollectExecute.mock.calls[0]!;
-    const opts = collectCall[2] as { dateRangeOverride: { startUnix: number; endUnix: number } };
+    await runBackfill("2026-01-01", "2026-01-01", false, deps);
 
     const { startUnix: expectedStart } = getDayPeriod(tz, "2026-01-01");
     const { startUnix: utcStart } = getDayPeriod("UTC", "2026-01-01");
 
-    // The collect call should use the timezone-correct boundary, not UTC
-    expect(opts.dateRangeOverride.startUnix).toBe(expectedStart);
-    expect(opts.dateRangeOverride.startUnix).not.toBe(utcStart);
+    expect(capturedOpts?.dateRangeOverride?.startUnix).toBe(expectedStart);
+    expect(capturedOpts?.dateRangeOverride?.startUnix).not.toBe(utcStart);
   });
 
   // --- Phase 2: reset step ---
 
   it("resets failed and budget_skipped PRs in range to pending before analyze", async () => {
-    const outsideDay = DAY_START - 86400; // previous day
+    const outsideDay = DAY_START - 86400;
     const outsideMid = outsideDay + 3600;
 
     testDb.run(
@@ -201,7 +163,7 @@ describe("backfill script", () => {
        VALUES ('org/repo', 3, 'Out-of-range failed PR', ${outsideMid}, 'failed', 1)`
     );
 
-    await runBackfill(DAY, DAY, true); // allow-partial so we don't bail on analyze
+    await runBackfill(DAY, DAY, true, makeTestDeps(testDb));
 
     const pr1 = testDb
       .query<{ analysis_status: string; retry_count: number }, []>(
@@ -219,7 +181,6 @@ describe("backfill script", () => {
     expect(pr2.analysis_status).toBe("pending");
     expect(pr2.retry_count).toBe(0);
 
-    // Out-of-range PR must remain unchanged
     const pr3 = testDb
       .query<{ analysis_status: string; retry_count: number }, []>(
         "SELECT analysis_status, retry_count FROM pull_requests WHERE pr_number = 3"
@@ -237,7 +198,7 @@ describe("backfill script", () => {
        VALUES ('org/repo', 1, 'Pending PR', ${DAY_MID}, 'pending')`
     );
 
-    await runBackfill(DAY, DAY, true);
+    await runBackfill(DAY, DAY, true, makeTestDeps(testDb));
 
     const report = testDb
       .query<{ digest_json: string | null }, []>(
@@ -251,15 +212,16 @@ describe("backfill script", () => {
   // --- Collect failure cleanup ---
 
   it("nullifies all day digests and deletes unsent deliveries on collect failure (no allow-partial)", async () => {
-    mockCollectExecute.mockImplementation(async () => ({
-      success: false,
-      itemsProcessed: 0,
-      errors: ["GitHub API error"],
-      durationMs: 0,
-      failedProjects: ["org/repo"],
-    }));
+    const deps = makeTestDeps(testDb, {
+      collectExecute: async (): Promise<StageResult> => ({
+        success: false,
+        itemsProcessed: 0,
+        errors: ["GitHub API error"],
+        durationMs: 0,
+        failedProjects: ["org/repo"],
+      }),
+    });
 
-    // Pre-existing report with pending and sent deliveries
     testDb.run(
       `INSERT INTO reports (type, period_start, period_end, content, digest_json)
        VALUES ('daily', ${DAY_START}, ${DAY_END}, 'null', '{"old":true}')`
@@ -276,7 +238,7 @@ describe("backfill script", () => {
        VALUES (${reportRow.id}, 1, 'sent-card', 'sent')`
     );
 
-    const result = await runBackfill(DAY, DAY, false);
+    const result = await runBackfill(DAY, DAY, false, deps);
 
     expect(result.anySkipped).toBe(true);
 
@@ -294,7 +256,6 @@ describe("backfill script", () => {
       .get()!;
     expect(pendingCnt.cnt).toBe(0);
 
-    // sent delivery preserved
     const sentCnt = testDb
       .query<{ cnt: number }, []>(
         "SELECT COUNT(*) as cnt FROM report_deliveries WHERE status = 'sent'"
@@ -306,7 +267,6 @@ describe("backfill script", () => {
   // --- Stale delivery cleanup ---
 
   it("deletes pending and failed deliveries but preserves sent after report generation", async () => {
-    // Complete PR so the day passes the completeness gate
     testDb.run(
       `INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status)
        VALUES ('org/repo', 1, 'Complete PR', ${DAY_MID}, 'complete')`
@@ -317,7 +277,6 @@ describe("backfill script", () => {
        VALUES (${prRow.id}, 'org/repo', 'Test summary', 'routine')`
     );
 
-    // Pre-existing report with all three delivery statuses
     testDb.run(
       `INSERT INTO reports (type, period_start, period_end, content, project_ids, completeness)
        VALUES ('daily', ${DAY_START}, ${DAY_END}, 'null', '[]', '{}')`
@@ -336,7 +295,7 @@ describe("backfill script", () => {
        VALUES (${reportRow.id}, 2, 'sent-card', 'sent')`
     );
 
-    await runBackfill(DAY, DAY, false);
+    await runBackfill(DAY, DAY, false, makeTestDeps(testDb));
 
     const unsent = testDb
       .query<{ cnt: number }, []>(
@@ -356,8 +315,7 @@ describe("backfill script", () => {
   // --- Empty day behaviour ---
 
   it("writes null content and non-null empty digest for complete empty day", async () => {
-    // No PRs inserted → empty day, complete
-    await runBackfill(DAY, DAY, false);
+    await runBackfill(DAY, DAY, false, makeTestDeps(testDb));
 
     const report = testDb
       .query<{ content: string; project_ids: string; digest_json: string | null }, []>(
@@ -367,7 +325,6 @@ describe("backfill script", () => {
     expect(report).not.toBeNull();
     expect(report!.content).toBe("null");
     expect(report!.project_ids).toBe("[]");
-    // digest_json must be a non-null JSON string with empty projects array
     expect(report!.digest_json).not.toBeNull();
     const digest = JSON.parse(report!.digest_json!);
     expect(digest.projects).toEqual([]);
@@ -375,13 +332,12 @@ describe("backfill script", () => {
   });
 
   it("writes null content and NULL digest_json for partial empty day", async () => {
-    // PR in range but pending (no analysis) → empty grouped, incomplete
     testDb.run(
       `INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status)
        VALUES ('org/repo', 1, 'Pending PR', ${DAY_MID}, 'pending')`
     );
 
-    await runBackfill(DAY, DAY, true);
+    await runBackfill(DAY, DAY, true, makeTestDeps(testDb));
 
     const report = testDb
       .query<{ content: string; project_ids: string; digest_json: string | null }, []>(
@@ -397,15 +353,17 @@ describe("backfill script", () => {
   // --- Collect failure + allow-partial ---
 
   it("marks collectionIncomplete in completeness and proceeds when collect fails with allow-partial", async () => {
-    mockCollectExecute.mockImplementation(async () => ({
-      success: false,
-      itemsProcessed: 0,
-      errors: ["API error"],
-      durationMs: 0,
-      failedProjects: [],
-    }));
+    const deps = makeTestDeps(testDb, {
+      collectExecute: async (): Promise<StageResult> => ({
+        success: false,
+        itemsProcessed: 0,
+        errors: ["API error"],
+        durationMs: 0,
+        failedProjects: [],
+      }),
+    });
 
-    await runBackfill(DAY, DAY, true);
+    await runBackfill(DAY, DAY, true, deps);
 
     const report = testDb
       .query<{ completeness: string }, []>(
@@ -421,15 +379,19 @@ describe("backfill script", () => {
   // --- skipSyncUpdate is passed to collect ---
 
   it("calls collect with skipSyncUpdate=true and the full date range", async () => {
-    await runBackfill(DAY, DAY, false);
+    let capturedOpts: CollectOptions | undefined;
 
-    expect(mockCollectExecute).toHaveBeenCalledTimes(1);
-    const opts = mockCollectExecute.mock.calls[0]![2] as {
-      dateRangeOverride: { startUnix: number; endUnix: number };
-      skipSyncUpdate: boolean;
-    };
-    expect(opts.skipSyncUpdate).toBe(true);
-    expect(opts.dateRangeOverride.startUnix).toBe(DAY_START);
-    expect(opts.dateRangeOverride.endUnix).toBe(DAY_END);
+    const deps = makeTestDeps(testDb, {
+      collectExecute: async (_ctx, _deps, options): Promise<StageResult> => {
+        capturedOpts = options;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0, failedProjects: [] };
+      },
+    });
+
+    await runBackfill(DAY, DAY, false, deps);
+
+    expect(capturedOpts?.skipSyncUpdate).toBe(true);
+    expect(capturedOpts?.dateRangeOverride?.startUnix).toBe(DAY_START);
+    expect(capturedOpts?.dateRangeOverride?.endUnix).toBe(DAY_END);
   });
 });

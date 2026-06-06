@@ -11,13 +11,19 @@ import { getDayPeriod } from "../src/utils/time-window";
 import { execute as collectExecute, type CollectDeps } from "../src/pipeline/stages/collect";
 import type { CollectOptions } from "../src/pipeline/stages/collect";
 import { execute as analyzeExecute } from "../src/pipeline/stages/analyze";
+import type { AnalyzeOptions } from "../src/pipeline/stages/analyze";
 import { buildDailyReportForPeriod } from "../src/extensions/report-generator/daily";
+import type { DailyReportData } from "../src/extensions/report-generator/daily";
 import { buildFinalCard } from "../src/pipeline/stages/report";
-import { writeReportFile, type ReportCompleteness } from "../src/extensions/report-generator/file-writer";
+import type { FinalCardResult } from "../src/pipeline/stages/report";
+import { writeReportFile, type ReportCompleteness, type ReportFileContent } from "../src/extensions/report-generator/file-writer";
 import { getTrackedProjects } from "../src/config/projects";
+import type { TrackedProject } from "../src/config/projects";
 import { fetchMergedPRs, fetchRepoMetadata, fetchPRStats } from "../src/extensions/github-collector/fetcher";
 import { fetchAndStoreDiff } from "../src/extensions/github-collector/diff-fetcher";
 import type { PipelineContext, StageResult } from "../src/pipeline/runner";
+import type { GroupedAnalyses } from "../src/extensions/report-generator/templates/daily-card";
+import { Database } from "bun:sqlite";
 
 export interface DaySummary {
   date: string;
@@ -32,12 +38,38 @@ export interface BackfillResult {
   anySkipped: boolean;
 }
 
+export interface BackfillDeps {
+  timezone: string;
+  db: Database;
+  collectExecute: (ctx: PipelineContext, deps: CollectDeps, options: CollectOptions) => Promise<StageResult>;
+  analyzeExecute: (ctx: PipelineContext, options: AnalyzeOptions) => Promise<StageResult>;
+  collectDeps: CollectDeps;
+  getTrackedProjects: () => TrackedProject[];
+  buildDailyReportForPeriod: (startUnix: number, endUnix: number) => DailyReportData;
+  buildFinalCard: (date: string, grouped: GroupedAnalyses, partialWarning: string | undefined) => FinalCardResult;
+  writeReportFile: (content: ReportFileContent) => string;
+}
+
 const realCollectDeps: CollectDeps = {
   fetchMergedPRs,
   fetchRepoMetadata,
   fetchPRStats,
   fetchAndStoreDiff,
 };
+
+function makeProductionDeps(): BackfillDeps {
+  return {
+    timezone: getSettings().schedule.timezone,
+    db: getDb(),
+    collectExecute,
+    analyzeExecute,
+    collectDeps: realCollectDeps,
+    getTrackedProjects,
+    buildDailyReportForPeriod,
+    buildFinalCard,
+    writeReportFile,
+  };
+}
 
 function enumerateDays(since: string, until: string): string[] {
   const days: string[] = [];
@@ -50,8 +82,7 @@ function enumerateDays(since: string, until: string): string[] {
   return days;
 }
 
-function nullifyDayReports(days: string[], timezone: string): void {
-  const db = getDb();
+function nullifyDayReports(db: Database, days: string[], timezone: string): void {
   for (const day of days) {
     const { startUnix, endUnix } = getDayPeriod(timezone, day);
     const row = db
@@ -69,6 +100,7 @@ function nullifyDayReports(days: string[], timezone: string): void {
 }
 
 function upsertDailyReport(
+  db: Database,
   periodStartUnix: number,
   periodEndUnix: number,
   projectIds: string,
@@ -76,7 +108,6 @@ function upsertDailyReport(
   completeness: string,
   digestJson: string | null
 ): void {
-  const db = getDb();
   db.run(
     `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness, digest_json)
      VALUES ('daily', ?, ?, ?, ?, ?, ?)
@@ -89,8 +120,7 @@ function upsertDailyReport(
   );
 }
 
-function cleanupDeliveries(periodStartUnix: number, periodEndUnix: number): void {
-  const db = getDb();
+function cleanupDeliveries(db: Database, periodStartUnix: number, periodEndUnix: number): void {
   const row = db
     .query<{ id: number }, [number, number]>(
       "SELECT id FROM reports WHERE type = 'daily' AND period_start = ? AND period_end = ?"
@@ -120,9 +150,9 @@ export async function runBackfill(
   since: string,
   until: string,
   allowPartial: boolean,
-  collectDeps: CollectDeps = realCollectDeps
+  deps: BackfillDeps
 ): Promise<BackfillResult> {
-  const timezone = getSettings().schedule.timezone;
+  const { timezone, db } = deps;
   const days = enumerateDays(since, until);
 
   if (days.length === 0) {
@@ -151,7 +181,7 @@ export async function runBackfill(
   let collectResult: StageResult;
 
   try {
-    collectResult = await collectExecute(ctx, collectDeps, {
+    collectResult = await deps.collectExecute(ctx, deps.collectDeps, {
       dateRangeOverride: { startUnix: rangeStartUnix, endUnix: rangeEndUnix },
       skipSyncUpdate: true,
     } satisfies CollectOptions);
@@ -183,13 +213,12 @@ export async function runBackfill(
 
   if (collectFailed && !allowPartial) {
     console.error("[Backfill] Collect failed — nullifying all day digests and cleaning deliveries.");
-    nullifyDayReports(days, timezone);
+    nullifyDayReports(db, days, timezone);
     return buildSkippedResult(days);
   }
 
   // Phase 2: Reset failed/budget_skipped PRs + Analyze
   console.log("[Backfill] Phase 2: Reset + Analyze");
-  const db = getDb();
   db.run(
     `UPDATE pull_requests
      SET analysis_status = 'pending', retry_count = 0
@@ -199,7 +228,7 @@ export async function runBackfill(
   );
 
   try {
-    const analyzeResult = await analyzeExecute(ctx, {
+    const analyzeResult = await deps.analyzeExecute(ctx, {
       dateRange: { startUnix: rangeStartUnix, endUnix: rangeEndUnix },
     });
     ctx.stageResults.set("analyze", analyzeResult);
@@ -215,25 +244,27 @@ export async function runBackfill(
 
   // Phase 3: Per-day report generation
   console.log("[Backfill] Phase 3: Per-day report generation");
-  const trackedProjects = getTrackedProjects();
+  const trackedProjects = deps.getTrackedProjects();
   const totalProjects = trackedProjects.length;
   const collectFailedProjects = collectResult.failedProjects ?? [];
 
   const daySummaries: DaySummary[] = [];
 
   for (const { day: dayString, startUnix, endUnix } of dayPeriods) {
-    const dayPrTotal = db
-      .query<{ cnt: number }, [number, number]>(
-        "SELECT COUNT(*) as cnt FROM pull_requests WHERE merged_at >= ? AND merged_at <= ?"
-      )
-      .get(startUnix, endUnix)?.cnt ?? 0;
+    const dayPrTotal =
+      db
+        .query<{ cnt: number }, [number, number]>(
+          "SELECT COUNT(*) as cnt FROM pull_requests WHERE merged_at >= ? AND merged_at <= ?"
+        )
+        .get(startUnix, endUnix)?.cnt ?? 0;
 
-    const dayPrComplete = db
-      .query<{ cnt: number }, [number, number]>(
-        `SELECT COUNT(*) as cnt FROM pull_requests
-         WHERE merged_at >= ? AND merged_at <= ? AND analysis_status = 'complete'`
-      )
-      .get(startUnix, endUnix)?.cnt ?? 0;
+    const dayPrComplete =
+      db
+        .query<{ cnt: number }, [number, number]>(
+          `SELECT COUNT(*) as cnt FROM pull_requests
+           WHERE merged_at >= ? AND merged_at <= ? AND analysis_status = 'complete'`
+        )
+        .get(startUnix, endUnix)?.cnt ?? 0;
 
     const dayPrIncomplete = dayPrTotal - dayPrComplete;
     // When collect failed, all days are forced partial regardless of individual PR completeness
@@ -265,10 +296,8 @@ export async function runBackfill(
     }
 
     // Build report for this day
-    const { grouped, periodStartUnix, periodEndUnix, digest } = buildDailyReportForPeriod(
-      startUnix,
-      endUnix
-    );
+    const { grouped, periodStartUnix, periodEndUnix, digest } =
+      deps.buildDailyReportForPeriod(startUnix, endUnix);
 
     const dayStatus: "complete" | "partial" = isIncomplete ? "partial" : "complete";
 
@@ -283,12 +312,13 @@ export async function runBackfill(
       ...(collectFailed ? { collectionIncomplete: true } : {}),
     };
 
-    // digest_json is NULL for partial days, JSON for complete days
+    // digest_json is NULL for partial days, non-null JSON for complete days
     const digestJson: string | null = isIncomplete ? null : JSON.stringify(digest);
 
     if (grouped.length === 0) {
       // Empty day: no card file
       upsertDailyReport(
+        db,
         periodStartUnix,
         periodEndUnix,
         "[]",
@@ -296,11 +326,11 @@ export async function runBackfill(
         JSON.stringify(completeness),
         digestJson
       );
-      cleanupDeliveries(periodStartUnix, periodEndUnix);
+      cleanupDeliveries(db, periodStartUnix, periodEndUnix);
       console.log(`[Backfill] ${dayString}: empty day (${dayStatus})`);
     } else {
       // Non-empty day: generate card and write file
-      const { card, errors: cardErrors } = buildFinalCard(dayString, grouped, undefined);
+      const { card, errors: cardErrors } = deps.buildFinalCard(dayString, grouped, undefined);
       if (cardErrors.length > 0) {
         console.warn(`[Backfill] ${dayString}: card build warnings: ${cardErrors.join(", ")}`);
       }
@@ -309,7 +339,7 @@ export async function runBackfill(
       const projectIds = JSON.stringify(grouped.map((g) => g.projectId));
 
       try {
-        writeReportFile({ date: dayString, card, analyses: grouped, completeness });
+        deps.writeReportFile({ date: dayString, card, analyses: grouped, completeness });
       } catch (err) {
         console.warn(
           `[Backfill] ${dayString}: file write failed: ${err instanceof Error ? err.message : String(err)}`
@@ -317,6 +347,7 @@ export async function runBackfill(
       }
 
       upsertDailyReport(
+        db,
         periodStartUnix,
         periodEndUnix,
         projectIds,
@@ -324,7 +355,7 @@ export async function runBackfill(
         JSON.stringify(completeness),
         digestJson
       );
-      cleanupDeliveries(periodStartUnix, periodEndUnix);
+      cleanupDeliveries(db, periodStartUnix, periodEndUnix);
 
       console.log(
         `[Backfill] ${dayString}: ${dayStatus}, ${grouped.length} project(s), ` +
@@ -395,7 +426,7 @@ async function main(): Promise<number> {
     `[Backfill] Starting backfill: since=${since}, until=${until}, allowPartial=${allowPartial}`
   );
 
-  const result = await runBackfill(since, until, allowPartial);
+  const result = await runBackfill(since, until, allowPartial, makeProductionDeps());
   printSummaryTable(result.days);
 
   if (result.anySkipped) {
