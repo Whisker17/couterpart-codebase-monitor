@@ -65,6 +65,37 @@ export function formatMarkdownLink(label: string, url: string): string {
   return safeUrl ? `[${safeLabel}](${safeUrl})` : safeLabel;
 }
 
+export function truncateAtSentenceBoundary(text: string, byteCap: number): string {
+  if (Buffer.byteLength(text, "utf-8") <= byteCap) {
+    return text;
+  }
+
+  let byteCount = 0;
+  let charLimit = 0;
+  for (let i = 0; i < text.length; i++) {
+    const charBytes = Buffer.byteLength(text[i]!, "utf-8");
+    if (byteCount + charBytes > byteCap) break;
+    byteCount += charBytes;
+    charLimit++;
+  }
+
+  const substr = text.slice(0, charLimit);
+  let lastBoundaryPos = -1;
+  for (const marker of ["。", ". ", "！", "! ", "？", "? "]) {
+    const idx = substr.lastIndexOf(marker);
+    if (idx !== -1) {
+      const pos = idx + marker.length;
+      if (pos > lastBoundaryPos) lastBoundaryPos = pos;
+    }
+  }
+
+  if (lastBoundaryPos > charLimit * 0.4) {
+    return text.slice(0, lastBoundaryPos).trim();
+  }
+
+  return text.slice(0, charLimit).trim() + "…";
+}
+
 // Strip cross-repo counterpart recommendations from direction signals.
 // Daily reports describe the source PR's own direction; cross-repo action
 // suggestions ("Mantle should ...", "mantle/reth may need ...") belong in weekly.
@@ -145,7 +176,7 @@ export function buildSummaryContent(
       const targetPr = project.prs.find((pr) => pr.significance === targetSig)!;
       const rawSignal = targetPr.directionSignal ?? targetPr.summary;
       const strippedSignal = stripCounterpartRecommendations(rawSignal);
-      let signal = strippedSignal.length > 60 ? `${strippedSignal.slice(0, 60)}…` : strippedSignal;
+      let signal = truncateAtSentenceBoundary(strippedSignal, 500);
       signalRows.push(`${emoji} **${project.projectId}** — ${signal}`);
     }
   }
