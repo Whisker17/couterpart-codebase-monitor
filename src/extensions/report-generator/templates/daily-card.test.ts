@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { buildDailyCard, buildSummaryContent, buildRepoPanels, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate, truncateAtSentenceBoundary } from "./daily-card";
+import { buildDailyCard, buildSummaryContent, buildSignificancePanels, stripCounterpartRecommendations, buildPrHtmlUrl, formatMarkdownLink, resolveHeaderTemplate, truncateAtSentenceBoundary } from "./daily-card";
 import type { GroupedAnalyses, LarkCollapsiblePanel, LarkMarkdownElement } from "./daily-card";
 
 const sampleAnalyses: GroupedAnalyses = [
@@ -144,22 +144,27 @@ describe("buildDailyCard", () => {
     expect(hr).toBeDefined();
   });
 
-  it("per-project panel generated for directional project with correct emoji and header", () => {
+  it("outer DIRECTIONAL tier panel generated for directional project", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
-    const panel = card.elements.find(
+    const outerPanel = card.elements.find(
       (e) => e.tag === "collapsible_panel"
     ) as LarkCollapsiblePanel;
-    expect(panel).toBeDefined();
-    expect(panel.header.title.content).toContain("🔴");
-    expect(panel.header.title.content).toContain("org/repo-a");
-    expect(panel.header.title.content).toContain("2 PR");
+    expect(outerPanel).toBeDefined();
+    expect(outerPanel.header.title.content).toContain("🔴 DIRECTIONAL");
+    // Inner panel contains the project id
+    const innerPanel = outerPanel.elements[0] as LarkCollapsiblePanel;
+    expect(innerPanel.header.title.content).toContain("org/repo-a");
   });
 
-  it("no panel generated for routine-only project", () => {
+  it("no inner panel generated for routine-only project", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
-    const panels = card.elements.filter((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel[];
-    const repoBPanel = panels.find((p) => p.header.title.content.includes("org/repo-b"));
-    expect(repoBPanel).toBeUndefined();
+    const outerPanels = card.elements.filter((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel[];
+    // There should be 1 outer DIRECTIONAL panel
+    expect(outerPanels).toHaveLength(1);
+    // Its inner panels should not include org/repo-b
+    const innerPanels = outerPanels[0]!.elements as LarkCollapsiblePanel[];
+    const repoBInner = innerPanels.find((p) => p.header?.title?.content?.includes("org/repo-b"));
+    expect(repoBInner).toBeUndefined();
   });
 
   it("all-routine analyses: no collapsible panels, fallback markdown present", () => {
@@ -181,10 +186,11 @@ describe("buildDailyCard", () => {
     expect(panel.expanded).toBe(true);
   });
 
-  it("shows significant PRs in detail panel; routine PR shown as hint", () => {
+  it("shows significant PRs in inner panel body; routine PR shown as hint", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel;
-    const detail = panel.elements[0]!.content;
+    const outerPanel = card.elements.find((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel;
+    const innerPanel = outerPanel.elements[0] as LarkCollapsiblePanel;
+    const detail = (innerPanel.elements[0] as LarkMarkdownElement).content;
     expect(detail).toContain("#101");
     expect(detail).toContain("Add OAuth2 support");
     expect(detail).not.toContain("#102");
@@ -193,10 +199,11 @@ describe("buildDailyCard", () => {
     expect(detail).toContain("not expanded");
   });
 
-  it("PR title is rendered as a markdown link in detail panel", () => {
+  it("PR title is rendered as a markdown link in inner panel body", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
-    const panel = card.elements.find((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel;
-    const detail = panel.elements[0]!.content;
+    const outerPanel = card.elements.find((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel;
+    const innerPanel = outerPanel.elements[0] as LarkCollapsiblePanel;
+    const detail = (innerPanel.elements[0] as LarkMarkdownElement).content;
     expect(detail).toContain("[#101 Add OAuth2 support](https://github.com/org/repo-a/pull/101)");
   });
 
@@ -1005,88 +1012,65 @@ describe("stripCounterpartRecommendations", () => {
   });
 });
 
-describe("buildRepoPanels", () => {
+describe("buildSignificancePanels", () => {
   it("returns fallback markdown for all-routine analyses", () => {
-    const panels = buildRepoPanels(routineOnlyAnalyses);
+    const panels = buildSignificancePanels(routineOnlyAnalyses);
     expect(panels).toHaveLength(1);
     expect(panels[0]!.tag).toBe("markdown");
     expect((panels[0] as LarkMarkdownElement).content).toBe("_All PRs are routine today._");
   });
 
   it("returns fallback markdown for empty analyses", () => {
-    const panels = buildRepoPanels([]);
+    const panels = buildSignificancePanels([]);
     expect(panels).toHaveLength(1);
     expect((panels[0] as LarkMarkdownElement).content).toBe("_All PRs are routine today._");
   });
 
-  it("generates one panel per significant project, skipping routine-only", () => {
-    const panels = buildRepoPanels(sampleAnalyses);
-    // org/repo-a has directional → 1 panel; org/repo-b is routine-only → no panel
+  it("generates one outer DIRECTIONAL panel, skipping routine-only project", () => {
+    // sampleAnalyses: org/repo-a (directional+routine) + org/repo-b (routine-only)
+    const panels = buildSignificancePanels(sampleAnalyses);
     expect(panels).toHaveLength(1);
-    expect(panels[0]!.tag).toBe("collapsible_panel");
+    const outer = panels[0] as LarkCollapsiblePanel;
+    expect(outer.tag).toBe("collapsible_panel");
+    expect(outer.header.title.content).toContain("🔴 DIRECTIONAL");
   });
 
-  it("directional panel has 🔴 emoji in header", () => {
-    const panels = buildRepoPanels(sampleAnalyses);
-    const panel = panels[0] as LarkCollapsiblePanel;
-    expect(panel.header.title.content).toContain("🔴");
-    expect(panel.header.title.content).toContain("org/repo-a");
-    expect(panel.header.title.content).toContain("2 PR");
+  it("DIRECTIONAL outer panel is expanded: true", () => {
+    const panels = buildSignificancePanels(sampleAnalyses);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    expect(outer.expanded).toBe(true);
   });
 
-  it("directional panel is expanded: true", () => {
-    const panels = buildRepoPanels(sampleAnalyses);
-    const panel = panels[0] as LarkCollapsiblePanel;
-    expect(panel.expanded).toBe(true);
+  it("DIRECTIONAL outer header: N repos, D directional, R other when R > 0", () => {
+    // sampleAnalyses: org/repo-a has 1 directional + 1 routine → N=1, D=1, R=1
+    const panels = buildSignificancePanels(sampleAnalyses);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    expect(outer.header.title.content).toContain("1 repo");
+    expect(outer.header.title.content).toContain("1 directional");
+    expect(outer.header.title.content).toContain("1 other");
   });
 
-  it("notable-only panel has 🟡 emoji in header", () => {
-    const notableAnalyses: GroupedAnalyses = [
+  it("DIRECTIONAL outer header: omit '· R other' when R = 0", () => {
+    const directionalOnly: GroupedAnalyses = [
       {
-        projectId: "org/notable-repo",
-        prCount: 1,
-        directionalShiftCount: 0,
-        notableCount: 1,
-        topDirectionSignal: null,
-        prs: [
-          {
-            prNumber: 10,
-            title: "Notable feature",
-            htmlUrl: "https://github.com/org/notable-repo/pull/10",
-            summary: "A notable improvement",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
-        ],
-      },
-    ];
-    const panels = buildRepoPanels(notableAnalyses);
-    const panel = panels[0] as LarkCollapsiblePanel;
-    expect(panel.header.title.content).toContain("🟡");
-    expect(panel.header.title.content).toContain("org/notable-repo");
-  });
-
-  it("notable panel expanded: false when directional panels exist", () => {
-    const mixed: GroupedAnalyses = [
-      {
-        projectId: "org/directional",
-        prCount: 1,
-        directionalShiftCount: 1,
+        projectId: "org/repo",
+        prCount: 2,
+        directionalShiftCount: 2,
         notableCount: 0,
         topDirectionSignal: null,
         prs: [
-          {
-            prNumber: 1,
-            title: "Directional PR",
-            htmlUrl: "https://github.com/org/directional/pull/1",
-            summary: "Directional change",
-            technicalDetail: null,
-            significance: "directional_shift",
-            directionSignal: "big shift",
-          },
+          { prNumber: 1, title: "D1", htmlUrl: "https://github.com/org/repo/pull/1", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null },
+          { prNumber: 2, title: "D2", htmlUrl: "https://github.com/org/repo/pull/2", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null },
         ],
       },
+    ];
+    const panels = buildSignificancePanels(directionalOnly);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    expect(outer.header.title.content).not.toContain("other");
+  });
+
+  it("NOTABLE outer panel: expanded=true when no DIRECTIONAL exists", () => {
+    const notableOnly: GroupedAnalyses = [
       {
         projectId: "org/notable",
         prCount: 1,
@@ -1094,172 +1078,177 @@ describe("buildRepoPanels", () => {
         notableCount: 1,
         topDirectionSignal: null,
         prs: [
-          {
-            prNumber: 2,
-            title: "Notable PR",
-            htmlUrl: "https://github.com/org/notable/pull/2",
-            summary: "Notable change",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
+          { prNumber: 1, title: "N", htmlUrl: "https://github.com/org/notable/pull/1", summary: "s", technicalDetail: null, significance: "notable", directionSignal: null },
         ],
       },
     ];
-    const panels = buildRepoPanels(mixed);
-    expect(panels).toHaveLength(2);
-    const directionalPanel = panels.find(
-      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/directional")
-    ) as LarkCollapsiblePanel;
-    const notablePanel = panels.find(
-      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/notable")
-    ) as LarkCollapsiblePanel;
-    expect(directionalPanel.expanded).toBe(true);
-    expect(notablePanel.expanded).toBe(false);
-  });
-
-  it("notable panel expanded: true (top 2) when no directional panels exist — single notable", () => {
-    const notableOnly: GroupedAnalyses = [
-      {
-        projectId: "org/notable-a",
-        prCount: 1,
-        directionalShiftCount: 0,
-        notableCount: 1,
-        topDirectionSignal: null,
-        prs: [
-          {
-            prNumber: 1,
-            title: "Notable A",
-            htmlUrl: "https://github.com/org/notable-a/pull/1",
-            summary: "Notable",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
-        ],
-      },
-    ];
-    const panels = buildRepoPanels(notableOnly);
+    const panels = buildSignificancePanels(notableOnly);
     expect(panels).toHaveLength(1);
-    expect((panels[0] as LarkCollapsiblePanel).expanded).toBe(true);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    expect(outer.header.title.content).toContain("🟡 NOTABLE");
+    expect(outer.expanded).toBe(true);
   });
 
-  it("expand rule determinism: no directional panels — sorts by notableCount desc then expands top min(2, n)", () => {
-    // 3 notable-only repos: repo-b has most notable PRs → should be expanded first
-    const notableOnly: GroupedAnalyses = [
+  it("both tiers present: DIRECTIONAL expanded=true, NOTABLE expanded=false", () => {
+    const both: GroupedAnalyses = [
       {
-        projectId: "org/repo-a",
-        prCount: 2,
-        directionalShiftCount: 0,
-        notableCount: 1,
-        topDirectionSignal: null,
-        prs: [
-          {
-            prNumber: 1,
-            title: "Notable A",
-            htmlUrl: "https://github.com/org/repo-a/pull/1",
-            summary: "Notable",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
-          {
-            prNumber: 2,
-            title: "Routine A",
-            htmlUrl: "https://github.com/org/repo-a/pull/2",
-            summary: "Routine",
-            technicalDetail: null,
-            significance: "routine",
-            directionSignal: null,
-          },
-        ],
+        projectId: "org/dir",
+        prCount: 1, directionalShiftCount: 1, notableCount: 0, topDirectionSignal: null,
+        prs: [{ prNumber: 1, title: "D", htmlUrl: "https://github.com/org/dir/pull/1", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null }],
       },
       {
-        projectId: "org/repo-b",
-        prCount: 3,
-        directionalShiftCount: 0,
-        notableCount: 3,
-        topDirectionSignal: null,
-        prs: [
-          {
-            prNumber: 10,
-            title: "Notable B1",
-            htmlUrl: "https://github.com/org/repo-b/pull/10",
-            summary: "Notable",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
-          {
-            prNumber: 11,
-            title: "Notable B2",
-            htmlUrl: "https://github.com/org/repo-b/pull/11",
-            summary: "Notable",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
-          {
-            prNumber: 12,
-            title: "Notable B3",
-            htmlUrl: "https://github.com/org/repo-b/pull/12",
-            summary: "Notable",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
-        ],
+        projectId: "org/not",
+        prCount: 1, directionalShiftCount: 0, notableCount: 1, topDirectionSignal: null,
+        prs: [{ prNumber: 2, title: "N", htmlUrl: "https://github.com/org/not/pull/2", summary: "s", technicalDetail: null, significance: "notable", directionSignal: null }],
       },
+    ];
+    const panels = buildSignificancePanels(both);
+    expect(panels).toHaveLength(2);
+    const directional = panels[0] as LarkCollapsiblePanel;
+    const notable = panels[1] as LarkCollapsiblePanel;
+    expect(directional.header.title.content).toContain("🔴 DIRECTIONAL");
+    expect(directional.expanded).toBe(true);
+    expect(notable.header.title.content).toContain("🟡 NOTABLE");
+    expect(notable.expanded).toBe(false);
+  });
+
+  it("project with directional + notable PRs → placed in DIRECTIONAL tier only, not NOTABLE", () => {
+    const mixed: GroupedAnalyses = [
       {
-        projectId: "org/repo-c",
-        prCount: 2,
-        directionalShiftCount: 0,
-        notableCount: 2,
-        topDirectionSignal: null,
+        projectId: "org/mixed",
+        prCount: 3, directionalShiftCount: 1, notableCount: 1, topDirectionSignal: null,
         prs: [
-          {
-            prNumber: 20,
-            title: "Notable C1",
-            htmlUrl: "https://github.com/org/repo-c/pull/20",
-            summary: "Notable",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
-          {
-            prNumber: 21,
-            title: "Notable C2",
-            htmlUrl: "https://github.com/org/repo-c/pull/21",
-            summary: "Notable",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
+          { prNumber: 1, title: "D", htmlUrl: "...", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null },
+          { prNumber: 2, title: "N", htmlUrl: "...", summary: "s", technicalDetail: null, significance: "notable", directionSignal: null },
+          { prNumber: 3, title: "R", htmlUrl: "...", summary: "s", technicalDetail: null, significance: "routine", directionSignal: null },
         ],
       },
     ];
-    const panels = buildRepoPanels(notableOnly);
-    expect(panels).toHaveLength(3);
-    const panelA = panels.find(
-      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/repo-a")
-    ) as LarkCollapsiblePanel;
-    const panelB = panels.find(
-      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/repo-b")
-    ) as LarkCollapsiblePanel;
-    const panelC = panels.find(
-      (p) => p.tag === "collapsible_panel" && (p as LarkCollapsiblePanel).header.title.content.includes("org/repo-c")
-    ) as LarkCollapsiblePanel;
-    // repo-b (3 notable) and repo-c (2 notable) are the top 2 by notableCount
-    expect(panelB.expanded).toBe(true);
-    expect(panelC.expanded).toBe(true);
-    // repo-a (1 notable) is outside top 2
-    expect(panelA.expanded).toBe(false);
+    const panels = buildSignificancePanels(mixed);
+    // Only 1 outer DIRECTIONAL panel (not also a NOTABLE panel)
+    expect(panels).toHaveLength(1);
+    expect((panels[0] as LarkCollapsiblePanel).header.title.content).toContain("DIRECTIONAL");
+    expect((panels[0] as LarkCollapsiblePanel).header.title.content).not.toContain("NOTABLE");
   });
 
-  it("panel body: significant PRs shown with link, badge, summary; routine appended as hint", () => {
-    const panels = buildRepoPanels(sampleAnalyses);
-    const panel = panels[0] as LarkCollapsiblePanel;
-    const body = panel.elements[0]!.content;
+  it("all inner collapsible_panel elements are expanded=false", () => {
+    const panels = buildSignificancePanels(sampleAnalyses);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    for (const inner of outer.elements) {
+      expect((inner as LarkCollapsiblePanel).tag).toBe("collapsible_panel");
+      expect((inner as LarkCollapsiblePanel).expanded).toBe(false);
+    }
+  });
+
+  it("inner header {S} = directional + notable count (2 directional + 1 notable → S = 3)", () => {
+    const analyses: GroupedAnalyses = [
+      {
+        projectId: "reth",
+        prCount: 6, directionalShiftCount: 2, notableCount: 1, topDirectionSignal: null,
+        prs: [
+          { prNumber: 1, title: "D1", htmlUrl: "https://github.com/org/reth/pull/1", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null },
+          { prNumber: 2, title: "D2", htmlUrl: "https://github.com/org/reth/pull/2", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null },
+          { prNumber: 3, title: "N1", htmlUrl: "https://github.com/org/reth/pull/3", summary: "s", technicalDetail: null, significance: "notable", directionSignal: null },
+          { prNumber: 4, title: "R1", htmlUrl: "https://github.com/org/reth/pull/4", summary: "s", technicalDetail: null, significance: "routine", directionSignal: null },
+          { prNumber: 5, title: "R2", htmlUrl: "https://github.com/org/reth/pull/5", summary: "s", technicalDetail: null, significance: "routine", directionSignal: null },
+          { prNumber: 6, title: "R3", htmlUrl: "https://github.com/org/reth/pull/6", summary: "s", technicalDetail: null, significance: "routine", directionSignal: null },
+        ],
+      },
+    ];
+    const panels = buildSignificancePanels(analyses);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    const inner = outer.elements[0] as LarkCollapsiblePanel;
+    // S = directional(2) + notable(1) = 3; R = routine(3)
+    expect(inner.header.title.content).toContain("reth");
+    expect(inner.header.title.content).toContain("3 significant");
+    expect(inner.header.title.content).toContain("3 routine");
+  });
+
+  it("inner header: R=0 → '{projectId} · {S} PR' format (no 'significant' or 'routine')", () => {
+    const analyses: GroupedAnalyses = [
+      {
+        projectId: "org/clean",
+        prCount: 2, directionalShiftCount: 2, notableCount: 0, topDirectionSignal: null,
+        prs: [
+          { prNumber: 1, title: "D1", htmlUrl: "https://github.com/org/clean/pull/1", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null },
+          { prNumber: 2, title: "D2", htmlUrl: "https://github.com/org/clean/pull/2", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null },
+        ],
+      },
+    ];
+    const panels = buildSignificancePanels(analyses);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    const inner = outer.elements[0] as LarkCollapsiblePanel;
+    expect(inner.header.title.content).toContain("org/clean");
+    expect(inner.header.title.content).toContain("2 PR");
+    expect(inner.header.title.content).not.toContain("significant");
+    expect(inner.header.title.content).not.toContain("routine");
+  });
+
+  it("inner repos sorted: DIRECTIONAL tier by directionalShiftCount desc → prCount desc → projectId asc", () => {
+    const threeDirectional: GroupedAnalyses = [
+      {
+        projectId: "org/repo-c",  // 1 directional
+        prCount: 5, directionalShiftCount: 1, notableCount: 0, topDirectionSignal: null,
+        prs: [
+          { prNumber: 1, title: "D", htmlUrl: "https://github.com/org/repo-c/pull/1", summary: "s", technicalDetail: null, significance: "directional_shift", directionSignal: null },
+          ...Array.from({ length: 4 }, (_, i) => ({ prNumber: 10 + i, title: `R${i}`, htmlUrl: `https://github.com/org/repo-c/pull/${10+i}`, summary: "s", technicalDetail: null as null, significance: "routine" as const, directionSignal: null })),
+        ],
+      },
+      {
+        projectId: "org/repo-a",  // 3 directional
+        prCount: 3, directionalShiftCount: 3, notableCount: 0, topDirectionSignal: null,
+        prs: Array.from({ length: 3 }, (_, i) => ({ prNumber: 20 + i, title: `D${i}`, htmlUrl: `https://github.com/org/repo-a/pull/${20+i}`, summary: "s", technicalDetail: null as null, significance: "directional_shift" as const, directionSignal: null })),
+      },
+      {
+        projectId: "org/repo-b",  // 2 directional
+        prCount: 3, directionalShiftCount: 2, notableCount: 0, topDirectionSignal: null,
+        prs: [
+          ...Array.from({ length: 2 }, (_, i) => ({ prNumber: 30 + i, title: `D${i}`, htmlUrl: `https://github.com/org/repo-b/pull/${30+i}`, summary: "s", technicalDetail: null as null, significance: "directional_shift" as const, directionSignal: null })),
+          { prNumber: 32, title: "R", htmlUrl: "https://github.com/org/repo-b/pull/32", summary: "s", technicalDetail: null, significance: "routine" as const, directionSignal: null },
+        ],
+      },
+    ];
+    const panels = buildSignificancePanels(threeDirectional);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    const innerHeaders = (outer.elements as LarkCollapsiblePanel[]).map((e) => e.header.title.content);
+    // repo-a(3 dir) → repo-b(2 dir) → repo-c(1 dir)
+    expect(innerHeaders[0]).toContain("org/repo-a");
+    expect(innerHeaders[1]).toContain("org/repo-b");
+    expect(innerHeaders[2]).toContain("org/repo-c");
+  });
+
+  it("inner repos sorted: NOTABLE tier by notableCount desc → prCount desc → projectId asc", () => {
+    const threeNotable: GroupedAnalyses = [
+      {
+        projectId: "org/repo-b",  // 2 notable
+        prCount: 2, directionalShiftCount: 0, notableCount: 2, topDirectionSignal: null,
+        prs: Array.from({ length: 2 }, (_, i) => ({ prNumber: i, title: `N${i}`, htmlUrl: `https://github.com/org/repo-b/pull/${i}`, summary: "s", technicalDetail: null as null, significance: "notable" as const, directionSignal: null })),
+      },
+      {
+        projectId: "org/repo-a",  // 3 notable
+        prCount: 3, directionalShiftCount: 0, notableCount: 3, topDirectionSignal: null,
+        prs: Array.from({ length: 3 }, (_, i) => ({ prNumber: 10 + i, title: `N${i}`, htmlUrl: `https://github.com/org/repo-a/pull/${10+i}`, summary: "s", technicalDetail: null as null, significance: "notable" as const, directionSignal: null })),
+      },
+      {
+        projectId: "org/repo-c",  // 1 notable
+        prCount: 1, directionalShiftCount: 0, notableCount: 1, topDirectionSignal: null,
+        prs: [{ prNumber: 20, title: "N", htmlUrl: "https://github.com/org/repo-c/pull/20", summary: "s", technicalDetail: null, significance: "notable" as const, directionSignal: null }],
+      },
+    ];
+    const panels = buildSignificancePanels(threeNotable);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    const innerHeaders = (outer.elements as LarkCollapsiblePanel[]).map((e) => e.header.title.content);
+    // repo-a(3 notable) → repo-b(2 notable) → repo-c(1 notable)
+    expect(innerHeaders[0]).toContain("org/repo-a");
+    expect(innerHeaders[1]).toContain("org/repo-b");
+    expect(innerHeaders[2]).toContain("org/repo-c");
+  });
+
+  it("inner body: significant PRs shown with link, badge, summary; routine appended as hint", () => {
+    const panels = buildSignificancePanels(sampleAnalyses);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    const inner = outer.elements[0] as LarkCollapsiblePanel;
+    const body = (inner.elements[0] as LarkMarkdownElement).content;
     expect(body).toContain("[#101 Add OAuth2 support](https://github.com/org/repo-a/pull/101)");
     expect(body).toContain("🔴 DIRECTIONAL");
     expect(body).toContain("Adds OAuth2 authentication flow");
@@ -1268,120 +1257,82 @@ describe("buildRepoPanels", () => {
     expect(body).not.toContain("#102");
   });
 
-  it("panel body: direction signal stripped of counterpart recommendations", () => {
+  it("inner body: direction signal stripped of counterpart recommendations", () => {
     const analyses: GroupedAnalyses = [
       {
         projectId: "org/reth",
-        prCount: 1,
-        directionalShiftCount: 1,
-        notableCount: 0,
-        topDirectionSignal: null,
+        prCount: 1, directionalShiftCount: 1, notableCount: 0, topDirectionSignal: null,
         prs: [
           {
-            prNumber: 1,
-            title: "Migration",
-            htmlUrl: "https://github.com/org/reth/pull/1",
-            summary: "Executor migrated",
-            technicalDetail: null,
-            significance: "directional_shift",
+            prNumber: 1, title: "Migration", htmlUrl: "https://github.com/org/reth/pull/1",
+            summary: "Executor migrated", technicalDetail: null, significance: "directional_shift",
             directionSignal: "switching to async; Mantle should update its adapter",
           },
         ],
       },
     ];
-    const panels = buildRepoPanels(analyses);
-    const body = (panels[0] as LarkCollapsiblePanel).elements[0]!.content;
+    const panels = buildSignificancePanels(analyses);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    const inner = outer.elements[0] as LarkCollapsiblePanel;
+    const body = (inner.elements[0] as LarkMarkdownElement).content;
     expect(body).not.toContain("Mantle should");
     expect(body).toContain("switching to async");
   });
 
-  it("mobile readability: long repo name and Chinese signal in panel header and body do not use table syntax", () => {
+  it("mobile readability: long repo name and Chinese signal — no table syntax in inner panel", () => {
     const analyses: GroupedAnalyses = [
       {
         projectId: "ethereum-optimism/op-geth",
-        prCount: 2,
-        directionalShiftCount: 1,
-        notableCount: 0,
-        topDirectionSignal: null,
+        prCount: 2, directionalShiftCount: 1, notableCount: 0, topDirectionSignal: null,
         prs: [
           {
-            prNumber: 1,
-            title: "New consensus API",
+            prNumber: 1, title: "New consensus API",
             htmlUrl: "https://github.com/ethereum-optimism/op-geth/pull/1",
-            summary: "新 consensus API 接口引入",
-            technicalDetail: null,
-            significance: "directional_shift",
-            directionSignal: "新 consensus API 接口引入，需要下游适配",
+            summary: "新 consensus API 接口引入", technicalDetail: null,
+            significance: "directional_shift", directionSignal: "新 consensus API 接口引入，需要下游适配",
           },
           {
-            prNumber: 2,
-            title: "Routine bump",
+            prNumber: 2, title: "Routine bump",
             htmlUrl: "https://github.com/ethereum-optimism/op-geth/pull/2",
-            summary: "Routine dependency bump",
-            technicalDetail: null,
-            significance: "routine",
-            directionSignal: null,
+            summary: "Routine dependency bump", technicalDetail: null,
+            significance: "routine", directionSignal: null,
           },
         ],
       },
     ];
-    const panels = buildRepoPanels(analyses);
-    const panel = panels[0] as LarkCollapsiblePanel;
-    expect(panel.header.title.content).toContain("ethereum-optimism/op-geth");
-    const body = panel.elements[0]!.content;
+    const panels = buildSignificancePanels(analyses);
+    const outer = panels[0] as LarkCollapsiblePanel;
+    const inner = outer.elements[0] as LarkCollapsiblePanel;
+    expect(inner.header.title.content).toContain("ethereum-optimism/op-geth");
+    const body = (inner.elements[0] as LarkMarkdownElement).content;
     expect(body).toContain("新 consensus API 接口引入");
-    // No pipe characters (no table syntax)
     expect(body).not.toContain("|");
-    expect(panel.header.title.content).not.toContain("|");
+    expect(inner.header.title.content).not.toContain("|");
   });
 
-  it("formatter.ts Level 3 single-project mode: notable project gets one panel", () => {
+  it("formatter Level 3 single-project mode: notable project → 1 outer NOTABLE panel + 1 inner panel", () => {
     const singleNotable: GroupedAnalyses = [
       {
         projectId: "org/single",
-        prCount: 1,
-        directionalShiftCount: 0,
-        notableCount: 1,
-        topDirectionSignal: null,
-        prs: [
-          {
-            prNumber: 1,
-            title: "Notable",
-            htmlUrl: "https://github.com/org/single/pull/1",
-            summary: "Notable change",
-            technicalDetail: null,
-            significance: "notable",
-            directionSignal: null,
-          },
-        ],
+        prCount: 1, directionalShiftCount: 0, notableCount: 1, topDirectionSignal: null,
+        prs: [{ prNumber: 1, title: "Notable", htmlUrl: "https://github.com/org/single/pull/1", summary: "Notable change", technicalDetail: null, significance: "notable", directionSignal: null }],
       },
     ];
     const card = buildDailyCard("2026-06-05", singleNotable);
-    const panels = card.elements.filter((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel[];
-    expect(panels).toHaveLength(1);
-    expect(panels[0]!.header.title.content).toContain("🟡");
-    expect(panels[0]!.header.title.content).toContain("org/single");
+    const outerPanels = card.elements.filter((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel[];
+    expect(outerPanels).toHaveLength(1);
+    expect(outerPanels[0]!.header.title.content).toContain("🟡 NOTABLE");
+    // The inner panel should reference the project
+    const innerPanel = outerPanels[0]!.elements[0] as LarkCollapsiblePanel;
+    expect(innerPanel.header.title.content).toContain("org/single");
   });
 
-  it("formatter.ts Level 3 single-project mode: routine-only project gets fallback markdown, no panel", () => {
+  it("formatter Level 3 single-project mode: routine-only → fallback markdown, no panel", () => {
     const singleRoutine: GroupedAnalyses = [
       {
         projectId: "org/routine-only",
-        prCount: 1,
-        directionalShiftCount: 0,
-        notableCount: 0,
-        topDirectionSignal: null,
-        prs: [
-          {
-            prNumber: 1,
-            title: "Routine",
-            htmlUrl: "https://github.com/org/routine-only/pull/1",
-            summary: "Routine change",
-            technicalDetail: null,
-            significance: "routine",
-            directionSignal: null,
-          },
-        ],
+        prCount: 1, directionalShiftCount: 0, notableCount: 0, topDirectionSignal: null,
+        prs: [{ prNumber: 1, title: "Routine", htmlUrl: "https://github.com/org/routine-only/pull/1", summary: "Routine change", technicalDetail: null, significance: "routine", directionSignal: null }],
       },
     ];
     const card = buildDailyCard("2026-06-05", singleRoutine);
