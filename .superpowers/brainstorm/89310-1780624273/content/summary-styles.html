@@ -1,0 +1,120 @@
+<style>
+.lark-card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.13);
+  overflow: hidden;
+  font-family: -apple-system, "PingFang SC", sans-serif;
+  font-size: 14px;
+}
+.lark-header {
+  padding: 14px 18px;
+  color: #fff;
+  font-weight: 600;
+  font-size: 15px;
+}
+.lark-header.blue { background: #1456f0; }
+.lark-body { padding: 14px 18px; }
+.lark-hr { border: none; border-top: 1px solid #eee; margin: 10px 0; }
+.lark-md { line-height: 1.65; color: #1f2329; }
+.lark-md strong { font-weight: 600; }
+.lark-md .red { color: #f54040; }
+.lark-md .yellow { color: #d9820a; }
+.lark-md .gray { color: #888; }
+.lark-md ul { margin: 6px 0; padding-left: 18px; }
+.lark-md li { margin: 3px 0; }
+.signal-row { display: flex; align-items: baseline; gap: 8px; margin: 4px 0; }
+.signal-label { font-weight: 600; min-width: 56px; color: #555; font-size: 12px; }
+.metric-pills { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.pill { padding: 3px 10px; border-radius: 12px; font-size: 13px; font-weight: 500; }
+.pill-red { background: #ffeaea; color: #c62828; }
+.pill-yellow { background: #fff3e0; color: #e65100; }
+.pill-gray { background: #f5f5f5; color: #555; }
+.pill-blue { background: #e3effe; color: #1456f0; }
+.headline-signal { background: #fff8e1; border-left: 3px solid #f9a825; padding: 8px 12px; border-radius: 0 6px 6px 0; margin: 8px 0; font-size: 13px; color: #333; }
+.collapsible-mock { background: #f8f9fa; border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: 13px; color: #555; cursor: pointer; display: flex; justify-content: space-between; }
+</style>
+
+<h2>Daily Card — Summary 区域设计方案</h2>
+<p class="subtitle">选一个你觉得最能体现当日情况的 summary 风格 · 内容为同一天数据的不同呈现</p>
+
+<div class="cards">
+
+  <!-- Option A -->
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="lark-card">
+        <div class="lark-header blue">Counterpart Monitor · Daily Digest · 2026-06-05</div>
+        <div class="lark-body">
+          <div class="lark-md">
+            <strong>今日概览</strong> &nbsp;5 个仓库 · 12 PR · <span class="red">2 大方向变化</span> · <span class="yellow">3 值得关注</span>
+            <hr class="lark-hr">
+            <ul>
+              <li>🔴 <strong>reth</strong> — 向 async executor 架构迁移，影响下游兼容性（3 PR）</li>
+              <li>🔴 <strong>lighthouse</strong> — 引入新 consensus client API 接口（2 PR）</li>
+              <li>🟡 <strong>geth</strong> — 新增 EIP-7702 支持（2 PR）</li>
+              <li>⚪ <strong>revm</strong> — 2 PR，常规维护</li>
+              <li>⚪ <strong>alloy</strong> — 3 PR，常规维护</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A · 总数 + 分项列表</h3>
+      <p>顶部一行汇总数字，下方每个 repo 一行，emoji 指示重要程度，信号文字截短</p>
+    </div>
+  </div>
+
+  <!-- Option B -->
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="lark-card">
+        <div class="lark-header blue">Counterpart Monitor · Daily Digest · 2026-06-05</div>
+        <div class="lark-body">
+          <div class="lark-md">
+            <strong>🔴 重点信号</strong>
+            <div class="headline-signal">reth 正在将 async executor 迁移为独立架构层，可能影响下游 sync 兼容性</div>
+            <div class="headline-signal">lighthouse 引入新 consensus client API，扩展节点接入方式</div>
+            <strong>📊 今日全览</strong> &nbsp;5 repos · 12 PR · 2 directional · 3 notable · 7 routine
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B · 信号优先</h3>
+      <p>重点信号置顶高亮展示，全览数字放在下方，适合当日有强信号的情况</p>
+    </div>
+  </div>
+
+  <!-- Option C -->
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="lark-card">
+        <div class="lark-header blue">Counterpart Monitor · Daily Digest · 2026-06-05</div>
+        <div class="lark-body">
+          <div class="lark-md">
+            <div class="metric-pills">
+              <span class="pill pill-blue">5 repos</span>
+              <span class="pill pill-blue">12 PR</span>
+              <span class="pill pill-red">🔴 ×2</span>
+              <span class="pill pill-yellow">🟡 ×3</span>
+              <span class="pill pill-gray">⚪ ×7</span>
+            </div>
+            <hr class="lark-hr">
+            <div class="signal-row"><span class="signal-label">🔴 reth</span><span>async executor 架构迁移，下游兼容性风险</span></div>
+            <div class="signal-row"><span class="signal-label">🔴 light.</span><span>新 consensus API 接口引入</span></div>
+            <div class="signal-row"><span class="signal-label">🟡 geth</span><span>EIP-7702 支持新增</span></div>
+            <div class="signal-row"><span class="signal-label gray">⚪ revm</span><span class="gray">2 routine PR</span></div>
+            <div class="signal-row"><span class="signal-label gray">⚪ alloy</span><span class="gray">3 routine PR</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C · 数字面板 + 对齐信号表</h3>
+      <p>顶部 pill 标签快速扫描数量，下方对齐的 label+信号格式，结构最清晰</p>
+    </div>
+  </div>
+
+</div>

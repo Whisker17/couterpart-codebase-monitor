@@ -1,0 +1,184 @@
+<style>
+.lark-card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.13);
+  overflow: hidden;
+  font-family: -apple-system, "PingFang SC", sans-serif;
+  font-size: 13px;
+  width: 100%;
+}
+.lark-header {
+  padding: 12px 16px;
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+  background: #1456f0;
+}
+.lark-body { padding: 12px 16px; }
+.lark-hr { border: none; border-top: 1px solid #eee; margin: 8px 0; }
+.lark-md { line-height: 1.6; color: #1f2329; }
+.metric-pills { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.pill { padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 500; }
+.pill-blue { background: #e3effe; color: #1456f0; }
+.pill-red { background: #ffeaea; color: #c62828; }
+.pill-yellow { background: #fff3e0; color: #e65100; }
+.pill-gray { background: #f5f5f5; color: #777; }
+.signal-row { display: flex; gap: 6px; margin: 3px 0; font-size: 12.5px; align-items: baseline; }
+.sig-label { font-weight: 600; min-width: 64px; white-space: nowrap; }
+.sig-text { color: #333; }
+.sig-muted { color: #999; }
+
+/* Collapsible panel mock */
+.cp { border: 1px solid #e8e8e8; border-radius: 6px; margin: 5px 0; overflow: hidden; }
+.cp-header { padding: 8px 12px; background: #f9fafb; display: flex; justify-content: space-between; align-items: center; font-weight: 500; cursor: pointer; font-size: 13px; }
+.cp-header .arrow { color: #999; font-size: 11px; }
+.cp-body { padding: 10px 12px; border-top: 1px solid #eee; font-size: 12.5px; line-height: 1.6; }
+.cp-collapsed .cp-body { display: none; }
+.pr-item { margin: 8px 0; }
+.pr-title { color: #1456f0; text-decoration: underline; font-weight: 500; }
+.pr-badge-red { color: #c62828; font-weight: 600; font-size: 11px; }
+.pr-badge-yellow { color: #e65100; font-weight: 600; font-size: 11px; }
+.pr-badge-gray { color: #999; font-weight: 600; font-size: 11px; }
+.pr-summary { color: #444; margin: 2px 0; }
+.pr-direction { color: #777; font-size: 12px; }
+.pr-muted { color: #bbb; font-style: italic; font-size: 12px; }
+</style>
+
+<h2>Per-repo 折叠面板 — 默认展开策略</h2>
+<p class="subtitle">summary 区域已确定为 C 方案 (pills + 对齐信号表)，现在决定下方 repo 面板的默认行为</p>
+
+<div class="split">
+
+  <!-- Option A: Signal repos auto-expanded -->
+  <div class="mockup">
+    <div class="mockup-header">A · 有信号的 repo 自动展开</div>
+    <div class="mockup-body" style="padding:0">
+      <div class="lark-card">
+        <div class="lark-header">Counterpart Monitor · Daily Digest · 2026-06-05</div>
+        <div class="lark-body">
+          <div class="metric-pills">
+            <span class="pill pill-blue">5 repos</span>
+            <span class="pill pill-blue">12 PR</span>
+            <span class="pill pill-red">🔴 ×2</span>
+            <span class="pill pill-yellow">🟡 ×3</span>
+            <span class="pill pill-gray">⚪ ×7</span>
+          </div>
+          <div class="signal-row"><span class="sig-label">🔴 reth</span><span class="sig-text">async executor 架构迁移，下游兼容性风险</span></div>
+          <div class="signal-row"><span class="sig-label">🔴 lighthouse</span><span class="sig-text">新 consensus API 接口引入</span></div>
+          <div class="signal-row"><span class="sig-label">🟡 geth</span><span class="sig-text">EIP-7702 支持新增</span></div>
+          <div class="signal-row"><span class="sig-label sig-muted">⚪ revm</span><span class="sig-muted">2 routine PR</span></div>
+          <div class="signal-row"><span class="sig-label sig-muted">⚪ alloy</span><span class="sig-muted">3 routine PR</span></div>
+        </div>
+        <div class="lark-hr" style="margin:0"></div>
+        <div class="lark-body" style="padding-top:8px">
+          <!-- reth: expanded (directional) -->
+          <div class="cp">
+            <div class="cp-header">🔴 reth &nbsp;<span style="color:#888;font-weight:400;font-size:12px">3 PR</span> <span class="arrow">▲</span></div>
+            <div class="cp-body">
+              <div class="pr-item">
+                <div class="pr-title">#8821 Refactor executor into async trait layer</div>
+                <div><span class="pr-badge-red">🔴 DIRECTIONAL</span> — async executor 迁移为独立架构层</div>
+                <div class="pr-direction">Direction: 分离同步/异步执行路径，下游需适配新接口</div>
+              </div>
+              <div class="pr-item">
+                <div class="pr-title">#8819 Add executor benchmark suite</div>
+                <div><span class="pr-badge-yellow">🟡 NOTABLE</span> — 新增执行器性能基准测试套件</div>
+              </div>
+              <div class="pr-muted">1 routine PR 未展开</div>
+            </div>
+          </div>
+          <!-- lighthouse: expanded (directional) -->
+          <div class="cp">
+            <div class="cp-header">🔴 lighthouse &nbsp;<span style="color:#888;font-weight:400;font-size:12px">2 PR</span> <span class="arrow">▲</span></div>
+            <div class="cp-body">
+              <div class="pr-item">
+                <div class="pr-title">#6102 Introduce consensus client API v2</div>
+                <div><span class="pr-badge-red">🔴 DIRECTIONAL</span> — 新增 consensus client 接入 API</div>
+                <div class="pr-direction">Direction: 支持更多 client 实现接入，标准化接口协议</div>
+              </div>
+            </div>
+          </div>
+          <!-- geth: expanded (notable) -->
+          <div class="cp">
+            <div class="cp-header">🟡 geth &nbsp;<span style="color:#888;font-weight:400;font-size:12px">2 PR</span> <span class="arrow">▲</span></div>
+            <div class="cp-body">
+              <div class="pr-item">
+                <div class="pr-title">#30441 Add EIP-7702 transaction support</div>
+                <div><span class="pr-badge-yellow">🟡 NOTABLE</span> — 新增 EIP-7702 账户代码授权交易类型</div>
+              </div>
+            </div>
+          </div>
+          <!-- revm: collapsed (routine) -->
+          <div class="cp cp-collapsed">
+            <div class="cp-header"><span class="sig-muted">⚪ revm &nbsp;<span style="font-weight:400;font-size:12px">2 PR · routine</span></span> <span class="arrow">▶</span></div>
+          </div>
+          <!-- alloy: collapsed (routine) -->
+          <div class="cp cp-collapsed">
+            <div class="cp-header"><span class="sig-muted">⚪ alloy &nbsp;<span style="font-weight:400;font-size:12px">3 PR · routine</span></span> <span class="arrow">▶</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Option B: All collapsed, header shows signal -->
+  <div class="mockup">
+    <div class="mockup-header">B · 全部默认折叠，header 带信号摘要</div>
+    <div class="mockup-body" style="padding:0">
+      <div class="lark-card">
+        <div class="lark-header">Counterpart Monitor · Daily Digest · 2026-06-05</div>
+        <div class="lark-body">
+          <div class="metric-pills">
+            <span class="pill pill-blue">5 repos</span>
+            <span class="pill pill-blue">12 PR</span>
+            <span class="pill pill-red">🔴 ×2</span>
+            <span class="pill pill-yellow">🟡 ×3</span>
+            <span class="pill pill-gray">⚪ ×7</span>
+          </div>
+          <div class="signal-row"><span class="sig-label">🔴 reth</span><span class="sig-text">async executor 架构迁移，下游兼容性风险</span></div>
+          <div class="signal-row"><span class="sig-label">🔴 lighthouse</span><span class="sig-text">新 consensus API 接口引入</span></div>
+          <div class="signal-row"><span class="sig-label">🟡 geth</span><span class="sig-text">EIP-7702 支持新增</span></div>
+          <div class="signal-row"><span class="sig-label sig-muted">⚪ revm</span><span class="sig-muted">2 routine PR</span></div>
+          <div class="signal-row"><span class="sig-label sig-muted">⚪ alloy</span><span class="sig-muted">3 routine PR</span></div>
+        </div>
+        <div class="lark-hr" style="margin:0"></div>
+        <div class="lark-body" style="padding-top:8px">
+          <div class="cp cp-collapsed">
+            <div class="cp-header">🔴 reth &nbsp;<span style="color:#888;font-weight:400;font-size:12px">3 PR · async executor 架构迁移</span> <span class="arrow">▶</span></div>
+          </div>
+          <div class="cp cp-collapsed">
+            <div class="cp-header">🔴 lighthouse &nbsp;<span style="color:#888;font-weight:400;font-size:12px">2 PR · consensus API 引入</span> <span class="arrow">▶</span></div>
+          </div>
+          <div class="cp cp-collapsed">
+            <div class="cp-header">🟡 geth &nbsp;<span style="color:#888;font-weight:400;font-size:12px">2 PR · EIP-7702 支持</span> <span class="arrow">▶</span></div>
+          </div>
+          <div class="cp cp-collapsed">
+            <div class="cp-header"><span class="sig-muted">⚪ revm &nbsp;<span style="font-weight:400;font-size:12px">2 PR · routine</span></span> <span class="arrow">▶</span></div>
+          </div>
+          <div class="cp cp-collapsed">
+            <div class="cp-header"><span class="sig-muted">⚪ alloy &nbsp;<span style="font-weight:400;font-size:12px">3 PR · routine</span></span> <span class="arrow">▶</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="section" style="margin-top:16px">
+  <p class="subtitle">
+    <strong>A</strong> — 有信号的 repo 打开让你立刻看到细节，但 card 初始高度较长<br>
+    <strong>B</strong> — 全折叠最紧凑，summary 已经给出信号摘要，点击才看细节
+  </p>
+  <div class="options" style="margin-top:12px">
+    <div class="option" data-choice="a" onclick="toggleSelect(this)">
+      <div class="letter">A</div>
+      <div class="content"><h3>有信号自动展开</h3><p>🔴/🟡 repos 默认展开，⚪ 默认折叠</p></div>
+    </div>
+    <div class="option" data-choice="b" onclick="toggleSelect(this)">
+      <div class="letter">B</div>
+      <div class="content"><h3>全部默认折叠</h3><p>summary 已呈现信号，panels 全折叠，最紧凑</p></div>
+    </div>
+  </div>
+</div>

@@ -4,7 +4,7 @@
  * Usage:
  *   bun run scripts/redispatch.ts                        # dry-run: show what would be reset
  *   bun run scripts/redispatch.ts --yes                   # reset + full daily E2E
- *   bun run scripts/redispatch.ts --yes --dispatch-only   # reset + dispatch only (re-send existing card)
+ *   bun run scripts/redispatch.ts --yes --dispatch-only   # reset + dispatch only (--dispatch-only re-sends stored report_deliveries.content; does not regenerate card JSON)
  */
 import { validateEnv, getSettings } from "../src/config/settings";
 import { getDb, closeDb } from "../src/storage/db";
@@ -107,6 +107,58 @@ function resetDeliveries(reportId: number, deliveries: DeliveryRow[]): number {
 
   console.log(`[Redispatch] Reset ${nonPending.length} delivery(ies) to pending, cleared reports.sent_at`);
   return nonPending.length;
+}
+
+function refreshDeliveriesFromReportContent(reportId: number): DeliveryRow[] {
+  const db = getDb();
+  const row = db
+    .query<{ content: string }, [number]>("SELECT content FROM reports WHERE id = ?")
+    .get(reportId);
+
+  if (!row) {
+    throw new Error(`Report #${reportId} was not found`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.content);
+  } catch (err) {
+    throw new Error(
+      `Report #${reportId} content is not valid JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  const cards = parsed === null ? [] : Array.isArray(parsed) ? parsed : [parsed];
+  if (cards.length === 0) {
+    db.run("DELETE FROM report_deliveries WHERE report_id = ?", [reportId]);
+    console.log(`[Redispatch] Report #${reportId} has no dispatchable card content; cleared deliveries.`);
+    return [];
+  }
+
+  for (let i = 0; i < cards.length; i++) {
+    const card = cards[i];
+    if (!card || typeof card !== "object" || Array.isArray(card)) {
+      throw new Error(`Report #${reportId} card_${i} is not a Lark card object`);
+    }
+
+    db.run(
+      `INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, ?, ?)
+       ON CONFLICT(report_id, card_index)
+       DO UPDATE SET content = excluded.content`,
+      [reportId, i, JSON.stringify(card)]
+    );
+  }
+  db.run("DELETE FROM report_deliveries WHERE report_id = ? AND card_index >= ?", [
+    reportId,
+    cards.length,
+  ]);
+  console.log(`[Redispatch] Refreshed ${cards.length} delivery content(s) from reports.content`);
+
+  return db
+    .query<DeliveryRow, [number]>(
+      "SELECT id, card_index, status, content FROM report_deliveries WHERE report_id = ?"
+    )
+    .all(reportId);
 }
 
 async function scopedDispatch(reportId: number, webhookUrl: string): Promise<{ sent: number; failed: number; errors: string[] }> {
@@ -215,6 +267,9 @@ async function main(): Promise<number> {
   const timezone = getSettings().schedule.timezone;
 
   if (dispatchOnly) {
+    console.warn(
+      "[Redispatch] --dispatch-only re-sends stored report_deliveries.content; it does not regenerate card JSON from current templates."
+    );
     resetDeliveries(targetReport.id, deliveries);
     console.log("\n[Redispatch] Sending cards for report #" + targetReport.id + " only...\n");
     const { sent, failed, errors } = await scopedDispatch(targetReport.id, webhookUrl);
@@ -251,7 +306,8 @@ async function main(): Promise<number> {
   if (dispatchReportId !== targetReport.id) {
     console.log(`[Redispatch] Report stage created/updated report #${currentPeriodReport.report.id} for current period — dispatching that instead of #${targetReport.id}`);
   }
-  resetDeliveries(dispatchReportId, currentPeriodReport.deliveries);
+  const refreshedDeliveries = refreshDeliveriesFromReportContent(dispatchReportId);
+  resetDeliveries(dispatchReportId, refreshedDeliveries);
 
   console.log("\n[Redispatch] Running scoped dispatch for report #" + dispatchReportId + "...");
   const { sent, failed, errors } = await scopedDispatch(dispatchReportId, webhookUrl);
