@@ -74,7 +74,9 @@ function signRank(s: "routine" | "notable" | "directional_shift"): number {
   return s === "directional_shift" ? 2 : s === "notable" ? 1 : 0;
 }
 
-function queryWeeklyFromAnalyses(
+// Exported for testing. Daily digest rows are preferred in production, but
+// missing digest days fall back to this analyses query.
+export function queryWeeklyFromAnalyses(
   db: ReturnType<typeof getDb>,
   periodStartUnix: number,
   periodEndUnix: number
@@ -86,6 +88,11 @@ function queryWeeklyFromAnalyses(
               pr.title, pr.pr_number,
               p.url AS project_url
        FROM analyses a
+       JOIN (
+         SELECT pr_id, MAX(id) AS analysis_id
+         FROM analyses
+         GROUP BY pr_id
+       ) latest ON latest.analysis_id = a.id
        JOIN pull_requests pr ON a.pr_id = pr.id
        JOIN projects p ON p.id = pr.project_id
        WHERE pr.merged_at >= ? AND pr.merged_at <= ?
@@ -398,6 +405,11 @@ export function selectWeeklyCandidates(timezone: string, now?: Date): WeeklyCand
       `SELECT a.project_id, pr.pr_number, pr.title, a.summary,
               a.significance, a.categories, a.direction_signal
        FROM analyses a
+       JOIN (
+         SELECT pr_id, MAX(id) AS analysis_id
+         FROM analyses
+         GROUP BY pr_id
+       ) latest ON latest.analysis_id = a.id
        JOIN pull_requests pr ON a.pr_id = pr.id
        WHERE pr.merged_at >= ? AND pr.merged_at <= ?`
     )

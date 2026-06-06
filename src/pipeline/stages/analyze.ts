@@ -128,6 +128,20 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
   for (let i = 0; i < pendingPRs.length; i++) {
     const pr = pendingPRs[i]!;
 
+    const existingAnalysis = db
+      .query<{ id: number }, [number]>(
+        "SELECT id FROM analyses WHERE pr_id = ? ORDER BY id DESC LIMIT 1"
+      )
+      .get(pr.id);
+    if (existingAnalysis) {
+      db.run(`UPDATE pull_requests SET analysis_status = 'complete' WHERE id = ?`, [pr.id]);
+      itemsProcessed++;
+      console.log(
+        `[Analyze] PR ${pr.id} (${pr.title}): already analyzed as #${existingAnalysis.id}, marked complete`
+      );
+      continue;
+    }
+
     // Budget check before each PR
     const budget = getBudgetStatus();
 
@@ -250,6 +264,8 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
             ]
           );
 
+          db.run(`UPDATE pull_requests SET analysis_status = 'complete' WHERE id = ?`, [pr.id]);
+
           return { aid, diffPath: `${FINAL_DIR}/${aid}.diff` };
         })();
 
@@ -268,7 +284,6 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
           console.error(`[Analyze] PR ${pr.id}: rename failed: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}`);
         }
 
-        db.run(`UPDATE pull_requests SET analysis_status = 'complete' WHERE id = ?`, [pr.id]);
         itemsProcessed++;
         console.log(
           `[Analyze] PR ${pr.id} (${pr.title}): ${reviewResult.output.significance}, cost $${reviewResult.estimatedCostUsd.toFixed(4)}`

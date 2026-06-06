@@ -64,6 +64,11 @@ export function buildDailyReport(timezone: string, now?: Date): DailyReportData 
               pr.title, pr.pr_number,
               p.url AS project_url
        FROM analyses a
+       JOIN (
+         SELECT pr_id, MAX(id) AS analysis_id
+         FROM analyses
+         GROUP BY pr_id
+       ) latest ON latest.analysis_id = a.id
        JOIN pull_requests pr ON a.pr_id = pr.id
        JOIN projects p ON p.id = pr.project_id
        WHERE pr.merged_at >= ? AND pr.merged_at <= ?

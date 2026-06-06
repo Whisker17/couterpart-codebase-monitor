@@ -156,7 +156,15 @@ export function printPostRunSummary(
       const periodEnd = dailyEnd;
       const analysisCount = db
         .query<{ count: number }, [number, number]>(
-          "SELECT COUNT(*) as count FROM analyses a JOIN pull_requests p ON a.pr_id = p.id WHERE p.merged_at >= ? AND p.merged_at <= ?"
+          `SELECT COUNT(*) as count
+           FROM analyses a
+           JOIN (
+             SELECT pr_id, MAX(id) AS analysis_id
+             FROM analyses
+             GROUP BY pr_id
+           ) latest ON latest.analysis_id = a.id
+           JOIN pull_requests p ON a.pr_id = p.id
+           WHERE p.merged_at >= ? AND p.merged_at <= ?`
         )
         .get(periodStart, periodEnd);
 
@@ -202,6 +210,11 @@ export function printPostRunSummary(
       `SELECT a.id, a.project_id, a.summary, a.significance, a.direction_signal,
               p.title as pr_title, a.input_tokens, a.output_tokens, a.estimated_cost_usd
        FROM analyses a
+       JOIN (
+         SELECT pr_id, MAX(id) AS analysis_id
+         FROM analyses
+         GROUP BY pr_id
+       ) latest ON latest.analysis_id = a.id
        JOIN pull_requests p ON a.pr_id = p.id
        WHERE a.id > ?
        ORDER BY a.id DESC`

@@ -148,9 +148,15 @@ function insertAnalysis(costUsd: number): void {
   monthStart.setUTCHours(0, 0, 0, 0);
   const analyzedAt = Math.floor(monthStart.getTime() / 1000) + 3600;
   testDb.run(
+    `INSERT INTO pull_requests (project_id, pr_number, title, analysis_status, retry_count, diff_status)
+     VALUES ('org/repo', ?, 'Historical PR', 'complete', 0, 'missing')`,
+    [Math.floor(Math.random() * 100000)]
+  );
+  const pr = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+  testDb.run(
     `INSERT INTO analyses (pr_id, project_id, summary, input_tokens, output_tokens, estimated_cost_usd, analyzed_at)
-     VALUES (1, 'org/repo', 'existing', 100, 10, ?, ?)`,
-    [costUsd, analyzedAt]
+     VALUES (?, 'org/repo', 'existing', 100, 10, ?, ?)`,
+    [pr.id, costUsd, analyzedAt]
   );
 }
 
@@ -208,6 +214,50 @@ describe("analyze stage", () => {
     ).get();
     expect(inputs?.prompt_version).toBe("v1");
     expect(inputs?.input_quality).toBe("metadata_only");
+  });
+
+  it("marks a retried PR complete without re-analyzing when an analysis already exists", async () => {
+    const prId = insertPR({ analysis_status: "failed", retry_count: 1 });
+    testDb.run(
+      `INSERT INTO analyses (pr_id, project_id, summary, significance, estimated_cost_usd)
+       VALUES (?, 'org/repo', 'Old summary', 'notable', 0.001)`,
+      [prId]
+    );
+    const oldAnalysis = testDb
+      .query<{ id: number }, []>("SELECT last_insert_rowid() as id")
+      .get()!;
+    testDb.run(
+      `INSERT INTO analysis_inputs (analysis_id, prompt_version, input_quality, diff_truncated)
+       VALUES (?, 'old', 'metadata_only', 0)`,
+      [oldAnalysis.id]
+    );
+
+    await execute({ stageResults: new Map(), reportMode: "daily" as const });
+
+    const analyses = testDb
+      .query<{ id: number; summary: string }, [number]>(
+        "SELECT id, summary FROM analyses WHERE pr_id = ? ORDER BY id"
+      )
+      .all(prId);
+    expect(analyses).toHaveLength(1);
+    expect(analyses[0]!.summary).toBe("Old summary");
+    expect(mockReviewPR).not.toHaveBeenCalled();
+
+    const inputs = testDb
+      .query<{ prompt_version: string }, []>(
+        `SELECT ai.prompt_version
+         FROM analysis_inputs ai
+         JOIN analyses a ON a.id = ai.analysis_id`
+      )
+      .all();
+    expect(inputs).toEqual([{ prompt_version: "old" }]);
+
+    const pr = testDb
+      .query<{ analysis_status: string }, [number]>(
+        "SELECT analysis_status FROM pull_requests WHERE id = ?"
+      )
+      .get(prId);
+    expect(pr?.analysis_status).toBe("complete");
   });
 
   it("marks PR failed and increments retry_count on LLM error", async () => {
@@ -290,7 +340,11 @@ describe("analyze stage", () => {
     expect(result.itemsProcessed).toBe(0);
     expect(mockReviewPR).not.toHaveBeenCalled();
 
-    const pr = testDb.query<{ analysis_status: string }, []>("SELECT analysis_status FROM pull_requests LIMIT 1").get();
+    const pr = testDb
+      .query<{ analysis_status: string }, []>(
+        "SELECT analysis_status FROM pull_requests WHERE title = 'fix typo in readme'"
+      )
+      .get();
     expect(pr?.analysis_status).toBe("budget_skipped");
     expect(result.budgetSkippedCount).toBeGreaterThan(0);
   });

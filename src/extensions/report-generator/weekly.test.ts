@@ -1,7 +1,14 @@
 import { describe, it, expect, mock, spyOn, afterEach } from "bun:test";
+import { Database } from "bun:sqlite";
+import {
+  MIGRATION_001,
+  MIGRATION_002,
+  MIGRATION_003,
+  MIGRATION_004,
+} from "../../storage/schema";
 
 // aggregateFromDigests and fillAbsentDays are exported for testability
-const { aggregateFromDigests, fillAbsentDays } = await import("./weekly");
+const { aggregateFromDigests, fillAbsentDays, queryWeeklyFromAnalyses } = await import("./weekly");
 import type { WeeklyReportData } from "./weekly";
 import type { DailyDigest } from "./daily";
 
@@ -568,5 +575,58 @@ describe("aggregateFromDigests > mixed-mode directionChanges signals completenes
     expect(dc.signals).toContain("signal-beta");
     // This is the key assertion: signal-gamma must appear even though it's not in the capped highlights
     expect(dc.signals).toContain("signal-gamma");
+  });
+});
+
+describe("queryWeeklyFromAnalyses", () => {
+  let db: Database;
+
+  afterEach(() => {
+    db?.close();
+  });
+
+  it("uses only the latest analysis row per PR", () => {
+    db = new Database(":memory:");
+    db.exec("PRAGMA foreign_keys=ON");
+    db.exec(MIGRATION_001);
+    db.exec(MIGRATION_002);
+    db.exec(MIGRATION_003);
+    db.exec(MIGRATION_004);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "org/repo-a",
+      "org",
+      "repo-a",
+      "https://github.com/org/repo-a"
+    );
+    db.query(
+      "INSERT INTO pull_requests (project_id, pr_number, title, merged_at) VALUES (?, ?, ?, ?)"
+    ).run("org/repo-a", 3219, "Duplicate analysis PR", PERIOD_START + 3600);
+    const prId = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!.id;
+
+    db.query(
+      "INSERT INTO analyses (pr_id, project_id, summary, significance, direction_signal) VALUES (?, ?, ?, ?, ?)"
+    ).run(prId, "org/repo-a", "old summary", "directional_shift", "old signal");
+    db.query(
+      "INSERT INTO analyses (pr_id, project_id, summary, significance, direction_signal) VALUES (?, ?, ?, ?, ?)"
+    ).run(prId, "org/repo-a", "new summary", "notable", "new signal");
+
+    const result = queryWeeklyFromAnalyses(db, PERIOD_START, PERIOD_END);
+
+    expect(result.activitySummary.totalPrs).toBe(1);
+    expect(result.activitySummary.directionalShiftCount).toBe(0);
+    expect(result.activitySummary.notableCount).toBe(1);
+    expect(result.projectHighlights).toHaveLength(1);
+    expect(result.projectHighlights[0]!.prCount).toBe(1);
+    expect(result.projectHighlights[0]!.highlights).toEqual([
+      {
+        prNumber: 3219,
+        title: "Duplicate analysis PR",
+        summary: "new summary",
+        significance: "notable",
+        directionSignal: "new signal",
+        htmlUrl: "https://github.com/org/repo-a/pull/3219",
+      },
+    ]);
   });
 });

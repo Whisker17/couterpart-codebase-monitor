@@ -51,12 +51,13 @@ function insertAnalysis(
   prId: number,
   projectId: string,
   significance: "routine" | "notable" | "directional_shift",
-  categories: string | null
+  categories: string | null,
+  summary = "Test summary"
 ): void {
   db.query(
     `INSERT INTO analyses (pr_id, project_id, summary, significance, categories)
      VALUES (?, ?, ?, ?, ?)`
-  ).run(prId, projectId, "Test summary", significance, categories);
+  ).run(prId, projectId, summary, significance, categories);
 }
 
 // ---------------------------------------------------------------------------
@@ -259,5 +260,20 @@ describe("selectWeeklyCandidates — integration", () => {
     testDb = buildTestDb();
     const results = selectWeeklyCandidates("UTC", NOW);
     expect(results).toHaveLength(0);
+  });
+
+  it("uses only the latest analysis row per PR", () => {
+    testDb = buildTestDb();
+    insertProject(testDb, "base/base");
+    insertPr(testDb, 1, "base/base", 3219, PERIOD_MID, "Duplicate analysis PR");
+    insertAnalysis(testDb, 1, "base/base", "notable", JSON.stringify(["performance"]), "old performance summary");
+    insertAnalysis(testDb, 1, "base/base", "notable", JSON.stringify(["security"]), "new security summary");
+
+    const results = selectWeeklyCandidates("UTC", NOW);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.prNumber).toBe(3219);
+    expect(results[0]!.summary).toBe("new security summary");
+    expect(results[0]!.candidateType).toBe("risk_fix");
   });
 });

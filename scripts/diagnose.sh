@@ -135,6 +135,11 @@ section "4. Analyze: Significance Breakdown"
 run_sql "
 SELECT a.significance, COUNT(*) as count
 FROM analyses a
+JOIN (
+  SELECT pr_id, MAX(id) AS analysis_id
+  FROM analyses
+  GROUP BY pr_id
+) latest ON latest.analysis_id = a.id
 JOIN pull_requests p ON a.pr_id = p.id
 WHERE p.merged_at BETWEEN $DS AND $DE
 GROUP BY a.significance
@@ -155,6 +160,11 @@ SELECT p.project_id, p.pr_number, p.title,
        COALESCE(a.direction_signal, '-') as direction,
        substr(a.summary, 1, 60) as summary
 FROM analyses a
+JOIN (
+  SELECT pr_id, MAX(id) AS analysis_id
+  FROM analyses
+  GROUP BY pr_id
+) latest ON latest.analysis_id = a.id
 JOIN pull_requests p ON a.pr_id = p.id
 WHERE p.merged_at BETWEEN $DS AND $DE
 ORDER BY
@@ -177,6 +187,11 @@ SELECT ai.input_quality, COUNT(*) as count,
        AVG(ai.diff_total_files) as avg_files_total
 FROM analysis_inputs ai
 JOIN analyses a ON ai.analysis_id = a.id
+JOIN (
+  SELECT pr_id, MAX(id) AS analysis_id
+  FROM analyses
+  GROUP BY pr_id
+) latest ON latest.analysis_id = a.id
 JOIN pull_requests p ON a.pr_id = p.id
 WHERE p.merged_at BETWEEN $DS AND $DE
 GROUP BY ai.input_quality;
