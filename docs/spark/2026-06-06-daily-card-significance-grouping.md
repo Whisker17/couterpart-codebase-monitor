@@ -1,7 +1,7 @@
 # Daily Card — Significance-First Grouping
 
 **Date:** 2026-06-06  
-**Status:** Draft (rev 4)
+**Status:** Draft (rev 5)
 **Scope:** Daily card layout restructure — reorganize from repo-first to PR-significance-first grouping
 **Supersedes:** Partially updates the panel logic from `2026-06-05-lark-card-ux-redesign.md`
 
@@ -31,6 +31,10 @@ Tiers:
 
 ## Changes
 
+This document contains two independently implementable changes:
+- **Signal truncation**: replace the summary signal's 60-char hard cut with a byte-aware sentence-boundary soft cap.
+- **Card grouping**: replace repo-first detail panels with PR-significance-first tier panels and repo markdown sections.
+
 ### 1. Byte-Aware Sentence-Boundary Signal Soft Cap (replaces 60-char hard truncation)
 
 **Current** (`daily-card.ts:148`):
@@ -47,27 +51,34 @@ const SIGNAL_BYTE_CAP = 500;
 
 function truncateAtSentenceBoundary(text: string, byteCap: number): string {
   if (Buffer.byteLength(text, "utf-8") <= byteCap) return text;
-  // Find the char index where we exceed byteCap
+
+  // Find the code-unit offset where adding the next full code point would exceed byteCap.
+  // `ch.length` keeps astral characters/surrogate pairs aligned with String.slice().
   let charLimit = 0;
   let bytes = 0;
   for (const ch of text) {
-    bytes += Buffer.byteLength(ch, "utf-8");
-    if (bytes > byteCap) break;
-    charLimit++;
+    const charBytes = Buffer.byteLength(ch, "utf-8");
+    if (bytes + charBytes > byteCap) break;
+    bytes += charBytes;
+    charLimit += ch.length;
   }
-  // Find last sentence boundary within charLimit
-  const slice = [...text].slice(0, charLimit).join("");
+
+  const slice = text.slice(0, charLimit);
   const boundaries = ["。", ". ", "！", "! ", "？", "? "];
-  let lastBoundary = -1;
-  for (const b of boundaries) {
-    const idx = slice.lastIndexOf(b);
-    if (idx > lastBoundary) lastBoundary = idx;
+  let lastBoundaryPos = -1;
+  for (const marker of boundaries) {
+    const idx = slice.lastIndexOf(marker);
+    if (idx !== -1) {
+      const pos = idx + marker.length;
+      if (pos > lastBoundaryPos) lastBoundaryPos = pos;
+    }
   }
-  if (lastBoundary > charLimit * 0.4) {
-    return text.slice(0, lastBoundary + 1).trim();
+
+  if (lastBoundaryPos > charLimit * 0.4) {
+    return text.slice(0, lastBoundaryPos).trim();
   }
-  // No good boundary — hard cut with ellipsis
-  return slice.trim() + "…";
+
+  return text.slice(0, charLimit).trim() + "…";
 }
 ```
 
@@ -88,8 +99,9 @@ Rules:
 Replace the current flat per-repo panel list with significance-tier panels. Lark JSON 1.0 did not reliably collapse nested `collapsible_panel` content in production, so repo grouping inside a tier uses markdown sections rather than nested panels.
 
 **Outer panels** — one per significance tier present that day:
-- `🔴 DIRECTIONAL · {N} repos · {D} directional` — D = directional PR count in this tier
-- `🟡 NOTABLE · {N} repos · {B} notable` — B = notable PR count in this tier
+- `🔴 DIRECTIONAL · {N} repo(s) · {D} directional` — D = directional PR count in this tier
+- `🟡 NOTABLE · {N} repo(s) · {B} notable` — B = notable PR count in this tier
+- Use `repo` when `N = 1`, otherwise `repos`.
 
 **Repo sections** — markdown sections inside the outer panel:
 - `**{projectId} · {S} PR**`
@@ -100,10 +112,10 @@ Routine-only repos do not get panels (unchanged from current behavior).
 
 #### Expanded state logic
 
-- **DIRECTIONAL outer panel**: `expanded: true` when present — so the reader immediately sees directional PRs
-- **Other outer panels**: `expanded: false`
+- **DIRECTIONAL outer panel**: always `expanded: true` when present — so the reader immediately sees directional PRs
+- **NOTABLE outer panel**: `expanded: true` only when no DIRECTIONAL panel exists; otherwise `expanded: false`
 
-Priority order: DIRECTIONAL > NOTABLE. So if a DIRECTIONAL panel exists, it is expanded and NOTABLE is collapsed. If only NOTABLE exists, it is expanded.
+Priority order: DIRECTIONAL > NOTABLE.
 
 This avoids nested panel compatibility issues while still keeping non-directional details collapsed behind the NOTABLE outer panel.
 
@@ -155,7 +167,7 @@ This prevents snapshot test flaking and gives the reader a stable, predictable o
 ```typescript
 {
   tag: "collapsible_panel",
-  expanded: true, // highest tier only; others false
+  expanded: true, // DIRECTIONAL; NOTABLE uses !hasDirectional
   header: {
     title: {
       tag: "plain_text",
@@ -200,7 +212,7 @@ This prevents snapshot test flaking and gives the reader a stable, predictable o
 
 - **Header color logic**: orange (any directional) / yellow (notable only) / blue (all routine)
 - **Summary metric line format**: `{N} repos · {M} PR · 🔴 ×{n} · 🟡 ×{n} · ⚪ ×{n}`
-- **Summary signal table**: per-project rows sorted by significance, same format (now with sentence-aware soft cap instead of hard 60-char cut)
+- **Summary signal table**: per-project rows sorted by `projectSignificanceRank` (directional > notable > routine), same format (now with sentence-aware soft cap instead of hard 60-char cut)
 - **Budget line placement**: warning in summary, non-warning at card bottom
 - **Partial warning**: `⚠ {partialWarning}` at top of summary
 - **`formatter.ts` degradation thresholds**: 20KB / 28KB
@@ -221,12 +233,18 @@ This prevents snapshot test flaking and gives the reader a stable, predictable o
 1. Partition PRs into `directional` and `notable` tiers by PR significance, then group by `projectId` inside each tier
 2. If both empty → return `[{ tag: "markdown", content: "_All PRs are routine today._" }]`
 3. Build tier list in priority order: `[DIRECTIONAL, NOTABLE]`, filtering to non-empty tiers
-4. DIRECTIONAL gets `expanded: true`; NOTABLE gets `expanded: false` when DIRECTIONAL exists
+4. DIRECTIONAL gets `expanded: true`; NOTABLE gets `expanded: !hasDirectional`
 5. Within each tier, sort repos by: tier PR count desc → total PR count desc → `projectId` asc
 6. Build markdown repo sections inside the outer panel
-7. Outer panel header: `{emoji} {TIER_NAME} · {N} repos · {D} {tier_label}`
+7. Outer panel header: `{emoji} {TIER_NAME} · {N} repo(s) · {D} {tier_label}`
 8. Repo section header: `**{projectId} · {S} PR**`
 9. Repo section body: same PR detail rendering, limited to the tier's PRs
+
+Implementation decomposition:
+- `groupProjectsByPrTier()` filters PRs by tier and returns repo groups with total repo PR count for sorting.
+- `buildOuterTierPanel()` sorts one tier's repo groups and builds the outer `collapsible_panel`.
+- `buildRepoMarkdownSections()` renders repo headers plus `---` separators into one markdown element.
+- `renderPrDetails()` renders the tier PR links, badges, summaries, and direction signals.
 
 **`buildDailyCard`** — update call from `buildRepoPanels` to `buildSignificancePanels`
 
@@ -250,7 +268,7 @@ export interface LarkCollapsiblePanel {
 |------|--------|
 | `daily-card.ts` | Add `truncateAtSentenceBoundary` (byte-aware), update `buildSummaryContent`, rename+rewrite `buildRepoPanels` → `buildSignificancePanels`, keep `LarkCollapsiblePanel` markdown-only for JSON 1.0 compatibility, update `buildDailyCard` call site |
 | `daily-card.test.ts` | Update panel structure assertions for PR-significance tiers and markdown repo sections, update truncation-related tests, add byte-aware sentence-boundary tests (Chinese-heavy, English-heavy, mixed, no-boundary-found, under-cap-passthrough) |
-| `formatter.test.ts` | Minor: update if any tests reference old flat panel shape |
+| `report.test.ts` | Update oversize-card fixture if the new markdown-section structure changes card size |
 
 No changes to: `formatter.ts`, `webhook.ts`, `weekly-card.ts`, `delivery-localizer.ts`, pipeline stages, data model.
 
