@@ -16,7 +16,7 @@ export interface LarkCollapsiblePanel {
   tag: "collapsible_panel";
   expanded: boolean;
   header: { title: LarkText };
-  elements: (LarkMarkdownElement | LarkCollapsiblePanel)[];
+  elements: LarkMarkdownElement[];
 }
 
 export type LarkElement = LarkMarkdownElement | LarkHrElement | LarkCollapsiblePanel;
@@ -194,20 +194,20 @@ export function buildSummaryContent(
   return parts.join("\n");
 }
 
-function buildInnerRepoPanel(project: ProjectAnalysis): LarkCollapsiblePanel {
-  const significantPrs = project.prs.filter((pr) => pr.significance !== "routine");
-  const routinePrs = project.prs.filter((pr) => pr.significance === "routine");
+type SignificantTier = "directional" | "notable";
+type SignificantPr = ProjectAnalysis["prs"][number] & {
+  significance: "directional_shift" | "notable";
+};
 
-  const S = project.directionalShiftCount + project.notableCount;
-  const R = routinePrs.length;
+interface TierRepoGroup {
+  projectId: string;
+  prCount: number;
+  prs: SignificantPr[];
+}
 
-  const headerContent =
-    R === 0
-      ? `${project.projectId} · ${S} PR`
-      : `${project.projectId} · ${S} significant · ${R} routine`;
-
+function renderPrDetails(prs: SignificantPr[]): string {
   const bodyParts: string[] = [];
-  for (const pr of significantPrs) {
+  for (const pr of prs) {
     const directionSignal = pr.directionSignal
       ? stripCounterpartRecommendations(pr.directionSignal)
       : null;
@@ -217,64 +217,71 @@ function buildInnerRepoPanel(project: ProjectAnalysis): LarkCollapsiblePanel {
       bodyParts.push(`Direction: ${directionSignal}`);
     }
   }
-  if (R > 0) {
-    bodyParts.push(`_${R} routine PR${R !== 1 ? "s" : ""} not expanded_`);
+
+  return bodyParts.join("\n").trim() || "_No details available._";
+}
+
+function buildRepoMarkdownSections(groups: TierRepoGroup[]): string {
+  return groups
+    .map((group) => {
+      const header =
+        group.prs.length === 1
+          ? `**${group.projectId} · 1 PR**`
+          : `**${group.projectId} · ${group.prs.length} PR**`;
+      return `${header}\n${renderPrDetails(group.prs)}`;
+    })
+    .join("\n\n---\n\n");
+}
+
+function groupProjectsByPrTier(
+  analyses: GroupedAnalyses,
+  tier: SignificantTier
+): TierRepoGroup[] {
+  const targetSignificance = tier === "directional" ? "directional_shift" : "notable";
+  const groups: TierRepoGroup[] = [];
+
+  for (const project of analyses) {
+    const prs = project.prs.filter(
+      (pr): pr is SignificantPr => pr.significance === targetSignificance
+    );
+    if (prs.length === 0) continue;
+    groups.push({ projectId: project.projectId, prCount: project.prCount, prs });
   }
 
-  return {
-    tag: "collapsible_panel",
-    expanded: false,
-    header: { title: { tag: "plain_text", content: headerContent } },
-    elements: [{ tag: "markdown", content: bodyParts.join("\n").trim() || "_No details available._" }],
-  };
+  return groups;
 }
 
 function buildOuterTierPanel(
   tier: "directional" | "notable",
-  projects: ProjectAnalysis[],
+  groups: TierRepoGroup[],
   expanded: boolean
 ): LarkCollapsiblePanel {
-  const sorted = [...projects].sort((a, b) => {
-    const aKey = tier === "directional" ? a.directionalShiftCount : a.notableCount;
-    const bKey = tier === "directional" ? b.directionalShiftCount : b.notableCount;
-    if (bKey !== aKey) return bKey - aKey;
+  const sorted = [...groups].sort((a, b) => {
+    if (b.prs.length !== a.prs.length) return b.prs.length - a.prs.length;
     if (b.prCount !== a.prCount) return b.prCount - a.prCount;
     return a.projectId.localeCompare(b.projectId);
   });
 
-  let tierCount = 0;
-  let otherCount = 0;
-  for (const p of projects) {
-    if (tier === "directional") {
-      tierCount += p.directionalShiftCount;
-      otherCount += p.prCount - p.directionalShiftCount;
-    } else {
-      tierCount += p.notableCount;
-      otherCount += p.prCount - p.notableCount;
-    }
-  }
+  const tierCount = sorted.reduce((sum, p) => sum + p.prs.length, 0);
 
-  const N = projects.length;
+  const N = sorted.length;
   const emoji = tier === "directional" ? "🔴" : "🟡";
   const tierLabel = tier === "directional" ? "DIRECTIONAL" : "NOTABLE";
   const countLabel = tier === "directional" ? "directional" : "notable";
 
-  let headerContent = `${emoji} ${tierLabel} · ${N} repo${N !== 1 ? "s" : ""} · ${tierCount} ${countLabel}`;
-  if (otherCount > 0) headerContent += ` · ${otherCount} other`;
+  const headerContent = `${emoji} ${tierLabel} · ${N} repo${N !== 1 ? "s" : ""} · ${tierCount} ${countLabel}`;
 
   return {
     tag: "collapsible_panel",
     expanded,
     header: { title: { tag: "plain_text", content: headerContent } },
-    elements: sorted.map(buildInnerRepoPanel),
+    elements: [{ tag: "markdown", content: buildRepoMarkdownSections(sorted) }],
   };
 }
 
 export function buildSignificancePanels(analyses: GroupedAnalyses): LarkElement[] {
-  const directionalProjects = analyses.filter((p) => p.directionalShiftCount > 0);
-  const notableProjects = analyses.filter(
-    (p) => p.directionalShiftCount === 0 && p.notableCount > 0
-  );
+  const directionalProjects = groupProjectsByPrTier(analyses, "directional");
+  const notableProjects = groupProjectsByPrTier(analyses, "notable");
 
   if (directionalProjects.length === 0 && notableProjects.length === 0) {
     return [{ tag: "markdown", content: "_All PRs are routine today._" }];

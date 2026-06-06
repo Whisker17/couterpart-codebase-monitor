@@ -98,6 +98,10 @@ const routineOnlyAnalyses: GroupedAnalyses = [
   },
 ];
 
+function panelMarkdown(panel: LarkCollapsiblePanel): string {
+  return (panel.elements[0] as LarkMarkdownElement).content;
+}
+
 describe("buildDailyCard", () => {
   it("has correct three-level structure: config, header, elements", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
@@ -151,9 +155,7 @@ describe("buildDailyCard", () => {
     ) as LarkCollapsiblePanel;
     expect(outerPanel).toBeDefined();
     expect(outerPanel.header.title.content).toContain("🔴 DIRECTIONAL");
-    // Inner panel contains the project id
-    const innerPanel = outerPanel.elements[0] as LarkCollapsiblePanel;
-    expect(innerPanel.header.title.content).toContain("org/repo-a");
+    expect(panelMarkdown(outerPanel)).toContain("**org/repo-a");
   });
 
   it("no inner panel generated for routine-only project", () => {
@@ -161,10 +163,7 @@ describe("buildDailyCard", () => {
     const outerPanels = card.elements.filter((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel[];
     // There should be 1 outer DIRECTIONAL panel
     expect(outerPanels).toHaveLength(1);
-    // Its inner panels should not include org/repo-b
-    const innerPanels = outerPanels[0]!.elements as LarkCollapsiblePanel[];
-    const repoBInner = innerPanels.find((p) => p.header?.title?.content?.includes("org/repo-b"));
-    expect(repoBInner).toBeUndefined();
+    expect(panelMarkdown(outerPanels[0]!)).not.toContain("org/repo-b");
   });
 
   it("all-routine analyses: no collapsible panels, fallback markdown present", () => {
@@ -186,24 +185,20 @@ describe("buildDailyCard", () => {
     expect(panel.expanded).toBe(true);
   });
 
-  it("shows significant PRs in inner panel body; routine PR shown as hint", () => {
+  it("shows significant PRs in repo markdown section and omits routine PRs", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
     const outerPanel = card.elements.find((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel;
-    const innerPanel = outerPanel.elements[0] as LarkCollapsiblePanel;
-    const detail = (innerPanel.elements[0] as LarkMarkdownElement).content;
+    const detail = panelMarkdown(outerPanel);
     expect(detail).toContain("#101");
     expect(detail).toContain("Add OAuth2 support");
     expect(detail).not.toContain("#102");
     expect(detail).not.toContain("Fix typo");
-    expect(detail).toContain("routine");
-    expect(detail).toContain("not expanded");
   });
 
-  it("PR title is rendered as a markdown link in inner panel body", () => {
+  it("PR title is rendered as a markdown link in repo markdown section", () => {
     const card = buildDailyCard("2026-06-05", sampleAnalyses);
     const outerPanel = card.elements.find((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel;
-    const innerPanel = outerPanel.elements[0] as LarkCollapsiblePanel;
-    const detail = (innerPanel.elements[0] as LarkMarkdownElement).content;
+    const detail = panelMarkdown(outerPanel);
     expect(detail).toContain("[#101 Add OAuth2 support](https://github.com/org/repo-a/pull/101)");
   });
 
@@ -1041,13 +1036,12 @@ describe("buildSignificancePanels", () => {
     expect(outer.expanded).toBe(true);
   });
 
-  it("DIRECTIONAL outer header: N repos, D directional, R other when R > 0", () => {
-    // sampleAnalyses: org/repo-a has 1 directional + 1 routine → N=1, D=1, R=1
+  it("DIRECTIONAL outer header counts directional PRs only", () => {
     const panels = buildSignificancePanels(sampleAnalyses);
     const outer = panels[0] as LarkCollapsiblePanel;
     expect(outer.header.title.content).toContain("1 repo");
     expect(outer.header.title.content).toContain("1 directional");
-    expect(outer.header.title.content).toContain("1 other");
+    expect(outer.header.title.content).not.toContain("other");
   });
 
   it("DIRECTIONAL outer header: omit '· R other' when R = 0", () => {
@@ -1112,7 +1106,7 @@ describe("buildSignificancePanels", () => {
     expect(notable.expanded).toBe(false);
   });
 
-  it("project with directional + notable PRs → placed in DIRECTIONAL tier only, not NOTABLE", () => {
+  it("project with directional + notable PRs is split by PR significance across tiers", () => {
     const mixed: GroupedAnalyses = [
       {
         projectId: "org/mixed",
@@ -1125,22 +1119,36 @@ describe("buildSignificancePanels", () => {
       },
     ];
     const panels = buildSignificancePanels(mixed);
-    // Only 1 outer DIRECTIONAL panel (not also a NOTABLE panel)
-    expect(panels).toHaveLength(1);
-    expect((panels[0] as LarkCollapsiblePanel).header.title.content).toContain("DIRECTIONAL");
-    expect((panels[0] as LarkCollapsiblePanel).header.title.content).not.toContain("NOTABLE");
+    expect(panels).toHaveLength(2);
+    const directional = panels[0] as LarkCollapsiblePanel;
+    const notable = panels[1] as LarkCollapsiblePanel;
+    expect(directional.header.title.content).toContain("DIRECTIONAL");
+    expect(directional.header.title.content).toContain("1 directional");
+    expect(directional.header.title.content).not.toContain("other");
+    expect(notable.header.title.content).toContain("NOTABLE");
+    expect(notable.header.title.content).toContain("1 notable");
+    expect(notable.header.title.content).not.toContain("other");
+
+    const directionalBody = (directional.elements[0] as LarkMarkdownElement).content;
+    const notableBody = (notable.elements[0] as LarkMarkdownElement).content;
+    expect(directionalBody).toContain("#1 D");
+    expect(directionalBody).not.toContain("#2 N");
+    expect(directionalBody).not.toContain("#3 R");
+    expect(notableBody).toContain("#2 N");
+    expect(notableBody).not.toContain("#1 D");
+    expect(notableBody).not.toContain("#3 R");
   });
 
-  it("all inner collapsible_panel elements are expanded=false", () => {
+  it("outer panels contain markdown repo sections rather than nested collapsible panels", () => {
     const panels = buildSignificancePanels(sampleAnalyses);
     const outer = panels[0] as LarkCollapsiblePanel;
-    for (const inner of outer.elements) {
-      expect((inner as LarkCollapsiblePanel).tag).toBe("collapsible_panel");
-      expect((inner as LarkCollapsiblePanel).expanded).toBe(false);
-    }
+    expect(outer.elements).toHaveLength(1);
+    expect(outer.elements[0]!.tag).toBe("markdown");
+    const body = (outer.elements[0] as LarkMarkdownElement).content;
+    expect(body).toContain("**org/repo-a");
   });
 
-  it("inner header {S} = directional + notable count (2 directional + 1 notable → S = 3)", () => {
+  it("repo markdown section count is tier-specific, not directional + notable combined", () => {
     const analyses: GroupedAnalyses = [
       {
         projectId: "reth",
@@ -1156,15 +1164,16 @@ describe("buildSignificancePanels", () => {
       },
     ];
     const panels = buildSignificancePanels(analyses);
-    const outer = panels[0] as LarkCollapsiblePanel;
-    const inner = outer.elements[0] as LarkCollapsiblePanel;
-    // S = directional(2) + notable(1) = 3; R = routine(3)
-    expect(inner.header.title.content).toContain("reth");
-    expect(inner.header.title.content).toContain("3 significant");
-    expect(inner.header.title.content).toContain("3 routine");
+    expect(panels).toHaveLength(2);
+    const directional = panels[0] as LarkCollapsiblePanel;
+    const notable = panels[1] as LarkCollapsiblePanel;
+    expect(panelMarkdown(directional)).toContain("**reth · 2 PR**");
+    expect(panelMarkdown(directional)).not.toContain("#3 N1");
+    expect(panelMarkdown(notable)).toContain("**reth · 1 PR**");
+    expect(panelMarkdown(notable)).toContain("#3 N1");
   });
 
-  it("inner header: R=0 → '{projectId} · {S} PR' format (no 'significant' or 'routine')", () => {
+  it("repo markdown section header uses '{projectId} · {tier PR count} PR'", () => {
     const analyses: GroupedAnalyses = [
       {
         projectId: "org/clean",
@@ -1177,14 +1186,13 @@ describe("buildSignificancePanels", () => {
     ];
     const panels = buildSignificancePanels(analyses);
     const outer = panels[0] as LarkCollapsiblePanel;
-    const inner = outer.elements[0] as LarkCollapsiblePanel;
-    expect(inner.header.title.content).toContain("org/clean");
-    expect(inner.header.title.content).toContain("2 PR");
-    expect(inner.header.title.content).not.toContain("significant");
-    expect(inner.header.title.content).not.toContain("routine");
+    const body = panelMarkdown(outer);
+    expect(body).toContain("**org/clean · 2 PR**");
+    expect(body).not.toContain("significant");
+    expect(body).not.toContain("routine");
   });
 
-  it("inner repos sorted: DIRECTIONAL tier by directionalShiftCount desc → prCount desc → projectId asc", () => {
+  it("repo markdown sections sorted: DIRECTIONAL tier by directional PR count desc → prCount desc → projectId asc", () => {
     const threeDirectional: GroupedAnalyses = [
       {
         projectId: "org/repo-c",  // 1 directional
@@ -1210,14 +1218,13 @@ describe("buildSignificancePanels", () => {
     ];
     const panels = buildSignificancePanels(threeDirectional);
     const outer = panels[0] as LarkCollapsiblePanel;
-    const innerHeaders = (outer.elements as LarkCollapsiblePanel[]).map((e) => e.header.title.content);
+    const body = panelMarkdown(outer);
     // repo-a(3 dir) → repo-b(2 dir) → repo-c(1 dir)
-    expect(innerHeaders[0]).toContain("org/repo-a");
-    expect(innerHeaders[1]).toContain("org/repo-b");
-    expect(innerHeaders[2]).toContain("org/repo-c");
+    expect(body.indexOf("org/repo-a")).toBeLessThan(body.indexOf("org/repo-b"));
+    expect(body.indexOf("org/repo-b")).toBeLessThan(body.indexOf("org/repo-c"));
   });
 
-  it("inner repos sorted: NOTABLE tier by notableCount desc → prCount desc → projectId asc", () => {
+  it("repo markdown sections sorted: NOTABLE tier by notable PR count desc → prCount desc → projectId asc", () => {
     const threeNotable: GroupedAnalyses = [
       {
         projectId: "org/repo-b",  // 2 notable
@@ -1237,27 +1244,24 @@ describe("buildSignificancePanels", () => {
     ];
     const panels = buildSignificancePanels(threeNotable);
     const outer = panels[0] as LarkCollapsiblePanel;
-    const innerHeaders = (outer.elements as LarkCollapsiblePanel[]).map((e) => e.header.title.content);
+    const body = panelMarkdown(outer);
     // repo-a(3 notable) → repo-b(2 notable) → repo-c(1 notable)
-    expect(innerHeaders[0]).toContain("org/repo-a");
-    expect(innerHeaders[1]).toContain("org/repo-b");
-    expect(innerHeaders[2]).toContain("org/repo-c");
+    expect(body.indexOf("org/repo-a")).toBeLessThan(body.indexOf("org/repo-b"));
+    expect(body.indexOf("org/repo-b")).toBeLessThan(body.indexOf("org/repo-c"));
   });
 
-  it("inner body: significant PRs shown with link, badge, summary; routine appended as hint", () => {
+  it("repo markdown body: tier PRs shown with link, badge, summary; routine omitted", () => {
     const panels = buildSignificancePanels(sampleAnalyses);
     const outer = panels[0] as LarkCollapsiblePanel;
-    const inner = outer.elements[0] as LarkCollapsiblePanel;
-    const body = (inner.elements[0] as LarkMarkdownElement).content;
+    const body = panelMarkdown(outer);
     expect(body).toContain("[#101 Add OAuth2 support](https://github.com/org/repo-a/pull/101)");
     expect(body).toContain("🔴 DIRECTIONAL");
     expect(body).toContain("Adds OAuth2 authentication flow");
     expect(body).toContain("Direction: migrating auth to OAuth2");
-    expect(body).toContain("1 routine PR not expanded");
     expect(body).not.toContain("#102");
   });
 
-  it("inner body: direction signal stripped of counterpart recommendations", () => {
+  it("repo markdown body: direction signal stripped of counterpart recommendations", () => {
     const analyses: GroupedAnalyses = [
       {
         projectId: "org/reth",
@@ -1273,13 +1277,12 @@ describe("buildSignificancePanels", () => {
     ];
     const panels = buildSignificancePanels(analyses);
     const outer = panels[0] as LarkCollapsiblePanel;
-    const inner = outer.elements[0] as LarkCollapsiblePanel;
-    const body = (inner.elements[0] as LarkMarkdownElement).content;
+    const body = panelMarkdown(outer);
     expect(body).not.toContain("Mantle should");
     expect(body).toContain("switching to async");
   });
 
-  it("mobile readability: long repo name and Chinese signal — no table syntax in inner panel", () => {
+  it("mobile readability: long repo name and Chinese signal — no table syntax in repo markdown section", () => {
     const analyses: GroupedAnalyses = [
       {
         projectId: "ethereum-optimism/op-geth",
@@ -1302,15 +1305,13 @@ describe("buildSignificancePanels", () => {
     ];
     const panels = buildSignificancePanels(analyses);
     const outer = panels[0] as LarkCollapsiblePanel;
-    const inner = outer.elements[0] as LarkCollapsiblePanel;
-    expect(inner.header.title.content).toContain("ethereum-optimism/op-geth");
-    const body = (inner.elements[0] as LarkMarkdownElement).content;
+    const body = panelMarkdown(outer);
+    expect(body).toContain("ethereum-optimism/op-geth");
     expect(body).toContain("新 consensus API 接口引入");
     expect(body).not.toContain("|");
-    expect(inner.header.title.content).not.toContain("|");
   });
 
-  it("formatter Level 3 single-project mode: notable project → 1 outer NOTABLE panel + 1 inner panel", () => {
+  it("formatter Level 3 single-project mode: notable project → 1 outer NOTABLE panel + markdown repo section", () => {
     const singleNotable: GroupedAnalyses = [
       {
         projectId: "org/single",
@@ -1322,9 +1323,7 @@ describe("buildSignificancePanels", () => {
     const outerPanels = card.elements.filter((e) => e.tag === "collapsible_panel") as LarkCollapsiblePanel[];
     expect(outerPanels).toHaveLength(1);
     expect(outerPanels[0]!.header.title.content).toContain("🟡 NOTABLE");
-    // The inner panel should reference the project
-    const innerPanel = outerPanels[0]!.elements[0] as LarkCollapsiblePanel;
-    expect(innerPanel.header.title.content).toContain("org/single");
+    expect(panelMarkdown(outerPanels[0]!)).toContain("org/single");
   });
 
   it("formatter Level 3 single-project mode: routine-only → fallback markdown, no panel", () => {

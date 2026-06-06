@@ -730,9 +730,9 @@ describe("buildFinalCard", () => {
   });
 
   it("removes routine-only projects and adds omit note when card exceeds 20KB", () => {
-    // 30 notable-only projects with summaries push the full card over 20KB.
-    // 10 routine-only projects are filtered by formatter Level 2, adding the omit note.
-    // Per-project panels add overhead vs old single panel; 400-char summaries keep trimmed < 28KB.
+    // 30 notable-only projects with summaries plus many routine-only projects
+    // push the full card over 20KB. Routine-only projects are filtered by
+    // formatter Level 2, adding the omit note while keeping trimmed < 28KB.
     const longSummary = "x".repeat(400);
     const notableProjects = Array.from({ length: 30 }, (_, i) => ({
       projectId: `org/notable-project-${i}`,
@@ -742,7 +742,7 @@ describe("buildFinalCard", () => {
       topDirectionSignal: null,
       prs: [{ ...notablePR, prNumber: i + 1, summary: longSummary }],
     }));
-    const routineOnlyProjects = Array.from({ length: 10 }, (_, i) => ({
+    const routineOnlyProjects = Array.from({ length: 80 }, (_, i) => ({
       projectId: `org/routine-only-${i}`,
       prCount: 3,
       directionalShiftCount: 0,

@@ -1,8 +1,8 @@
-# Daily Card — Significance-First Grouping with Nested Panels
+# Daily Card — Significance-First Grouping
 
 **Date:** 2026-06-06  
-**Status:** Draft (rev 3)  
-**Scope:** Daily card layout restructure — reorganize from repo-first to project-max-significance grouping  
+**Status:** Draft (rev 4)
+**Scope:** Daily card layout restructure — reorganize from repo-first to PR-significance-first grouping
 **Supersedes:** Partially updates the panel logic from `2026-06-05-lark-card-ux-redesign.md`
 
 ---
@@ -12,20 +12,20 @@
 Two issues observed in production daily cards:
 
 1. **Summary signal truncation** — the 60-char hard limit in `buildSummaryContent` cuts off LLM-generated direction signals mid-sentence, losing the conclusion
-2. **Panels not collapsed** — directional panels default to `expanded: true`, forcing the reader to scroll past PR details to see other projects
+2. **Repo details not reliably collapsed** — the old per-repo layout either expanded directional repo details directly or relied on nested panels that did not collapse reliably in production Lark JSON 1.0 cards
 
-Additionally, the current flat per-repo panel list does not visually distinguish significance tiers. The user must read each panel header emoji to understand which PRs are directional vs. notable.
+Additionally, the old flat per-repo panel list did not visually distinguish significance tiers. The user had to read each repo header emoji to understand which PRs were directional vs. notable.
 
 ---
 
 ## Grouping Model
 
-**Project-max-significance grouping**: each project is assigned to exactly one tier based on its highest-significance PR. A project with both directional and notable PRs appears only in the DIRECTIONAL tier — its notable PRs are shown inside that tier's repo panel, not duplicated into the NOTABLE tier.
+**PR-significance-first grouping**: PRs are assigned to tiers by their own significance first, then grouped by repo inside each tier. A project with both directional and notable PRs can appear in both DIRECTIONAL and NOTABLE, but each tier contains only PRs of that tier.
 
 Tiers:
-- **DIRECTIONAL** — projects containing at least one `directional_shift` PR
-- **NOTABLE** — projects whose highest significance is `notable` (no directional PRs)
-- **Routine** — projects with only `routine` PRs (no panel, summary signal table only)
+- **DIRECTIONAL** — `directional_shift` PRs, grouped by repo
+- **NOTABLE** — `notable` PRs, grouped by repo
+- **Routine** — `routine` PRs do not get detail panels; they remain in summary/counts and may be omitted by formatter degradation
 
 ---
 
@@ -79,40 +79,38 @@ Rules:
 - `.trim()` before returning to clean up trailing whitespace from boundary detection
 - `stripCounterpartRecommendations` still runs first to remove cross-repo noise before truncation
 
-**Why 500 bytes, not unlimited**: A 10-repo card where every project uses the full 500-byte signal cap = 5KB of signal text alone. With nested panel JSON overhead (~200 bytes per nesting level per panel, ≈ 4KB for 10 repos × 2 levels), total ≈ 9KB — well within the 20KB Level 1 threshold. Going unlimited would rely entirely on `formatter.ts` degradation, which only filters routine PRs — not signal text.
+**Why 500 bytes, not unlimited**: A 10-repo card where every project uses the full 500-byte signal cap = 5KB of signal text alone. With panel and markdown section overhead, total remains well within the 20KB Level 1 threshold. Going unlimited would rely entirely on `formatter.ts` degradation, which only filters routine PRs — not signal text.
 
 ---
 
-### 2. Significance-First Nested Panels
+### 2. Significance-First Panels
 
-Replace the current flat per-repo panel list with a two-tier nested structure.
+Replace the current flat per-repo panel list with significance-tier panels. Lark JSON 1.0 did not reliably collapse nested `collapsible_panel` content in production, so repo grouping inside a tier uses markdown sections rather than nested panels.
 
 **Outer panels** — one per significance tier present that day:
-- `🔴 DIRECTIONAL · {N} repos · {D} directional · {R} other` — D = directional PR count, R = non-directional PRs in those repos
-- `🟡 NOTABLE · {N} repos · {B} notable · {R} other` — B = notable PR count, R = routine PRs in those repos
+- `🔴 DIRECTIONAL · {N} repos · {D} directional` — D = directional PR count in this tier
+- `🟡 NOTABLE · {N} repos · {B} notable` — B = notable PR count in this tier
 
-If `R` is 0, omit the `· {R} other` segment entirely.
-
-**Inner panels** (nested inside outer) — one per repo:
-- `{projectId} · {S} significant · {R} routine` (no emoji — outer panel conveys significance)
-- If `R` is 0, show as `{projectId} · {S} PR`
+**Repo sections** — markdown sections inside the outer panel:
+- `**{projectId} · {S} PR**`
+- Followed by PR details for only that tier's PRs
+- `---` separator between repos
 
 Routine-only repos do not get panels (unchanged from current behavior).
 
 #### Expanded state logic
 
-- **Highest-priority outer panel**: `expanded: true` — so the reader immediately sees which repos are affected at this significance level
+- **DIRECTIONAL outer panel**: `expanded: true` when present — so the reader immediately sees directional PRs
 - **Other outer panels**: `expanded: false`
-- **All inner repo panels**: `expanded: false` — the reader drills down by clicking a repo they care about
 
 Priority order: DIRECTIONAL > NOTABLE. So if a DIRECTIONAL panel exists, it is expanded and NOTABLE is collapsed. If only NOTABLE exists, it is expanded.
 
-This is more controlled than the old design (which expanded all directional panels including inner PR details) and less opaque than all-collapsed (which hides everything behind two click layers).
+This avoids nested panel compatibility issues while still keeping non-directional details collapsed behind the NOTABLE outer panel.
 
-#### Inner repo sort order
+#### Repo sort order
 
 Within each outer panel, repos are sorted deterministically:
-1. Significant PR count descending (directional count for DIRECTIONAL tier, notable count for NOTABLE tier)
+1. Tier PR count descending (directional count for DIRECTIONAL tier, notable count for NOTABLE tier)
 2. Total PR count descending (tiebreaker)
 3. `projectId` ascending (final tiebreaker, alphabetical)
 
@@ -134,17 +132,17 @@ This prevents snapshot test flaking and gives the reader a stable, predictable o
 │                                                          │
 │  ──────────────────── hr ────────────────────             │
 │                                                          │
-│  ▼ 🔴 DIRECTIONAL · 2 repos · 3 directional  [expanded]  │  outer (highest tier → expanded)
-│     ▶ reth · 2 directional · 1 routine       [collapsed] │  inner (always collapsed)
+│  ▼ 🔴 DIRECTIONAL · 2 repos · 3 directional  [expanded]  │  outer
+│     **reth · 2 PR**                                      │
 │        #1234 async executor migration — summary...       │
 │        Direction: ...                                    │
 │        #1235 breaking change — summary...                │
-│        _1 routine PR not expanded_                       │
-│     ▶ lighthouse · 1 directional             [collapsed] │
+│     ---                                                  │
+│     **lighthouse · 1 PR**                                │
 │        #5678 consensus API — summary...                  │
 │                                                          │
-│  ▶ 🟡 NOTABLE · 1 repo · 3 notable · 1 other [collapsed] │  outer (not highest → collapsed)
-│     ▶ geth · 3 notable · 1 routine           [collapsed] │
+│  ▶ 🟡 NOTABLE · 1 repo · 3 notable           [collapsed] │  outer
+│     **geth · 3 PR**                                      │
 │        #9012 EIP-7702 — summary...                       │
 │        ...                                               │
 │                                                          │
@@ -165,33 +163,15 @@ This prevents snapshot test flaking and gives the reader a stable, predictable o
     }
   },
   elements: [
-    // Inner repo panels (LarkCollapsiblePanel[])
+    { tag: "markdown", content: "**reth · 2 PR**\nPR details...\n\n---\n\n**lighthouse · 1 PR**\nPR details..." }
   ]
 }
 ```
 
-#### Inner panel JSON structure
+#### Repo section body content
 
-```typescript
-{
-  tag: "collapsible_panel",
-  expanded: false,
-  header: {
-    title: {
-      tag: "plain_text",
-      content: "reth · 2 directional · 1 routine"
-    }
-  },
-  elements: [
-    { tag: "markdown", content: "PR details..." }
-  ]
-}
-```
-
-#### Inner panel body content (unchanged from current)
-
-- Significant PRs (directional + notable): link, badge, summary, direction signal
-- Routine PRs within a mixed repo: `_N routine PR(s) not expanded_`
+- Only PRs belonging to the outer tier: link, badge, summary, direction signal
+- Routine PRs are omitted from detail sections
 - Format per PR:
   ```
   [#1234 Title](url)
@@ -209,9 +189,9 @@ This prevents snapshot test flaking and gives the reader a stable, predictable o
 | Only directional, no notable | One outer panel (DIRECTIONAL, expanded) |
 | Only notable, no directional | One outer panel (NOTABLE, expanded) |
 | Single repo in a tier | Outer panel still wraps it (consistent structure) |
-| Project has both directional + notable PRs | All PRs shown in DIRECTIONAL tier's repo panel. Not duplicated to NOTABLE. |
-| `formatter.ts` Level 2 degradation | Routine-only projects filtered out before `buildDailyCard` — nested panels receive only notable/directional data, works as-is |
-| `formatter.ts` Level 3 (per-project split) | `buildDailyCard(date, [singleProject], ...)` — single project produces at most one outer panel with one inner panel |
+| Project has both directional + notable PRs | Directional PRs appear under DIRECTIONAL, notable PRs appear under NOTABLE. |
+| `formatter.ts` Level 2 degradation | Routine-only projects filtered out before `buildDailyCard` — tier panels receive only notable/directional data, works as-is |
+| `formatter.ts` Level 3 (per-project split) | `buildDailyCard(date, [singleProject], ...)` — single project produces at most one outer panel with one markdown repo section per tier |
 | Signal text > 500 bytes | Truncated at last sentence boundary before byte cap; hard cut + `…` if no boundary found in first 40% of range |
 
 ---
@@ -238,27 +218,27 @@ This prevents snapshot test flaking and gives the reader a stable, predictable o
 **`buildSummaryContent`** — replace hard truncation with `truncateAtSentenceBoundary(strippedSignal, 500)`.
 
 **`buildRepoPanels` → rename to `buildSignificancePanels`** — full rewrite:
-1. Partition `analyses` into `directionalProjects` (any directional PR) and `notableProjects` (notable but no directional) using project-max-significance grouping
+1. Partition PRs into `directional` and `notable` tiers by PR significance, then group by `projectId` inside each tier
 2. If both empty → return `[{ tag: "markdown", content: "_All PRs are routine today._" }]`
 3. Build tier list in priority order: `[DIRECTIONAL, NOTABLE]`, filtering to non-empty tiers
-4. First tier in list gets `expanded: true`; remaining tiers get `expanded: false`
-5. Within each tier, sort repos by: significant PR count desc → total PR count desc → `projectId` asc
-6. Build inner `collapsible_panel` per repo with `expanded: false`
-7. Outer panel header: `{emoji} {TIER_NAME} · {N} repos · {D} {tier_label} [· {R} other]`
-8. Inner panel header: `{projectId} · {S} significant [· {R} routine]` (omit routine segment if 0; if no routine, show `{S} PR`)
-9. Inner panel body: same PR detail rendering as current `buildRepoPanels`
+4. DIRECTIONAL gets `expanded: true`; NOTABLE gets `expanded: false` when DIRECTIONAL exists
+5. Within each tier, sort repos by: tier PR count desc → total PR count desc → `projectId` asc
+6. Build markdown repo sections inside the outer panel
+7. Outer panel header: `{emoji} {TIER_NAME} · {N} repos · {D} {tier_label}`
+8. Repo section header: `**{projectId} · {S} PR**`
+9. Repo section body: same PR detail rendering, limited to the tier's PRs
 
 **`buildDailyCard`** — update call from `buildRepoPanels` to `buildSignificancePanels`
 
 ### Type changes
 
-`LarkCollapsiblePanel.elements` type needs to support nested panels:
+`LarkCollapsiblePanel.elements` remains markdown-only for JSON 1.0 compatibility:
 ```typescript
 export interface LarkCollapsiblePanel {
   tag: "collapsible_panel";
   expanded: boolean;
   header: { title: LarkText };
-  elements: (LarkMarkdownElement | LarkCollapsiblePanel)[];
+  elements: LarkMarkdownElement[];
 }
 ```
 
@@ -268,8 +248,8 @@ export interface LarkCollapsiblePanel {
 
 | File | Change |
 |------|--------|
-| `daily-card.ts` | Add `truncateAtSentenceBoundary` (byte-aware), update `buildSummaryContent`, rename+rewrite `buildRepoPanels` → `buildSignificancePanels`, update `LarkCollapsiblePanel` type, update `buildDailyCard` call site |
-| `daily-card.test.ts` | Update panel structure assertions for nested panels, update truncation-related tests, add byte-aware sentence-boundary tests (Chinese-heavy, English-heavy, mixed, no-boundary-found, under-cap-passthrough) |
+| `daily-card.ts` | Add `truncateAtSentenceBoundary` (byte-aware), update `buildSummaryContent`, rename+rewrite `buildRepoPanels` → `buildSignificancePanels`, keep `LarkCollapsiblePanel` markdown-only for JSON 1.0 compatibility, update `buildDailyCard` call site |
+| `daily-card.test.ts` | Update panel structure assertions for PR-significance tiers and markdown repo sections, update truncation-related tests, add byte-aware sentence-boundary tests (Chinese-heavy, English-heavy, mixed, no-boundary-found, under-cap-passthrough) |
 | `formatter.test.ts` | Minor: update if any tests reference old flat panel shape |
 
 No changes to: `formatter.ts`, `webhook.ts`, `weekly-card.ts`, `delivery-localizer.ts`, pipeline stages, data model.
@@ -278,20 +258,16 @@ No changes to: `formatter.ts`, `webhook.ts`, `weekly-card.ts`, `delivery-localiz
 
 ## Lark Platform Constraints
 
-- Nested `collapsible_panel` is supported up to 5 levels deep (we use 2 levels — well within limit)
+- Nested `collapsible_panel` did not render reliably in the production JSON 1.0 card path, so the implementation uses only one collapsible level.
 - `form` component is not allowed inside `collapsible_panel` (not relevant here)
-- Deep nesting may compress display space on mobile — 2 levels is acceptable per Lark docs
+- Avoid nested panels in production cards; repo sections stay as markdown inside the tier panel to preserve predictable collapse behavior on desktop and mobile.
 - Current project uses **card JSON 1.0** (`elements` top-level array), not JSON 2.0 (`schema/body`). The JSON 1.0 component overview lists `collapsible_panel` but has client version requirements.
 
-**Pre-implementation verification**: send a test card with nested `collapsible_panel` via the current webhook before writing production code. The test card should contain one outer panel with one inner panel and a markdown element inside.
-
-**Fallback if nested panels fail**: if the Lark client does not render nested `collapsible_panel` correctly in JSON 1.0 mode, fall back to **flat outer panels + markdown repo sections**:
+**Chosen compatibility path**: use **flat outer panels + markdown repo sections**:
 - Outer `collapsible_panel` per significance tier (same header format, same expanded logic)
 - Inside each outer panel: **markdown-only** repo sections instead of nested panels
-- Format: `**{projectId} · {S} significant [· {R} routine]**\n{PR details...}` with `---` separators between repos
-- This preserves the significance-first grouping and the drill-down UX without requiring nested panel support
-
-This fallback is a graceful degradation, not a blocker — the rest of the UX improvements (signal truncation, significance grouping, expanded logic) work regardless of nesting support.
+- Format: `**{projectId} · {S} PR**\n{PR details...}` with `---` separators between repos
+- This preserves significance-first grouping without relying on nested panel support
 
 ---
 
