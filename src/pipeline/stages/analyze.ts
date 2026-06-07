@@ -30,6 +30,10 @@ function buildBudgetAlertCard(estimatedCost: number, budgetCap: number): object 
   };
 }
 
+export interface AnalyzeOptions {
+  dateRange?: { startUnix: number; endUnix: number };
+}
+
 interface PRRow {
   id: number;
   project_id: string;
@@ -100,7 +104,7 @@ function cleanupStaleTmpFiles(): void {
   }
 }
 
-export async function execute(_ctx: PipelineContext): Promise<StageResult> {
+export async function execute(_ctx: PipelineContext, options: AnalyzeOptions = {}): Promise<StageResult> {
   const db = getDb();
   const settings = getSettings();
   const errors: string[] = [];
@@ -112,14 +116,29 @@ export async function execute(_ctx: PipelineContext): Promise<StageResult> {
   mkdirSync(FINAL_DIR, { recursive: true });
   cleanupStaleTmpFiles();
 
-  const pendingPRs = db
-    .query<PRRow, []>(
-      `SELECT pr.*, p.description, p.language, p.topics, p.overview
-       FROM pull_requests pr JOIN projects p ON pr.project_id = p.id
-       WHERE pr.analysis_status = 'pending'
-          OR (pr.analysis_status = 'failed' AND pr.retry_count < 3)`
-    )
-    .all();
+  let pendingPRs: PRRow[];
+  if (options.dateRange) {
+    const { startUnix, endUnix } = options.dateRange;
+    pendingPRs = db
+      .query<PRRow, [number, number]>(
+        `SELECT pr.*, p.description, p.language, p.topics, p.overview
+         FROM pull_requests pr JOIN projects p ON pr.project_id = p.id
+         WHERE (pr.analysis_status = 'pending'
+            OR (pr.analysis_status = 'failed' AND pr.retry_count < 3))
+           AND pr.merged_at >= ?
+           AND pr.merged_at <= ?`
+      )
+      .all(startUnix, endUnix);
+  } else {
+    pendingPRs = db
+      .query<PRRow, []>(
+        `SELECT pr.*, p.description, p.language, p.topics, p.overview
+         FROM pull_requests pr JOIN projects p ON pr.project_id = p.id
+         WHERE pr.analysis_status = 'pending'
+            OR (pr.analysis_status = 'failed' AND pr.retry_count < 3)`
+      )
+      .all();
+  }
 
   console.log(`[Analyze] Found ${pendingPRs.length} PRs to analyze`);
 

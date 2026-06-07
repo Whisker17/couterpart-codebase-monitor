@@ -3,13 +3,13 @@ import { Database } from "bun:sqlite";
 import { rmSync } from "fs";
 import type { PRData, RepoMetadata, PRStats } from "../../extensions/github-collector/fetcher";
 import type { DiffResult } from "../../extensions/github-collector/diff-fetcher";
-import type { CollectDeps } from "./collect";
+import type { CollectDeps, CollectOptions } from "./collect";
 
 const TEST_DB_PATH = "data/test-collect-stage.db";
 let testDb: Database;
 
-// Use explicit return types so mockResolvedValueOnce accepts the right shapes.
-const mockFetchMergedPRs = mock(async (): Promise<PRData[]> => []);
+// Use explicit parameter + return types so TS can index mock.calls[0]![2] as Date.
+const mockFetchMergedPRs = mock(async (_org: string, _repo: string, _since: Date): Promise<PRData[]> => []);
 const mockFetchRepoMetadata = mock(
   async (): Promise<RepoMetadata> => ({
     description: "Test repo",
@@ -257,5 +257,52 @@ describe("collect stage", () => {
 
     const result = await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
     expect(result.itemsProcessed).toBe(3);
+  });
+
+  it("dateRangeOverride: excludes PRs outside the specified boundary", async () => {
+    const startUnix = 1700000000;
+    const endUnix = 1700086400;
+    const inRange = makePR({ number: 10, merged_at: new Date(startUnix * 1000) });
+    const beforeRange = makePR({ number: 11, merged_at: new Date((startUnix - 1) * 1000) });
+    const afterRange = makePR({ number: 12, merged_at: new Date((endUnix + 1) * 1000) });
+    // fetchMergedPRs is called with since=(startUnix-1)*1000, returns all three
+    mockFetchMergedPRs.mockResolvedValueOnce([inRange, beforeRange, afterRange]).mockResolvedValueOnce([]);
+    mockFetchAndStoreDiff.mockResolvedValue({ status: "available", path: "p" });
+
+    const options: CollectOptions = { dateRangeOverride: { startUnix, endUnix } };
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps(), options);
+
+    const rows = testDb.query("SELECT pr_number FROM pull_requests WHERE project_id = 'org/repo'").all() as { pr_number: number }[];
+    const numbers = rows.map((r) => r.pr_number);
+    expect(numbers).toContain(10);
+    expect(numbers).not.toContain(11);
+    expect(numbers).not.toContain(12);
+  });
+
+  it("dateRangeOverride: passes (startUnix - 1) as since to fetchMergedPRs", async () => {
+    const startUnix = 1700000000;
+    const endUnix = 1700086400;
+    mockFetchMergedPRs.mockResolvedValue([]);
+
+    const options: CollectOptions = { dateRangeOverride: { startUnix, endUnix } };
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps(), options);
+
+    const callArg = mockFetchMergedPRs.mock.calls[0]![2] as Date;
+    expect(callArg.getTime()).toBe((startUnix - 1) * 1000);
+  });
+
+  it("skipSyncUpdate: does not update last_synced_at when true", async () => {
+    const mergedAt = new Date("2024-01-15T12:00:00Z");
+    const pr = makePR({ number: 20, merged_at: mergedAt });
+    mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);
+    mockFetchAndStoreDiff.mockResolvedValueOnce({ status: "available", path: "p" });
+
+    const options: CollectOptions = { skipSyncUpdate: true };
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps(), options);
+
+    const row = testDb
+      .query("SELECT last_synced_at FROM projects WHERE id = 'org/repo'")
+      .get() as { last_synced_at: number | null } | null;
+    expect(row!.last_synced_at).toBeNull();
   });
 });

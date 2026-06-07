@@ -88,7 +88,7 @@ mock.module("../../storage/db", () => ({
   getDb: () => testDb,
 }));
 
-const { buildDailyReport } = await import("./daily");
+const { buildDailyReport, buildDailyReportForPeriod } = await import("./daily");
 
 function createSchema(db: Database): void {
   db.exec(`
@@ -252,5 +252,38 @@ describe("buildDailyReport digest", () => {
     expect(result.grouped[0]!.prs[0]!.summary).toBe("new summary");
     expect(result.grouped[0]!.prs[0]!.significance).toBe("notable");
     expect(result.digest.activitySummary.totalPrs).toBe(1);
+  });
+});
+
+describe("buildDailyReportForPeriod equivalence", () => {
+  beforeEach(() => {
+    testDb = new Database(":memory:");
+    createSchema(testDb);
+  });
+
+  it("produces the same result as buildDailyReport for the same period", () => {
+    insertPr(testDb, 1, "PR 1", "directional_shift", "big signal");
+    insertPr(testDb, 2, "PR 2", "notable", "signal B");
+    insertPr(testDb, 3, "PR 3", "routine", null);
+
+    // buildDailyReport uses mocked getYesterdayPeriod which returns PERIOD_START/PERIOD_END
+    const fromReport = buildDailyReport("UTC");
+    // buildDailyReportForPeriod should produce identical output for the same period
+    const fromPeriod = buildDailyReportForPeriod(PERIOD_START, PERIOD_END);
+
+    expect(fromPeriod.analyses).toEqual(fromReport.analyses);
+    expect(fromPeriod.grouped).toEqual(fromReport.grouped);
+    expect(fromPeriod.periodStartUnix).toBe(fromReport.periodStartUnix);
+    expect(fromPeriod.periodEndUnix).toBe(fromReport.periodEndUnix);
+    expect(fromPeriod.digest).toEqual(fromReport.digest);
+  });
+
+  it("returns empty result for period with no PRs", () => {
+    const result = buildDailyReportForPeriod(PERIOD_START, PERIOD_END);
+    expect(result.analyses).toHaveLength(0);
+    expect(result.grouped).toHaveLength(0);
+    expect(result.periodStartUnix).toBe(PERIOD_START);
+    expect(result.periodEndUnix).toBe(PERIOD_END);
+    expect(result.digest.projects).toHaveLength(0);
   });
 });
