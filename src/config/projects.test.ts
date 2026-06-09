@@ -200,78 +200,90 @@ describe("parseGitHubOrgRepo", () => {
 
 // ---- parseAndValidateProjects ----
 
+// Helper: assert non-empty result and return first element with TypeScript narrowing
+function first(arr: ReturnType<typeof parseAndValidateProjects>) {
+  expect(arr).toHaveLength(1);
+  const item = arr[0];
+  if (!item) throw new Error("Expected non-empty result array");
+  return item;
+}
+
 describe("parseAndValidateProjects — URL-only subscription entries", () => {
   it("derives org and repo from url", () => {
-    const result = parseAndValidateProjects([{ url: "https://github.com/base/base" }]);
-    expect(result[0].org).toBe("base");
-    expect(result[0].repo).toBe("base");
+    const item = first(parseAndValidateProjects([{ url: "https://github.com/base/base" }]));
+    expect(item.org).toBe("base");
+    expect(item.repo).toBe("base");
   });
 
   it("normalizes http:// subscription url to https://", () => {
-    const result = parseAndValidateProjects([{ url: "http://github.com/base/base" }]);
-    expect(result[0].url).toBe("https://github.com/base/base");
-    expect(result[0].org).toBe("base");
+    const item = first(parseAndValidateProjects([{ url: "http://github.com/base/base" }]));
+    expect(item.url).toBe("https://github.com/base/base");
+    expect(item.org).toBe("base");
   });
 
   it("strips trailing slash from subscription url", () => {
-    const result = parseAndValidateProjects([{ url: "https://github.com/base/base/" }]);
-    expect(result[0].url).toBe("https://github.com/base/base");
+    const item = first(parseAndValidateProjects([{ url: "https://github.com/base/base/" }]));
+    expect(item.url).toBe("https://github.com/base/base");
   });
 
   it("strips .git suffix from subscription url", () => {
-    const result = parseAndValidateProjects([{ url: "https://github.com/base/base.git" }]);
-    expect(result[0].url).toBe("https://github.com/base/base");
-    expect(result[0].repo).toBe("base");
+    const item = first(parseAndValidateProjects([{ url: "https://github.com/base/base.git" }]));
+    expect(item.url).toBe("https://github.com/base/base");
+    expect(item.repo).toBe("base");
   });
 
   it("defaults tags to [] when not specified", () => {
-    const result = parseAndValidateProjects([{ url: "https://github.com/base/base" }]);
-    expect(result[0].tags).toEqual([]);
+    const item = first(parseAndValidateProjects([{ url: "https://github.com/base/base" }]));
+    expect(item.tags).toEqual([]);
   });
 
   it("preserves provided tags", () => {
-    const result = parseAndValidateProjects([
-      { url: "https://github.com/base/base", tags: ["blockchain", "l2"] },
-    ]);
-    expect(result[0].tags).toEqual(["blockchain", "l2"]);
+    const item = first(
+      parseAndValidateProjects([{ url: "https://github.com/base/base", tags: ["blockchain", "l2"] }])
+    );
+    expect(item.tags).toEqual(["blockchain", "l2"]);
   });
 
   it("preserves notes when provided", () => {
-    const result = parseAndValidateProjects([
-      { url: "https://github.com/base/base", notes: "analyst context" },
-    ]);
-    expect(result[0].notes).toBe("analyst context");
+    const item = first(
+      parseAndValidateProjects([{ url: "https://github.com/base/base", notes: "analyst context" }])
+    );
+    expect(item.notes).toBe("analyst context");
   });
 
   it("notes is undefined when not provided", () => {
-    const result = parseAndValidateProjects([{ url: "https://github.com/base/base" }]);
-    expect(result[0].notes).toBeUndefined();
+    const item = first(parseAndValidateProjects([{ url: "https://github.com/base/base" }]));
+    expect(item.notes).toBeUndefined();
   });
 
   it("ignores unknown fields", () => {
-    const result = parseAndValidateProjects([
-      { url: "https://github.com/base/base", unknownField: "ignored", anotherField: 42 },
-    ]);
-    expect(result[0].org).toBe("base");
-    expect((result[0] as Record<string, unknown>).unknownField).toBeUndefined();
+    const item = first(
+      parseAndValidateProjects([
+        { url: "https://github.com/base/base", unknownField: "ignored", anotherField: 42 },
+      ])
+    );
+    expect(item.org).toBe("base");
+    expect((item as Record<string, unknown>).unknownField).toBeUndefined();
   });
 });
 
 describe("parseAndValidateProjects — local JSON backward compat", () => {
-  it("accepts entries with explicit org and repo fields", () => {
-    const result = parseAndValidateProjects([
-      { org: "base", repo: "base", url: "https://github.com/base/base" },
-    ]);
-    expect(result[0].org).toBe("base");
-    expect(result[0].repo).toBe("base");
+  it("accepts entries with explicit org and repo that match the URL", () => {
+    const item = first(
+      parseAndValidateProjects([{ org: "base", repo: "base", url: "https://github.com/base/base" }])
+    );
+    expect(item.org).toBe("base");
+    expect(item.repo).toBe("base");
   });
 
-  it("uses explicit org/repo when both are provided", () => {
-    const result = parseAndValidateProjects([
-      { org: "myorg", repo: "myrepo", url: "https://github.com/myorg/myrepo", tags: ["tag1"] },
-    ]);
-    expect(result[0].org).toBe("myorg");
-    expect(result[0].repo).toBe("myrepo");
+  it("accepts explicit org/repo when they match the URL-derived identity", () => {
+    const item = first(
+      parseAndValidateProjects([
+        { org: "myorg", repo: "myrepo", url: "https://github.com/myorg/myrepo", tags: ["tag1"] },
+      ])
+    );
+    expect(item.org).toBe("myorg");
+    expect(item.repo).toBe("myrepo");
   });
 });
 
@@ -310,6 +322,43 @@ describe("parseAndValidateProjects — validation errors", () => {
 
   it("throws when url is an empty string", () => {
     expect(() => parseAndValidateProjects([{ url: "" }])).toThrow("url");
+  });
+
+  it("throws when url has extra path segments beyond org/repo", () => {
+    expect(() =>
+      parseAndValidateProjects([{ url: "https://github.com/base/base/issues" }])
+    ).toThrow();
+  });
+
+  it("throws when url has only one path segment", () => {
+    expect(() =>
+      parseAndValidateProjects([{ url: "https://github.com/onlyone" }])
+    ).toThrow();
+  });
+
+  it("throws when explicit org does not match URL-derived org", () => {
+    expect(() =>
+      parseAndValidateProjects([
+        { url: "https://github.com/base/base", org: "wrong", repo: "base" },
+      ])
+    ).toThrow();
+  });
+
+  it("throws when explicit repo does not match URL-derived repo", () => {
+    expect(() =>
+      parseAndValidateProjects([
+        { url: "https://github.com/base/base", org: "base", repo: "wrong" },
+      ])
+    ).toThrow();
+  });
+
+  it("throws when two entries share the same URL but second has different explicit org", () => {
+    expect(() =>
+      parseAndValidateProjects([
+        { url: "https://github.com/base/base" },
+        { url: "https://github.com/base/base", org: "different", repo: "different" },
+      ])
+    ).toThrow();
   });
 });
 

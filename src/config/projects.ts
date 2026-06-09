@@ -77,11 +77,26 @@ export function normalizeGitHubUrl(rawUrl: string): string {
 
 export function parseGitHubOrgRepo(url: string): { org: string; repo: string } {
   const normalized = normalizeGitHubUrl(url);
-  const match = normalized.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)$/);
-  if (!match) {
+  let parsed: URL;
+  try {
+    parsed = new URL(normalized);
+  } catch {
     throw new Error(`Invalid GitHub URL: ${url}`);
   }
-  return { org: match[1], repo: match[2] };
+  if (parsed.hostname !== "github.com") {
+    throw new Error(`Invalid GitHub URL — expected github.com host: ${url}`);
+  }
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  if (segments.length !== 2) {
+    throw new Error(
+      `Invalid GitHub URL — expected exactly two path segments ({org}/{repo}): ${url}`
+    );
+  }
+  const [org, repo] = segments;
+  if (!org || !repo) {
+    throw new Error(`Invalid GitHub URL: ${url}`);
+  }
+  return { org, repo };
 }
 
 // ---- Subscription JSON parser / validator ----
@@ -111,22 +126,21 @@ export function parseAndValidateProjects(data: unknown): TrackedProject[] {
       throw new Error(`Entry at index ${i}: url must be a GitHub URL (got: ${entry.url})`);
     }
 
-    let org: string;
-    let repo: string;
+    // url is the canonical identity — always derive org/repo from it
+    const { org, repo } = parseGitHubOrgRepo(url);
 
-    // Backward compat: explicit org/repo fields take precedence over URL parsing
+    // Backward compat: explicit org/repo allowed, but must match URL-derived values
     if (
       typeof entry.org === "string" &&
       entry.org.length > 0 &&
       typeof entry.repo === "string" &&
       entry.repo.length > 0
     ) {
-      org = entry.org;
-      repo = entry.repo;
-    } else {
-      const parsed = parseGitHubOrgRepo(url);
-      org = parsed.org;
-      repo = parsed.repo;
+      if (entry.org !== org || entry.repo !== repo) {
+        throw new Error(
+          `Entry at index ${i}: explicit org/repo "${entry.org}/${entry.repo}" does not match URL-derived identity "${org}/${repo}"`
+        );
+      }
     }
 
     const projectId = `${org}/${repo}`;
