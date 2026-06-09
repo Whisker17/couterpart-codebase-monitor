@@ -70,6 +70,65 @@ SQLite tables: `projects` (tracked repos + GitHub metadata: description, languag
 
 PR significance levels: `routine`, `notable`, `directional_shift`.
 
+## Report Scope Contract
+
+Reports must stay layered: a concise summary for strategy readers, with expandable or linked technical detail for engineers. Do not turn reports into raw changelogs. Each report type has a distinct job:
+
+### Daily report
+
+Daily reports are the factual PR-level digest for the previous local day. They answer "what changed yesterday, and which PRs matter?"
+
+Include:
+- Coverage/completeness: tracked project count, failed projects, and budget warning when relevant.
+- Per-project activity counts: total PRs plus `directional_shift`, `notable`, and routine counts.
+- The highest-signal project/PR summary for the visible overview.
+- Significant PR details (`directional_shift` and `notable`) with PR links, summary, technical detail when available, direction signal, and significance badge.
+- Routine PRs only as counts or digest data unless the card has enough room and the routine item is needed for context.
+- A persisted `digest_json` containing all PRs, including routine PRs, so weekly/monthly aggregation can reuse daily facts without reparsing Lark card text.
+
+Do not include:
+- Cross-repo action recommendations such as "Mantle should..." or target-project advice. Those belong in weekly/monthly synthesis.
+- Broad trend claims unless they are directly supported by that day's analyzed PRs.
+
+### Weekly report
+
+Weekly reports are the 7-day engineering intelligence synthesis. They answer "what direction changed this week, what pattern is emerging, and what should we check next?"
+
+Include:
+- Activity summary across the 7-day window: total PRs, project count, directional shifts, notable changes.
+- Direction changes by project, combining related PR-level signals into a readable weekly narrative.
+- Per-project highlights capped to the most important PRs, favoring `directional_shift` over `notable` over routine patterns.
+- Cross-project or counterpart checks: risk signals, transferable optimizations, architecture directions, and target projects worth checking.
+- Interpretation: why the week matters, not just what merged.
+- Source links back to the underlying PRs for claims that need engineering verification.
+
+Weekly reports should aggregate from daily `digest_json` when available and fall back to raw `analyses` only for missing or partial days. Weekly quality should be driven by a report-level prompt, not only by stitching together PR summaries. Keep weekly prompt text in a dedicated prompt file and make it easy to A/B test on the same stored inputs.
+
+### Monthly report
+
+Monthly reports are post-MVP/post-v1 scope until `buildMonthlyReport` and monthly cards are implemented. They should reuse the same report-prompt infrastructure as weekly reports once enough historical data exists.
+
+Monthly reports answer "how did the tracked ecosystem move this month, and what does it imply strategically?"
+
+Include:
+- Executive narrative: the top 3-5 engineering themes across the month.
+- Project trajectory: which projects accelerated, shifted architecture, changed API/infrastructure direction, or became quieter.
+- Cross-project trends: repeated adoption of technologies, shared risk fixes, performance work, protocol/API shifts, dependency migrations.
+- Strategic implications for Mantle or the configured target context, clearly separated from raw source-project facts.
+- Evidence appendix or compact source map: representative PRs, weekly reports, and direction signals backing each theme.
+- Open questions and recommended follow-up checks for the next month.
+
+Do not use monthly reports as a larger weekly report. They should compress the month into durable themes, trajectory changes, and strategic implications.
+
+### Prompt management
+
+PR analysis prompts and report synthesis prompts have different responsibilities:
+- PR analysis prompt: inspect one PR/diff and produce structured `analyses` rows.
+- Daily report: mostly deterministic assembly from analyzed PR facts; keep report-level LLM use minimal.
+- Weekly/monthly report prompts: synthesize across time windows, identify themes, rank importance, and produce structured report data for card rendering.
+
+Keep report prompts in a dedicated prompt directory (for example `prompts/reports/weekly.md` and `prompts/reports/monthly.md`) and provide a reusable prompt-lab script that can run different prompt files against the same stored daily digests/analyses without dispatching to Lark or mutating production report rows.
+
 ## Development Status
 
 Greenfield — currently in Week 0 (scaffold + pi-agent learning). The design is approved and reviewed. See `docs/design.md` for full architecture, `docs/eng-review-learnings.md` for review findings, and `TODOS.md` for backlog.

@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { rmSync, mkdirSync } from "fs";
 import type { GroupedAnalyses } from "../../extensions/report-generator/templates/daily-card";
 import type { WeeklyReportData } from "../../extensions/report-generator/weekly";
+import { getYesterdayPeriod, getWeekPeriod } from "../../utils/time-window";
 
 const TEST_DB_PATH = "data/test-report-stage.db";
 let testDb: Database;
@@ -29,10 +30,121 @@ mock.module("../../extensions/report-generator/file-writer", () => ({
 
 const mockLocalizeDailyDelivery = mock(async (analyses: GroupedAnalyses) => analyses);
 const mockLocalizeWeeklyDelivery = mock(async (data: WeeklyReportData) => data);
+async function defaultGenerateWeeklyPromptReport(db: Database, timezone: string) {
+  const { startUnix, endUnix } = getWeekPeriod(timezone);
+  const rows = db
+    .query<
+      { project_id: string; pr_number: number; title: string; project_url: string },
+      [number, number]
+    >(
+      `SELECT pr.project_id, pr.pr_number, pr.title, p.url AS project_url
+       FROM pull_requests pr
+       JOIN projects p ON p.id = pr.project_id
+       WHERE pr.merged_at >= ? AND pr.merged_at <= ?
+       ORDER BY pr.merged_at DESC`
+    )
+    .all(startUnix, endUnix);
+  const projectCount = new Set(rows.map((row) => row.project_id)).size;
+  const first = rows[0];
+  const evidence = first
+    ? `[${first.project_id}#${first.pr_number}](${first.project_url}/pull/${first.pr_number})`
+    : "无证据 PR";
+  const title = first?.title ?? "本周无明确事项";
+
+  return {
+    markdown: `## 优先跟进事项
+
+### 1. ${title}
+为什么重要：这是本周需要人工确认的变化。
+证据：${evidence}
+
+## 风险信号
+
+- 暂无额外风险信号。
+`,
+    input: {
+      period: {
+        startUnix,
+        endUnix,
+        startDate: "2026-06-01",
+        endDate: "2026-06-07",
+        label: "2026-06-01..2026-06-07",
+        timezone,
+      },
+      activitySummary: {
+        totalPrs: rows.length,
+        projectCount,
+        directionalShiftCount: 0,
+        notableCount: rows.length,
+        routineCount: 0,
+      },
+      dailyDigestCoverage: { present: 0, nullDigest: 0, missing: 7 },
+      directionChanges: [],
+      counterpartChecks: [],
+      projects: Array.from(new Set(rows.map((row) => row.project_id))).map((projectId) => ({
+        projectId,
+        prCount: rows.filter((row) => row.project_id === projectId).length,
+        directionalShiftCount: 0,
+        notableCount: rows.filter((row) => row.project_id === projectId).length,
+        routineCount: 0,
+        topSignals: [],
+        prs: [],
+      })),
+    },
+    usage: { inputTokens: 10, outputTokens: 20 },
+  };
+}
+
+const mockGenerateWeeklyPromptReport = mock(defaultGenerateWeeklyPromptReport);
+mock.module("../../extensions/report-generator/weekly-prompt-report", () => ({
+  generateWeeklyPromptReport: mockGenerateWeeklyPromptReport,
+}));
 
 const { execute, buildFinalCard } = await import("./report");
 
-import { getYesterdayPeriod, getWeekPeriod } from "../../utils/time-window";
+const fixedPromptReport = {
+  markdown: `## 优先跟进事项
+
+### 1. 检查 prover-service worker session 收敛
+为什么重要：worker 领取和重试语义本周变化集中。
+
+## 风险信号
+
+- 本周存在故障恢复路径补强信号。
+`,
+  input: {
+    period: {
+      startUnix: 1,
+      endUnix: 2,
+      startDate: "2026-06-01",
+      endDate: "2026-06-07",
+      label: "2026-06-01..2026-06-07",
+      timezone: "UTC",
+    },
+    activitySummary: {
+      totalPrs: 1,
+      projectCount: 1,
+      directionalShiftCount: 0,
+      notableCount: 1,
+      routineCount: 0,
+    },
+    dailyDigestCoverage: { present: 0, nullDigest: 0, missing: 7 },
+    directionChanges: [],
+    counterpartChecks: [],
+    projects: [
+      {
+        projectId: "org/repo-a",
+        prCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 1,
+        routineCount: 0,
+        topSignals: [],
+        prs: [],
+      },
+    ],
+  },
+  usage: { inputTokens: 10, outputTokens: 20 },
+};
 
 const TZ = "UTC";
 
@@ -180,8 +292,10 @@ describe("report stage", () => {
     mockWriteReportFile.mockClear();
     mockLocalizeDailyDelivery.mockClear();
     mockLocalizeWeeklyDelivery.mockClear();
+    mockGenerateWeeklyPromptReport.mockClear();
     mockLocalizeDailyDelivery.mockImplementation(async (analyses: GroupedAnalyses) => analyses);
     mockLocalizeWeeklyDelivery.mockImplementation(async (data: WeeklyReportData) => data);
+    mockGenerateWeeklyPromptReport.mockImplementation(defaultGenerateWeeklyPromptReport);
   });
 
   afterEach(() => {
@@ -341,6 +455,33 @@ describe("report stage", () => {
     expect(row.content).not.toContain("Older Than Week PR");
   });
 
+  it("weekly report uses Action-Oriented prompt output in a Chinese collapsed card", async () => {
+    insertTestData(testDb);
+    mockGenerateWeeklyPromptReport.mockImplementationOnce(async () => fixedPromptReport);
+
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
+    await execute(ctx);
+
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='weekly'").get()!;
+    const card = JSON.parse(row.content);
+    const visibleMarkdown = card.elements.find((el: { tag: string }) => el.tag === "markdown");
+    expect(card.header.title.content).toContain("Counterpart 周报");
+    expect(visibleMarkdown.content).toContain("**范围**");
+    expect(visibleMarkdown.content).not.toContain("**优先跟进**");
+    expect(visibleMarkdown.content).not.toContain("1. 检查 prover-service worker session 收敛");
+    expect(visibleMarkdown.content).not.toContain("为什么重要");
+
+    const panels = card.elements.filter((el: { tag: string }) => el.tag === "collapsible_panel");
+    expect(panels.length).toBeGreaterThan(0);
+    expect(panels.every((panel: { expanded: boolean }) => panel.expanded === false)).toBe(true);
+    expect(panels[0].header.title).toEqual({
+      tag: "lark_md",
+      content: "<font color='red'>**1. 检查 prover-service worker session 收敛**</font>",
+    });
+    expect(JSON.stringify(panels)).toContain("为什么重要");
+    expect(mockGenerateWeeklyPromptReport).toHaveBeenCalledTimes(1);
+  });
+
   it("weekly errors do not affect daily success flag", async () => {
     insertTestData(testDb);
     // Force the weekly DB write to fail by closing the DB mid-run isn't feasible,
@@ -440,8 +581,11 @@ describe("report stage", () => {
     expect(delivery.content).not.toContain("Test summary");
   });
 
-  it("stores localized weekly delivery content before dispatch", async () => {
+  it("falls back to localized rule-based weekly delivery when prompt generation fails", async () => {
     insertTestData(testDb);
+    mockGenerateWeeklyPromptReport.mockImplementationOnce(async () => {
+      throw new Error("prompt failed");
+    });
     mockLocalizeWeeklyDelivery.mockImplementation(async (data: any) => ({
       ...data,
       projectHighlights: data.projectHighlights.map((project: any) => ({

@@ -6,6 +6,8 @@ import { buildDailyReport } from "../../extensions/report-generator/daily";
 import { type GroupedAnalyses, type LarkCard } from "../../extensions/report-generator/templates/daily-card";
 import { buildWeeklyReport } from "../../extensions/report-generator/weekly";
 import { buildWeeklyCard } from "../../extensions/report-generator/templates/weekly-card";
+import { buildWeeklyPromptCard } from "../../extensions/report-generator/templates/weekly-prompt-card";
+import { generateWeeklyPromptReport } from "../../extensions/report-generator/weekly-prompt-report";
 import { writeReportFile } from "../../extensions/report-generator/file-writer";
 import { formatReport } from "../../extensions/lark-dispatcher/formatter";
 import {
@@ -47,6 +49,11 @@ function formatDate(unixSeconds: number, timezone: string): string {
 function formatShortDate(unixSeconds: number, timezone: string): string {
   const d = new Date(unixSeconds * 1000);
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: timezone });
+}
+
+function formatChineseShortDate(unixSeconds: number, timezone: string): string {
+  const d = new Date(unixSeconds * 1000);
+  return `${d.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric", timeZone: timezone })}`;
 }
 
 function collectFailedProjects(ctx: PipelineContext): string[] {
@@ -207,6 +214,100 @@ async function generateWeeklyReport(
   timezone: string
 ): Promise<string[]> {
   const errors: string[] = [];
+  try {
+    const promptReport = await generateWeeklyPromptReport(db, timezone);
+    const startLabel = formatChineseShortDate(promptReport.input.period.startUnix, timezone);
+    const endLabel = formatChineseShortDate(promptReport.input.period.endUnix, timezone);
+    const dateRange = `${startLabel}-${endLabel}`;
+    const weeklyCard = buildWeeklyPromptCard({
+      dateRange,
+      markdown: promptReport.markdown,
+      totalPrs: promptReport.input.activitySummary.totalPrs,
+      projectCount: promptReport.input.activitySummary.projectCount,
+    });
+    const weeklyJson = JSON.stringify(weeklyCard);
+
+    const weeklyBytes = Buffer.byteLength(weeklyJson, "utf-8");
+    if (weeklyBytes > 30_000) {
+      console.warn(`[Report] Weekly card exceeds 30KB hard limit (${weeklyBytes} bytes) — sending anyway`);
+    } else if (weeklyBytes > 20_000) {
+      console.warn(`[Report] Weekly card exceeds 20KB warn threshold (${weeklyBytes} bytes)`);
+    }
+
+    const weeklyProjectIds = JSON.stringify(
+      promptReport.input.projects.map((p) => p.projectId)
+    );
+    const weeklyCompletenessJson = JSON.stringify({
+      ...completeness,
+      prompt: "action-oriented",
+      usage: promptReport.usage,
+    });
+
+    try {
+      db.run(
+        `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness)
+         VALUES ('weekly', ?, ?, ?, ?, ?)
+         ON CONFLICT(type, period_start, period_end)
+         DO UPDATE SET content = excluded.content,
+                       completeness = excluded.completeness,
+                       project_ids = excluded.project_ids`,
+        [
+          promptReport.input.period.startUnix,
+          promptReport.input.period.endUnix,
+          weeklyProjectIds,
+          weeklyJson,
+          weeklyCompletenessJson,
+        ]
+      );
+
+      const weeklyRow = db
+        .query<{ id: number }, [string, number, number]>(
+          "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
+        )
+        .get("weekly", promptReport.input.period.startUnix, promptReport.input.period.endUnix)!;
+      db.run(
+        `INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)
+         ON CONFLICT(report_id, card_index)
+         DO UPDATE SET content = excluded.content
+         WHERE report_deliveries.status != 'sent'`,
+        [weeklyRow.id, weeklyJson]
+      );
+      db.run(
+        "DELETE FROM report_deliveries WHERE report_id = ? AND card_index >= 1 AND status != 'sent'",
+        [weeklyRow.id]
+      );
+    } catch (err) {
+      const msg = `Weekly DB upsert failed: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`[Report] ${msg}`);
+      errors.push(msg);
+    }
+
+    try {
+      const weeklyDate = `weekly-${formatDate(promptReport.input.period.endUnix, timezone)}`;
+      const filePath = writeReportFile({
+        date: weeklyDate,
+        card: weeklyCard,
+        analyses: [],
+        completeness: {
+          ...completeness,
+          status: "prompt-action-oriented",
+          prTotal: promptReport.input.activitySummary.totalPrs,
+        },
+      });
+      console.log(`[Report] Weekly written to ${filePath}`);
+    } catch (err) {
+      const msg = `Weekly file write failed: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`[Report] ${msg}`);
+      errors.push(msg);
+    }
+
+    return errors;
+  } catch (err) {
+    console.warn(
+      `[Report] Weekly prompt report failed — falling back to rule-based weekly card: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
   const weeklyData = await localizeWeeklyDelivery(buildWeeklyReport(timezone));
 
   if (weeklyData.projectHighlights.length === 0) {
