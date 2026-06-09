@@ -263,7 +263,7 @@ describe("parseAndValidateProjects — URL-only subscription entries", () => {
       ])
     );
     expect(item.org).toBe("base");
-    expect((item as Record<string, unknown>).unknownField).toBeUndefined();
+    expect("unknownField" in item).toBe(false);
   });
 });
 
