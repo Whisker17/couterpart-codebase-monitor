@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "bun run src/index.ts",
     "start": "bun run src/index.ts",
+    "prompt:daily": "bun run scripts/daily-prompt-lab.ts",
     "prompt:weekly": "bun run scripts/weekly-prompt-lab.ts"
   },
   "dependencies": {

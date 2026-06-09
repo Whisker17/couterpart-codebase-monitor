@@ -113,6 +113,21 @@ describe("weekly prompt Lark card", () => {
     expect(content).not.toContain("####");
   });
 
+  it("normalizes markdown tables into Lark-safe list text", () => {
+    const content = normalizeLarkMarkdown(`| 主题 | 关键 PR |
+|-----|-----|
+| L3 基础设施 | base#3217, base#3219 |
+| SDM/PostExec | optimism#20738, optimism#21034 |
+
+后续说明。`);
+
+    expect(content).toContain("- **主题：** L3 基础设施；**关键 PR：** base#3217, base#3219");
+    expect(content).toContain("- **主题：** SDM/PostExec；**关键 PR：** optimism#20738, optimism#21034");
+    expect(content).toContain("后续说明。");
+    expect(content).not.toContain("| 主题 | 关键 PR |");
+    expect(content).not.toContain("|-----|-----|");
+  });
+
   it("falls back to one collapsed full-text panel when markdown has no sections", () => {
     const card = buildWeeklyPromptCard({
       dateRange: "6月1日-6月7日",

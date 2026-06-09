@@ -77,8 +77,63 @@ export function splitMarkdownSubsections(markdown: string): WeeklyPromptSubsecti
   return subsections;
 }
 
+function isMarkdownTableRow(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.includes("|");
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+}
+
+function splitTableCells(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean);
+}
+
+function normalizeMarkdownTables(markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const normalized: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const headerLine = lines[i]!;
+    const separatorLine = lines[i + 1];
+    if (
+      isMarkdownTableRow(headerLine) &&
+      separatorLine !== undefined &&
+      isMarkdownTableSeparator(separatorLine)
+    ) {
+      const headers = splitTableCells(headerLine);
+      i += 2;
+
+      while (i < lines.length && isMarkdownTableRow(lines[i]!)) {
+        const cells = splitTableCells(lines[i]!);
+        const parts = headers.map((header, index) => {
+          const value = cells[index] ?? "";
+          return `**${header}：** ${value}`;
+        });
+        normalized.push(`- ${parts.join("；")}`);
+        i++;
+      }
+
+      if (i < lines.length && lines[i]!.trim() !== "") normalized.push("");
+      i--;
+      continue;
+    }
+
+    normalized.push(headerLine);
+  }
+
+  return normalized.join("\n");
+}
+
 export function normalizeLarkMarkdown(markdown: string): string {
-  return markdown
+  return normalizeMarkdownTables(markdown)
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => {

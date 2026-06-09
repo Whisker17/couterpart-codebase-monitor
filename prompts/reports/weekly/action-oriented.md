@@ -23,6 +23,8 @@ Optimize the output for actionability:
 - Include at most 5 follow-up items total.
 - For each follow-up, cite at most 2 evidence PRs.
 - Avoid long background sections.
+- Do not use Markdown tables. Lark card markdown does not render them
+  reliably. Use compact bullet lists instead, especially in "证据索引".
 
 Expected Markdown structure:
 
