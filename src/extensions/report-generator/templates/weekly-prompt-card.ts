@@ -137,7 +137,10 @@ export function normalizeLarkMarkdown(markdown: string): string {
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => {
-      if (/^#{3,6}\s+/.test(line)) {
+      if (/^\s*-{3,}\s*$/.test(line)) {
+        return "";
+      }
+      if (/^#{1,6}\s+/.test(line)) {
         return `**${stripHeadingPrefix(line)}**`;
       }
       return line;

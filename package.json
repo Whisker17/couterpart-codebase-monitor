@@ -8,7 +8,9 @@
     "dev": "bun run src/index.ts",
     "start": "bun run src/index.ts",
     "prompt:daily": "bun run scripts/daily-prompt-lab.ts",
-    "prompt:weekly": "bun run scripts/weekly-prompt-lab.ts"
+    "prompt:weekly": "bun run scripts/weekly-prompt-lab.ts",
+    "prompt:monthly": "bun run scripts/monthly-prompt-lab.ts",
+    "send:monthly-card": "bun run scripts/send-monthly-card.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.81",

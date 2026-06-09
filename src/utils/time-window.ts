@@ -108,3 +108,64 @@ export function getDayPeriod(
     endUnix: Math.floor(endMs / 1000),
   };
 }
+
+export function getMonthPeriod(
+  timezone: string,
+  monthString: string,
+  now: Date = new Date()
+): {
+  startUnix: number;
+  endUnix: number;
+  startDate: string;
+  endDate: string;
+  month: string;
+  isPartial: boolean;
+} {
+  const match = monthString.match(/^(\d{4})-(\d{2})$/);
+  if (!match) {
+    throw new Error(`Invalid monthString format: "${monthString}". Expected YYYY-MM.`);
+  }
+
+  const year = parseInt(match[1]!, 10);
+  const month = parseInt(match[2]!, 10);
+  if (month < 1 || month > 12) {
+    throw new Error(`Invalid monthString month: "${monthString}". Expected 01-12.`);
+  }
+
+  const { year: nowYear, month: nowMonth, day: nowDay } = getLocalDateParts(timezone, now);
+  const requestedMonthStart = Date.UTC(year, month - 1, 1);
+  const currentMonthStart = Date.UTC(nowYear, nowMonth - 1, 1);
+  const nextMonth = new Date(Date.UTC(year, month, 1));
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+  let endYear = nextMonth.getUTCFullYear();
+  let endMonth = nextMonth.getUTCMonth() + 1;
+  let endDay = nextMonth.getUTCDate();
+  let endDateDay = lastDay;
+  let isPartial = false;
+
+  if (requestedMonthStart === currentMonthStart) {
+    isPartial = true;
+    if (nowDay <= 1) {
+      throw new Error(`Current month "${monthString}" has no completed local days yet.`);
+    }
+    endYear = nowYear;
+    endMonth = nowMonth;
+    endDay = nowDay;
+    endDateDay = Math.max(0, nowDay - 1);
+  } else if (requestedMonthStart > currentMonthStart) {
+    throw new Error(`Cannot build a monthly period for future month: "${monthString}".`);
+  }
+
+  const startMs = localMidnightToUTC(timezone, year, month, 1);
+  const endMs = localMidnightToUTC(timezone, endYear, endMonth, endDay) - 1000;
+
+  return {
+    startUnix: Math.floor(startMs / 1000),
+    endUnix: Math.floor(endMs / 1000),
+    startDate: `${monthString}-01`,
+    endDate: `${monthString}-${String(endDateDay).padStart(2, "0")}`,
+    month: monthString,
+    isPartial,
+  };
+}

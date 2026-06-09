@@ -539,6 +539,7 @@ base/base 当日 PR 较多。
     const collapsedPanels = panels(card.elements);
     expect(collapsedPanels).toHaveLength(1);
     expect(collapsedPanels[0]!.header.title.content).toBe("日报全文");
-    expect(collapsedPanels[0]!.elements[0]!.content).toContain("# Daily output");
+    expect(collapsedPanels[0]!.elements[0]!.content).toContain("**Daily output**");
+    expect(collapsedPanels[0]!.elements[0]!.content).not.toContain("# Daily output");
   });
 });

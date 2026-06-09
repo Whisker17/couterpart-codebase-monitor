@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { getYesterdayPeriod, getWeekPeriod, getDayPeriod } from "./time-window";
+import { getYesterdayPeriod, getWeekPeriod, getDayPeriod, getMonthPeriod } from "./time-window";
 
 test("getYesterdayPeriod: Shanghai daily window", () => {
   const now = new Date("2026-06-03T01:00:00Z");
@@ -71,5 +71,40 @@ describe("getDayPeriod", () => {
     const day = getDayPeriod("Asia/Shanghai", "2026-06-02");
     expect(day.startUnix).toBe(yesterday.startUnix);
     expect(day.endUnix).toBe(yesterday.endUnix);
+  });
+});
+
+describe("getMonthPeriod", () => {
+  test("throws on invalid format", () => {
+    expect(() => getMonthPeriod("UTC", "2026/06")).toThrow();
+    expect(() => getMonthPeriod("UTC", "202606")).toThrow();
+    expect(() => getMonthPeriod("UTC", "2026-6")).toThrow();
+    expect(() => getMonthPeriod("UTC", "2026-13")).toThrow();
+  });
+
+  test("historical UTC month spans the full calendar month", () => {
+    const result = getMonthPeriod("UTC", "2026-05", new Date("2026-06-09T00:00:00Z"));
+    expect(result.startUnix).toBe(Date.UTC(2026, 4, 1, 0, 0, 0) / 1000);
+    expect(result.endUnix).toBe(Date.UTC(2026, 4, 31, 23, 59, 59) / 1000);
+    expect(result.startDate).toBe("2026-05-01");
+    expect(result.endDate).toBe("2026-05-31");
+    expect(result.isPartial).toBe(false);
+  });
+
+  test("current Shanghai month ends at yesterday local day", () => {
+    const result = getMonthPeriod(
+      "Asia/Shanghai",
+      "2026-06",
+      new Date("2026-06-09T01:00:00Z")
+    );
+    expect(result.startUnix).toBe(Date.UTC(2026, 4, 31, 16, 0, 0) / 1000);
+    expect(result.endUnix).toBe(Date.UTC(2026, 5, 8, 15, 59, 59) / 1000);
+    expect(result.startDate).toBe("2026-06-01");
+    expect(result.endDate).toBe("2026-06-08");
+    expect(result.isPartial).toBe(true);
+  });
+
+  test("future month is rejected", () => {
+    expect(() => getMonthPeriod("UTC", "2026-07", new Date("2026-06-09T00:00:00Z"))).toThrow();
   });
 });
