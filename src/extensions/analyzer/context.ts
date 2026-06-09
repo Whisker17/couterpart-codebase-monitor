@@ -1,5 +1,5 @@
 import type { TruncatedDiff } from "./diff-truncator";
-import { getTrackedProjects } from "../../config/projects";
+import { getDb } from "../../storage/db";
 
 export interface ProjectContextLite {
   description: string | null;
@@ -32,17 +32,21 @@ export function buildProjectContext(row: {
     }
   }
 
-  // Resolve tags + notes from project config (project_id = "org/repo")
-  const [org, repo] = row.project_id.split("/");
-  const projectConfig = getTrackedProjects().find(
-    (p) => p.org === org && p.repo === repo
-  );
+  const db = getDb();
+  const projectRow = db
+    .query<{ tags: string | null; notes: string | null }, [string]>(
+      "SELECT tags, notes FROM projects WHERE id = ?"
+    )
+    .get(row.project_id);
+
+  const tags = projectRow?.tags ? (JSON.parse(projectRow.tags) as string[]) : [];
+  const notes = projectRow?.notes ?? row.overview;
 
   return {
     description: row.description,
     language: row.language,
     topics,
-    tags: projectConfig?.tags ?? [],
-    notes: projectConfig?.notes ?? row.overview,
+    tags,
+    notes,
   };
 }

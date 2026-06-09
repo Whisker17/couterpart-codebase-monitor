@@ -4,9 +4,19 @@ import { rmSync } from "fs";
 import type { PRData, RepoMetadata, PRStats } from "../../extensions/github-collector/fetcher";
 import type { DiffResult } from "../../extensions/github-collector/diff-fetcher";
 import type { CollectDeps, CollectOptions } from "./collect";
+import type { ProjectSnapshot } from "../../config/projects";
 
 const TEST_DB_PATH = "data/test-collect-stage.db";
 let testDb: Database;
+
+const defaultSnapshot: ProjectSnapshot = {
+  projects: [
+    { org: "org", repo: "repo", url: "https://github.com/org/repo" },
+    { org: "org2", repo: "repo2", url: "https://github.com/org2/repo2" },
+  ],
+};
+
+const mockResolveProjectSnapshot = mock(async (_db: Database): Promise<ProjectSnapshot> => defaultSnapshot);
 
 // Use explicit parameter + return types so TS can index mock.calls[0]![2] as Date.
 const mockFetchMergedPRs = mock(async (_org: string, _repo: string, _since: Date): Promise<PRData[]> => []);
@@ -29,17 +39,13 @@ mock.module("../../storage/db", () => ({
 }));
 
 mock.module("../../config/projects", () => ({
-  getTrackedProjects: () => [
-    { org: "org", repo: "repo", url: "https://github.com/org/repo" },
-    { org: "org2", repo: "repo2", url: "https://github.com/org2/repo2" },
-  ],
+  resolveProjectSnapshot: mockResolveProjectSnapshot,
 }));
 
 // Import execute after mocks are registered
 const { execute } = await import("./collect");
 
-// Build isolated deps for each test — pass functions directly to avoid mock.module
-// on fetcher/diff-fetcher so those unit test files remain unaffected.
+// Build isolated deps for each test
 function makeDeps(): CollectDeps {
   return {
     fetchMergedPRs: mockFetchMergedPRs,
@@ -49,42 +55,49 @@ function makeDeps(): CollectDeps {
   };
 }
 
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    org TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    url TEXT NOT NULL,
+    description TEXT,
+    language TEXT,
+    topics TEXT,
+    last_synced_at INTEGER,
+    active INTEGER NOT NULL DEFAULT 1,
+    inactive_reason TEXT,
+    source TEXT DEFAULT 'local',
+    subscription_synced_at INTEGER,
+    tags TEXT,
+    notes TEXT,
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+  CREATE TABLE IF NOT EXISTS pull_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    pr_number INTEGER NOT NULL,
+    github_node_id TEXT,
+    title TEXT NOT NULL,
+    body TEXT,
+    author TEXT,
+    merged_at INTEGER,
+    files_changed INTEGER,
+    additions INTEGER,
+    deletions INTEGER,
+    diff_path TEXT,
+    diff_status TEXT DEFAULT 'missing',
+    analysis_status TEXT DEFAULT 'pending',
+    retry_count INTEGER DEFAULT 0,
+    last_error TEXT,
+    fetched_at INTEGER DEFAULT (unixepoch()),
+    UNIQUE(project_id, pr_number)
+  );
+`;
+
 function makeDb(): Database {
   const db = new Database(TEST_DB_PATH);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS projects (
-      id TEXT PRIMARY KEY,
-      org TEXT NOT NULL,
-      repo TEXT NOT NULL,
-      url TEXT NOT NULL,
-      description TEXT,
-      language TEXT,
-      topics TEXT,
-      last_synced_at INTEGER,
-      active INTEGER NOT NULL DEFAULT 1,
-      created_at INTEGER DEFAULT (unixepoch())
-    );
-    CREATE TABLE IF NOT EXISTS pull_requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id TEXT NOT NULL,
-      pr_number INTEGER NOT NULL,
-      github_node_id TEXT,
-      title TEXT NOT NULL,
-      body TEXT,
-      author TEXT,
-      merged_at INTEGER,
-      files_changed INTEGER,
-      additions INTEGER,
-      deletions INTEGER,
-      diff_path TEXT,
-      diff_status TEXT DEFAULT 'missing',
-      analysis_status TEXT DEFAULT 'pending',
-      retry_count INTEGER DEFAULT 0,
-      last_error TEXT,
-      fetched_at INTEGER DEFAULT (unixepoch()),
-      UNIQUE(project_id, pr_number)
-    );
-  `);
+  db.exec(SCHEMA);
   return db;
 }
 
@@ -108,6 +121,8 @@ beforeEach(() => {
   mockFetchRepoMetadata.mockClear();
   mockFetchPRStats.mockClear();
   mockFetchAndStoreDiff.mockClear();
+  mockResolveProjectSnapshot.mockClear();
+  mockResolveProjectSnapshot.mockImplementation(async (_db) => defaultSnapshot);
 });
 
 afterEach(() => {
@@ -120,15 +135,97 @@ afterEach(() => {
 });
 
 describe("collect stage", () => {
-  it("inserts projects into DB from config if not present", async () => {
+  it("uses snapshot from resolveProjectSnapshot for the whole run", async () => {
+    const snapshot: ProjectSnapshot = {
+      projects: [{ org: "snaporg", repo: "snaprepo", url: "https://github.com/snaporg/snaprepo" }],
+    };
+    mockResolveProjectSnapshot.mockImplementation(async (_db) => snapshot);
+    testDb.run(
+      `INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)`,
+      ["snaporg/snaprepo", "snaporg", "snaprepo", "https://github.com/snaporg/snaprepo"]
+    );
+
     await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
-    const rows = testDb.query("SELECT id FROM projects").all();
-    expect(rows.length).toBe(2);
+    expect(mockResolveProjectSnapshot).toHaveBeenCalledTimes(1);
+    expect(mockFetchMergedPRs.mock.calls[0]![0]).toBe("snaporg");
+    expect(mockFetchMergedPRs.mock.calls[0]![1]).toBe("snaprepo");
   });
 
-  it("is idempotent: running twice does not create duplicate projects", async () => {
+  it("resolveProjectSnapshot is called exactly once per execute call", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+
+    expect(mockResolveProjectSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates syncResult from resolveProjectSnapshot in the stage result", async () => {
+    const snapshot: ProjectSnapshot = {
+      projects: [{ org: "org", repo: "repo", url: "https://github.com/org/repo" }],
+      syncResult: { activated: ["org/new"], deactivated: ["org/old"], unchanged: [] },
+    };
+    mockResolveProjectSnapshot.mockImplementation(async (_db) => snapshot);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+
+    const result = await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+
+    expect(result.syncResult).toEqual({ activated: ["org/new"], deactivated: ["org/old"], unchanged: [] });
+    expect(result.resolvedProjectCount).toBe(1);
+  });
+
+  it("RepoNotFoundError sets inactive_reason = 'repo_not_found' on the project row", async () => {
+    const { RepoNotFoundError } = await import("../../extensions/github-collector/fetcher");
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
+    mockFetchRepoMetadata.mockImplementationOnce(async () => {
+      throw new RepoNotFoundError("org", "repo");
+    });
+
+    const result = await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+
+    const row = testDb
+      .query<{ active: number; inactive_reason: string | null }, []>(
+        "SELECT active, inactive_reason FROM projects WHERE id = 'org/repo'"
+      )
+      .get();
+    expect(row!.active).toBe(0);
+    expect(row!.inactive_reason).toBe("repo_not_found");
+    expect(result.failedProjects).toContain("org/repo");
+  });
+
+  it("subscription fetch failure falls back to last successful SQLite snapshot", async () => {
+    // resolveProjectSnapshot returns fallback (no syncResult) — collect succeeds
+    const fallbackSnapshot: ProjectSnapshot = {
+      projects: [{ org: "org", repo: "repo", url: "https://github.com/org/repo" }],
+      // no syncResult = fallback mode
+    };
+    mockResolveProjectSnapshot.mockImplementation(async (_db) => fallbackSnapshot);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+
+    const result = await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+
+    expect(result.success).toBe(true);
+    expect(result.syncResult).toBeUndefined();
+  });
+
+  it("collection fails when resolveProjectSnapshot throws (no prior snapshot)", async () => {
+    mockResolveProjectSnapshot.mockImplementation(async (_db) => {
+      throw new Error("[subscription] Fetch or validation failed and no prior subscription snapshot exists in SQLite.");
+    });
+
+    const result = await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+
+    expect(result.success).toBe(false);
+    expect(result.errors[0]).toContain("subscription");
+  });
+
+  it("inserts projects into DB from resolveProjectSnapshot if not present", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
 
     const rows = testDb.query("SELECT id FROM projects").all();
@@ -136,6 +233,9 @@ describe("collect stage", () => {
   });
 
   it("inserts PRs and sets diff_status correctly", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     const pr = makePR({ number: 42, merged_at: new Date("2024-01-15T00:00:00Z") });
     mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);
     mockFetchAndStoreDiff.mockResolvedValueOnce({ status: "available", path: "data/diffs/org-repo/42.patch" });
@@ -151,6 +251,9 @@ describe("collect stage", () => {
   });
 
   it("writes non-zero changed_files/additions/deletions from fetchPRStats", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     const pr = makePR({ number: 7, merged_at: new Date("2024-01-20T00:00:00Z") });
     mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);
     mockFetchPRStats.mockResolvedValueOnce({ changed_files: 8, additions: 200, deletions: 50 });
@@ -168,6 +271,9 @@ describe("collect stage", () => {
   });
 
   it("does not create duplicate PRs on second run (INSERT OR IGNORE)", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     const pr = makePR({ number: 42, merged_at: new Date("2024-01-15T00:00:00Z") });
     mockFetchMergedPRs.mockResolvedValue([pr]);
     mockFetchAndStoreDiff.mockResolvedValue({ status: "available", path: "data/diffs/org-repo/42.patch" });
@@ -182,6 +288,9 @@ describe("collect stage", () => {
   });
 
   it("updates last_synced_at to max(merged_at) not wall-clock now", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     const mergedAt = new Date("2024-01-15T12:00:00Z");
     const pr = makePR({ number: 1, merged_at: mergedAt });
     mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);
@@ -196,11 +305,13 @@ describe("collect stage", () => {
 
     const expectedUnix = Math.floor(mergedAt.getTime() / 1000);
     expect(row!.last_synced_at).toBe(expectedUnix);
-    // Confirm it is NOT wall-clock now
     expect(row!.last_synced_at).toBeLessThan(before);
   });
 
   it("continues to next project when one fails", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     mockFetchMergedPRs
       .mockRejectedValueOnce(new Error("API rate limit exceeded"))
       .mockResolvedValueOnce([]);
@@ -214,6 +325,9 @@ describe("collect stage", () => {
   });
 
   it("still writes PR record when diff fetch fails", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     const pr = makePR({ number: 5, merged_at: new Date("2024-01-20T00:00:00Z") });
     mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);
     mockFetchAndStoreDiff.mockResolvedValueOnce({ status: "fetch_failed", path: null });
@@ -229,6 +343,9 @@ describe("collect stage", () => {
   });
 
   it("updates project metadata from GitHub", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     mockFetchMergedPRs.mockResolvedValue([]);
     mockFetchRepoMetadata.mockResolvedValueOnce({
       description: "Great project",
@@ -247,6 +364,9 @@ describe("collect stage", () => {
   });
 
   it("returns itemsProcessed equal to total PR count across all projects", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     mockFetchMergedPRs
       .mockResolvedValueOnce([
         makePR({ number: 1, merged_at: new Date() }),
@@ -260,12 +380,14 @@ describe("collect stage", () => {
   });
 
   it("dateRangeOverride: excludes PRs outside the specified boundary", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     const startUnix = 1700000000;
     const endUnix = 1700086400;
     const inRange = makePR({ number: 10, merged_at: new Date(startUnix * 1000) });
     const beforeRange = makePR({ number: 11, merged_at: new Date((startUnix - 1) * 1000) });
     const afterRange = makePR({ number: 12, merged_at: new Date((endUnix + 1) * 1000) });
-    // fetchMergedPRs is called with since=(startUnix-1)*1000, returns all three
     mockFetchMergedPRs.mockResolvedValueOnce([inRange, beforeRange, afterRange]).mockResolvedValueOnce([]);
     mockFetchAndStoreDiff.mockResolvedValue({ status: "available", path: "p" });
 
@@ -280,6 +402,9 @@ describe("collect stage", () => {
   });
 
   it("dateRangeOverride: passes (startUnix - 1) as since to fetchMergedPRs", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     const startUnix = 1700000000;
     const endUnix = 1700086400;
     mockFetchMergedPRs.mockResolvedValue([]);
@@ -292,6 +417,9 @@ describe("collect stage", () => {
   });
 
   it("skipSyncUpdate: does not update last_synced_at when true", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
     const mergedAt = new Date("2024-01-15T12:00:00Z");
     const pr = makePR({ number: 20, merged_at: mergedAt });
     mockFetchMergedPRs.mockResolvedValueOnce([pr]).mockResolvedValueOnce([]);

@@ -1,6 +1,6 @@
 import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import { getDb } from "../../storage/db";
-import { getTrackedProjects } from "../../config/projects";
+import { resolveProjectSnapshot } from "../../config/projects";
 import { fetchMergedPRs, fetchRepoMetadata, fetchPRStats, RepoNotFoundError } from "../../extensions/github-collector/fetcher";
 import { fetchAndStoreDiff } from "../../extensions/github-collector/diff-fetcher";
 import type { PRData, RepoMetadata, PRStats } from "../../extensions/github-collector/fetcher";
@@ -31,47 +31,27 @@ function projectId(org: string, repo: string): string {
   return `${org}/${repo}`;
 }
 
-function ensureProjectsLoaded(): void {
-  const db = getDb();
-  const projects = getTrackedProjects();
-
-  for (const p of projects) {
-    const id = projectId(p.org, p.repo);
-    db.run(
-      `INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)`,
-      [id, p.org, p.repo, p.url]
-    );
-  }
-}
-
 export async function execute(
   _ctx: PipelineContext,
   deps: CollectDeps = defaultDeps,
   options: CollectOptions = {}
 ): Promise<StageResult> {
   const db = getDb();
-  const projects = getTrackedProjects();
+  let resolvedSnapshot;
+  try {
+    resolvedSnapshot = await resolveProjectSnapshot(db);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Collect] resolveProjectSnapshot failed: ${msg}`);
+    return { success: false, itemsProcessed: 0, errors: [msg], durationMs: 0, failedProjects: [] };
+  }
+  const { projects, syncResult } = resolvedSnapshot;
   const errors: string[] = [];
   const failedProjects: string[] = [];
   let totalPRs = 0;
 
-  ensureProjectsLoaded();
-
-  // Skip projects that have been marked inactive (e.g. deleted/renamed repos)
-  const inactiveIds = new Set<string>(
-    db
-      .query<{ id: string }, []>("SELECT id FROM projects WHERE active = 0")
-      .all()
-      .map((r) => r.id)
-  );
-
   for (const project of projects) {
     const pid = projectId(project.org, project.repo);
-
-    if (inactiveIds.has(pid)) {
-      console.log(`[Collect] Skipping inactive project ${pid}`);
-      continue;
-    }
 
     try {
       // Determine since: dateRangeOverride, last_synced_at, or 7 days ago
@@ -123,7 +103,6 @@ export async function execute(
         const mergedAtUnix = Math.floor(pr.merged_at.getTime() / 1000);
 
         // Fetch per-PR stats (changed_files/additions/deletions) via pulls.get
-        // pulls.list omits these fields; one extra call per PR, ~50 calls/day total
         let stats = { changed_files: 0, additions: 0, deletions: 0 };
         try {
           stats = await deps.fetchPRStats(project.org, project.repo, pr.number);
@@ -166,8 +145,7 @@ export async function execute(
         }
       }
 
-      // Advance last_synced_at to max(merged_at) from this batch, not wall-clock now,
-      // to avoid skipping PRs that were ingested late into GitHub's API.
+      // Advance last_synced_at to max(merged_at) from this batch
       if (maxMergedAt !== null && !options.skipSyncUpdate) {
         db.run(`UPDATE projects SET last_synced_at = ? WHERE id = ?`, [maxMergedAt, pid]);
       }
@@ -176,7 +154,7 @@ export async function execute(
     } catch (err) {
       if (err instanceof RepoNotFoundError) {
         console.error(`[Collect] ALERT: ${err.message} — marking project inactive`);
-        db.run(`UPDATE projects SET active = 0 WHERE id = ?`, [pid]);
+        db.run(`UPDATE projects SET active = 0, inactive_reason = 'repo_not_found' WHERE id = ?`, [pid]);
         errors.push(`${pid}: repo not found (marked inactive)`);
         failedProjects.push(pid);
       } else {
@@ -194,6 +172,8 @@ export async function execute(
     errors,
     durationMs: 0,
     failedProjects,
+    syncResult,
+    resolvedProjectCount: projects.length,
   };
 }
 

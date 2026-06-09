@@ -3,7 +3,7 @@ import { sendCard } from "../extensions/lark-dispatcher/webhook";
 import { reloadSafeConfig } from "../config/settings";
 import type { SafeConfigSnapshot } from "../config/settings";
 import { reloadTrackedProjects } from "../config/projects";
-import type { TrackedProject } from "../config/projects";
+import type { TrackedProject, SyncResult } from "../config/projects";
 
 export interface StageResult {
   success: boolean;
@@ -13,6 +13,8 @@ export interface StageResult {
   failedProjects?: string[];
   budgetExhausted?: boolean;
   budgetSkippedCount?: number;
+  syncResult?: SyncResult;
+  resolvedProjectCount?: number;
 }
 
 export type ReportMode = "daily" | "weekly" | "monthly";

@@ -831,6 +831,124 @@ describe("report stage", () => {
     expect(projectIds).toContain("org/repo-a");
     expect(projectIds).not.toContain("org/repo-b");
   });
+
+  it("completeness.total reflects resolvedProjectCount from collect stage result", async () => {
+    insertTestData(testDb);
+    const ctx = {
+      stageResults: new Map([
+        ["collect", { success: true, itemsProcessed: 0, errors: [], durationMs: 0, resolvedProjectCount: 5 }],
+      ]) as any,
+      reportMode: "daily" as const,
+      timezone: TZ,
+    };
+    await execute(ctx);
+
+    const row = testDb.query<{ completeness: string }, []>("SELECT completeness FROM reports WHERE type='daily'").get()!;
+    const completeness = JSON.parse(row.completeness);
+    expect(completeness.total).toBe(5);
+  });
+
+  it("completeness.total is 0 when collect stage result has no resolvedProjectCount", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+
+    const row = testDb.query<{ completeness: string }, []>("SELECT completeness FROM reports WHERE type='daily'").get()!;
+    const completeness = JSON.parse(row.completeness);
+    expect(completeness.total).toBe(0);
+  });
+
+  it("subscription change note appears in card and completeness when projects are added", async () => {
+    insertTestData(testDb);
+    const ctx = {
+      stageResults: new Map([
+        [
+          "collect",
+          {
+            success: true,
+            itemsProcessed: 0,
+            errors: [],
+            durationMs: 0,
+            resolvedProjectCount: 2,
+            syncResult: { activated: ["org/new-project"], deactivated: [], unchanged: [] },
+          },
+        ],
+      ]) as any,
+      reportMode: "daily" as const,
+      timezone: TZ,
+    };
+    await execute(ctx);
+
+    const row = testDb.query<{ completeness: string; content: string }, []>(
+      "SELECT completeness, content FROM reports WHERE type='daily'"
+    ).get()!;
+    const completeness = JSON.parse(row.completeness);
+    expect(completeness.subscriptionNote).toContain("added from subscription");
+    expect(completeness.subscriptionNote).toContain("org/new-project");
+
+    const card = JSON.parse(row.content);
+    const summaryEl = card.elements?.find((e: { tag: string; content?: string }) => e.tag === "markdown");
+    expect(summaryEl?.content).toContain("added from subscription");
+  });
+
+  it("subscription change note appears in card and completeness when projects are removed", async () => {
+    insertTestData(testDb);
+    const ctx = {
+      stageResults: new Map([
+        [
+          "collect",
+          {
+            success: true,
+            itemsProcessed: 0,
+            errors: [],
+            durationMs: 0,
+            resolvedProjectCount: 1,
+            syncResult: { activated: [], deactivated: ["org/removed-a", "org/removed-b"], unchanged: [] },
+          },
+        ],
+      ]) as any,
+      reportMode: "daily" as const,
+      timezone: TZ,
+    };
+    await execute(ctx);
+
+    const row = testDb.query<{ completeness: string; content: string }, []>(
+      "SELECT completeness, content FROM reports WHERE type='daily'"
+    ).get()!;
+    const completeness = JSON.parse(row.completeness);
+    expect(completeness.subscriptionNote).toContain("removed from subscription");
+    expect(completeness.subscriptionNote).toContain("org/removed-a");
+
+    const card = JSON.parse(row.content);
+    const summaryEl = card.elements?.find((e: { tag: string; content?: string }) => e.tag === "markdown");
+    expect(summaryEl?.content).toContain("removed from subscription");
+  });
+
+  it("no subscription note when syncResult has no changes", async () => {
+    insertTestData(testDb);
+    const ctx = {
+      stageResults: new Map([
+        [
+          "collect",
+          {
+            success: true,
+            itemsProcessed: 0,
+            errors: [],
+            durationMs: 0,
+            resolvedProjectCount: 2,
+            syncResult: { activated: [], deactivated: [], unchanged: ["org/repo-a", "org/repo-b"] },
+          },
+        ],
+      ]) as any,
+      reportMode: "daily" as const,
+      timezone: TZ,
+    };
+    await execute(ctx);
+
+    const row = testDb.query<{ completeness: string }, []>("SELECT completeness FROM reports WHERE type='daily'").get()!;
+    const completeness = JSON.parse(row.completeness);
+    expect(completeness.subscriptionNote).toBeUndefined();
+  });
 });
 
 describe("buildFinalCard", () => {
