@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import type { PipelineContext, PipelineStage, StageResult } from "../runner";
+import type { SyncResult } from "../../config/projects";
 import { getDb } from "../../storage/db";
-import { getTrackedProjects } from "../../config/projects";
 import { buildDailyReport } from "../../extensions/report-generator/daily";
 import { type GroupedAnalyses, type LarkCard } from "../../extensions/report-generator/templates/daily-card";
 import { buildWeeklyReport } from "../../extensions/report-generator/weekly";
@@ -66,6 +66,18 @@ function collectFailedProjects(ctx: PipelineContext): string[] {
   return Array.from(failed);
 }
 
+function buildSubscriptionNote(syncResult?: SyncResult): string | undefined {
+  if (!syncResult) return undefined;
+  const parts: string[] = [];
+  if (syncResult.activated.length > 0) {
+    parts.push(`${syncResult.activated.length} project${syncResult.activated.length > 1 ? "s" : ""} added from subscription: ${syncResult.activated.join(", ")}`);
+  }
+  if (syncResult.deactivated.length > 0) {
+    parts.push(`${syncResult.deactivated.length} project${syncResult.deactivated.length > 1 ? "s" : ""} removed from subscription: ${syncResult.deactivated.join(", ")}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : undefined;
+}
+
 export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}): Promise<StageResult> {
   const db = getDb();
   const errors: string[] = [];
@@ -75,13 +87,18 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
 
   const reportData = buildDailyReport(timezone);
 
+  const collectResult = ctx.stageResults.get("collect");
+  const resolvedProjectCount = collectResult?.resolvedProjectCount ?? 0;
+  const syncResult = collectResult?.syncResult;
+  const subscriptionNote = buildSubscriptionNote(syncResult);
+
   const failedProjects = collectFailedProjects(ctx);
-  const trackedProjects = getTrackedProjects();
 
   const completeness = {
-    total: trackedProjects.length,
-    success: trackedProjects.length - failedProjects.length,
+    total: resolvedProjectCount,
+    success: resolvedProjectCount - failedProjects.length,
     failed: failedProjects,
+    ...(subscriptionNote ? { subscriptionNote } : {}),
   };
 
   const deliverableGrouped = reportData.grouped.filter((g) => g.prs.length > 0);
@@ -129,8 +146,10 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
       ? `Partial report: ${failedProjects.length} project(s) failed collection/analysis`
       : undefined;
 
+  const combinedNote = [partialWarning, subscriptionNote].filter(Boolean).join(" | ") || undefined;
+
   const localizedGrouped = await localizeDailyDelivery(deliverableGrouped);
-  const { cards, errors: cardErrors } = formatReport(date, localizedGrouped, partialWarning, reportData.budgetLine);
+  const { cards, errors: cardErrors } = formatReport(date, localizedGrouped, combinedNote, reportData.budgetLine);
   if (cardErrors.length > 0) {
     for (const e of cardErrors) console.warn(`[Report] ⚠ ${e}`);
     errors.push(...cardErrors);

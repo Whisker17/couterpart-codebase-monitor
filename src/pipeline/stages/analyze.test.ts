@@ -63,7 +63,8 @@ mock.module("../../extensions/analyzer/llm-reviewer", () => ({
 const MIGRATION_SQL = `
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY, org TEXT, repo TEXT, url TEXT,
-  description TEXT, language TEXT, topics TEXT, overview TEXT
+  description TEXT, language TEXT, topics TEXT, overview TEXT,
+  tags TEXT, notes TEXT
 );
 CREATE TABLE IF NOT EXISTS pull_requests (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -440,5 +441,33 @@ describe("analyze stage", () => {
       )
       .get(102);
     expect(outOfRange?.analysis_status).toBe("pending");
+  });
+
+  it("analyzer reads tags and notes from SQLite project row, not from getTrackedProjects cache", async () => {
+    // Update the project row with tags and notes in SQLite
+    testDb.run(
+      `UPDATE projects SET tags = ?, notes = ? WHERE id = 'org/repo'`,
+      [JSON.stringify(["performance", "backend"]), "This is a critical service"]
+    );
+    insertPR();
+
+    await execute({ stageResults: new Map(), reportMode: "daily" as const });
+
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+    const ctx = (mockReviewPR.mock.calls as unknown as [{ projectContext: { tags: string[]; notes: string | null } }][])[0]![0];
+    expect(ctx.projectContext.tags).toEqual(["performance", "backend"]);
+    expect(ctx.projectContext.notes).toBe("This is a critical service");
+  });
+
+  it("analyzer uses empty tags array when project has no tags in SQLite", async () => {
+    // Project has no tags (null)
+    testDb.run(`UPDATE projects SET tags = NULL, notes = NULL WHERE id = 'org/repo'`);
+    insertPR();
+
+    await execute({ stageResults: new Map(), reportMode: "daily" as const });
+
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+    const ctx = (mockReviewPR.mock.calls as unknown as [{ projectContext: { tags: string[]; notes: string | null } }][])[0]![0];
+    expect(ctx.projectContext.tags).toEqual([]);
   });
 });
