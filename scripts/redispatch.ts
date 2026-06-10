@@ -6,6 +6,7 @@
  *   bun run scripts/redispatch.ts --yes                   # reset + full daily E2E
  *   bun run scripts/redispatch.ts --yes --report-only     # reset + regenerate report card only (--report-only skips collect/analyze)
  *   bun run scripts/redispatch.ts --yes --dispatch-only   # reset + dispatch only (--dispatch-only re-sends stored report_deliveries.content; does not regenerate card JSON)
+ *   bun run scripts/redispatch.ts --date 2026-06-09       # target a specific date's daily report instead of latest
  */
 import { validateEnv, getSettings } from "../src/config/settings";
 import { getDb, closeDb } from "../src/storage/db";
@@ -15,7 +16,7 @@ import { stage as analyze } from "../src/pipeline/stages/analyze";
 import { stage as report } from "../src/pipeline/stages/report";
 import { sendCard } from "../src/extensions/lark-dispatcher/webhook";
 import { printPostRunSummary } from "../src/e2e-run";
-import { getYesterdayPeriod } from "../src/utils/time-window";
+import { getDayPeriod, getYesterdayPeriod } from "../src/utils/time-window";
 
 interface ReportRow {
   id: number;
@@ -236,12 +237,26 @@ async function main(): Promise<number> {
   const confirmed = args.includes("--yes");
   const dispatchOnly = args.includes("--dispatch-only");
   const reportOnly = args.includes("--report-only");
+  const dateIdx = args.indexOf("--date");
+  const dateArg = dateIdx !== -1 ? args[dateIdx + 1] : undefined;
 
   validateEnv();
 
   const webhookUrl = getSettings().lark.webhookUrl;
   const db = getDb();
-  const found = findLatestDailyReport();
+  const timezone = getSettings().schedule.timezone;
+
+  let found: { report: ReportRow; deliveries: DeliveryRow[] } | null;
+  if (dateArg) {
+    const { startUnix } = getDayPeriod(timezone, dateArg);
+    found = findReportByPeriod(startUnix);
+    if (!found) {
+      console.log(`[Redispatch] No daily report found for date ${dateArg} (period_start=${startUnix}).`);
+      return 1;
+    }
+  } else {
+    found = findLatestDailyReport();
+  }
   if (!found) return 1;
 
   const { report: targetReport, deliveries } = found;
@@ -266,7 +281,6 @@ async function main(): Promise<number> {
 
   const maxIdRow = db.query<{ maxId: number }, []>("SELECT COALESCE(MAX(id), 0) as maxId FROM analyses").get()!;
   const maxAnalysisIdBefore = maxIdRow.maxId;
-  const timezone = getSettings().schedule.timezone;
 
   if (dispatchOnly) {
     console.warn(
