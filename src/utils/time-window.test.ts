@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { getYesterdayPeriod, getWeekPeriod, getDayPeriod, getMonthPeriod } from "./time-window";
+import { getYesterdayPeriod, getWeekPeriod, getDayPeriod, getMonthPeriod, getPreviousMonthString } from "./time-window";
 
 test("getYesterdayPeriod: Shanghai daily window", () => {
   const now = new Date("2026-06-03T01:00:00Z");
@@ -106,5 +106,15 @@ describe("getMonthPeriod", () => {
 
   test("future month is rejected", () => {
     expect(() => getMonthPeriod("UTC", "2026-07", new Date("2026-06-09T00:00:00Z"))).toThrow();
+  });
+});
+
+describe("getPreviousMonthString", () => {
+  test("returns the previous local month", () => {
+    expect(getPreviousMonthString("UTC", new Date("2026-06-10T12:00:00Z"))).toBe("2026-05");
+  });
+
+  test("handles January by crossing into the previous year", () => {
+    expect(getPreviousMonthString("UTC", new Date("2026-01-10T12:00:00Z"))).toBe("2025-12");
   });
 });

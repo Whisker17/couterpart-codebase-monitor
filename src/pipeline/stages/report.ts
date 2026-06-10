@@ -5,9 +5,12 @@ import { getDb } from "../../storage/db";
 import { buildDailyReport } from "../../extensions/report-generator/daily";
 import { buildWeeklyPromptCard } from "../../extensions/report-generator/templates/weekly-prompt-card";
 import { generateWeeklyPromptReport } from "../../extensions/report-generator/weekly-prompt-report";
+import { buildMonthlyPromptCard } from "../../extensions/report-generator/templates/monthly-prompt-card";
+import { generateMonthlyPromptReport } from "../../extensions/report-generator/monthly-prompt-report";
 import { buildDailyPromptCard } from "../../extensions/report-generator/templates/daily-prompt-card";
 import { generateDailyPromptReport } from "../../extensions/report-generator/daily-prompt-report";
 import { writeReportFile } from "../../extensions/report-generator/file-writer";
+import { getPreviousMonthString } from "../../utils/time-window";
 
 function formatDate(unixSeconds: number, timezone: string): string {
   const d = new Date(unixSeconds * 1000);
@@ -22,6 +25,12 @@ function formatDate(unixSeconds: number, timezone: string): string {
 function formatChineseShortDate(unixSeconds: number, timezone: string): string {
   const d = new Date(unixSeconds * 1000);
   return `${d.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric", timeZone: timezone })}`;
+}
+
+// The month string is already resolved in the configured timezone by the caller.
+function formatMonthLabel(month: string): string {
+  const [year, rawMonth] = month.split("-");
+  return `${year}年${Number(rawMonth)}月`;
 }
 
 function collectFailedProjects(ctx: PipelineContext): string[] {
@@ -50,9 +59,9 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
   const db = getDb();
   const errors: string[] = [];
   const timezone = ctx.timezone ?? "UTC";
+  const shouldGenerateDailyReport = !ctx.skipDailyReport;
 
-  const reportData = buildDailyReport(timezone);
-
+  const maybeReportData = shouldGenerateDailyReport ? buildDailyReport(timezone) : null;
   const collectResult = ctx.stageResults.get("collect");
   const resolvedProjectCount = collectResult?.resolvedProjectCount ?? 0;
   const syncResult = collectResult?.syncResult;
@@ -67,6 +76,17 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     ...(subscriptionNote ? { subscriptionNote } : {}),
   };
 
+  if (!shouldGenerateDailyReport) {
+    const extraErrors = await generateExtraReportForMode(ctx, db, completeness, timezone);
+    return {
+      success: extraErrors.length === 0,
+      itemsProcessed: 0,
+      errors: extraErrors,
+      durationMs: 0,
+    };
+  }
+
+  const reportData = maybeReportData!;
   const deliverableGrouped = reportData.grouped.filter((g) => g.prs.length > 0);
   if (deliverableGrouped.length === 0) {
     console.log("[Report] Daily: no deliverable PRs for this period, skipping report and delivery");
@@ -95,12 +115,9 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     } catch (err) {
       console.error(`[Report] Empty digest upsert failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    if (ctx.reportMode === "weekly") {
-      const weeklyErrors = await generateWeeklyReport(db, completeness, timezone);
-      if (weeklyErrors.length > 0) {
-        console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
-      }
-      return { success: weeklyErrors.length === 0, itemsProcessed: 0, errors: weeklyErrors, durationMs: 0 };
+    const extraErrors = await generateExtraReportForMode(ctx, db, completeness, timezone);
+    if (extraErrors.length > 0) {
+      return { success: false, itemsProcessed: 0, errors: extraErrors, durationMs: 0 };
     }
     return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
   }
@@ -200,13 +217,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     errors.push(msg);
   }
 
-  if (ctx.reportMode === "weekly") {
-    const weeklyErrors = await generateWeeklyReport(db, completeness, timezone);
-    if (weeklyErrors.length > 0) {
-      console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
-      errors.push(...weeklyErrors);
-    }
-  }
+  errors.push(...await generateExtraReportForMode(ctx, db, completeness, timezone));
 
   return {
     success: errors.length === 0,
@@ -214,6 +225,47 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     errors,
     durationMs: 0,
   };
+}
+
+async function generateExtraReportForMode(
+  ctx: PipelineContext,
+  db: Database,
+  completeness: { total: number; success: number; failed: string[] },
+  timezone: string
+): Promise<string[]> {
+  const { reportMode } = ctx;
+
+  if (reportMode === "weekly") {
+    const weeklyErrors = await generateWeeklyReport(db, completeness, timezone);
+    if (weeklyErrors.length > 0) {
+      console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
+    }
+    return weeklyErrors;
+  }
+
+  if (reportMode === "monthly") {
+    const monthlyErrors = await generateMonthlyReport(db, completeness, timezone, ctx.monthlyMonth);
+    if (monthlyErrors.length > 0) {
+      console.error(`[Report] Monthly report had ${monthlyErrors.length} error(s):`, monthlyErrors);
+    }
+    return monthlyErrors;
+  }
+
+  if (reportMode === "all") {
+    const weeklyErrors = await generateWeeklyReport(db, completeness, timezone);
+    if (weeklyErrors.length > 0) {
+      console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
+    }
+
+    const monthlyErrors = await generateMonthlyReport(db, completeness, timezone, ctx.monthlyMonth);
+    if (monthlyErrors.length > 0) {
+      console.error(`[Report] Monthly report had ${monthlyErrors.length} error(s):`, monthlyErrors);
+    }
+
+    return [...weeklyErrors, ...monthlyErrors];
+  }
+
+  return [];
 }
 
 async function generateWeeklyReport(
@@ -232,6 +284,10 @@ async function generateWeeklyReport(
       markdown: promptReport.markdown,
       totalPrs: promptReport.input.activitySummary.totalPrs,
       projectCount: promptReport.input.activitySummary.projectCount,
+      dailyCoverage: {
+        present: promptReport.input.dailyDigestCoverage.present,
+        missing: promptReport.input.dailyDigestCoverage.missing,
+      },
     });
     const weeklyJson = JSON.stringify(weeklyCard);
 
@@ -250,21 +306,24 @@ async function generateWeeklyReport(
       prompt: "action-oriented",
       usage: promptReport.usage,
     });
+    const weeklyDigestJson = JSON.stringify(promptReport.input);
 
     try {
       db.run(
-        `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness)
-         VALUES ('weekly', ?, ?, ?, ?, ?)
+        `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness, digest_json)
+         VALUES ('weekly', ?, ?, ?, ?, ?, ?)
          ON CONFLICT(type, period_start, period_end)
          DO UPDATE SET content = excluded.content,
                        completeness = excluded.completeness,
-                       project_ids = excluded.project_ids`,
+                       project_ids = excluded.project_ids,
+                       digest_json = excluded.digest_json`,
         [
           promptReport.input.period.startUnix,
           promptReport.input.period.endUnix,
           weeklyProjectIds,
           weeklyJson,
           weeklyCompletenessJson,
+          weeklyDigestJson,
         ]
       );
 
@@ -312,6 +371,117 @@ async function generateWeeklyReport(
     return errors;
   } catch (err) {
     errors.push(`Weekly prompt report failed: ${err instanceof Error ? err.message : String(err)}`);
+    return errors;
+  }
+}
+
+async function generateMonthlyReport(
+  db: Database,
+  completeness: { total: number; success: number; failed: string[] },
+  timezone: string,
+  month?: string
+): Promise<string[]> {
+  const errors: string[] = [];
+  try {
+    const promptReport = await generateMonthlyPromptReport(db, timezone, {
+      month: month ?? getPreviousMonthString(timezone),
+    });
+    const dailyCov = promptReport.input.coverage.dailyReports;
+    const monthlyCard = buildMonthlyPromptCard({
+      monthLabel: formatMonthLabel(promptReport.input.period.month),
+      periodLabel: promptReport.input.period.label,
+      markdown: promptReport.markdown,
+      totalPrs: promptReport.input.activitySummary.totalPrs,
+      projectCount: promptReport.input.activitySummary.projectCount,
+      isPartial: promptReport.input.period.isPartial,
+      dailyCoverage: {
+        present: dailyCov.present,
+        missing: dailyCov.missing,
+        total: dailyCov.present + dailyCov.nullDigest + dailyCov.missing,
+      },
+    });
+    const monthlyJson = JSON.stringify(monthlyCard);
+
+    const monthlyBytes = Buffer.byteLength(monthlyJson, "utf-8");
+    if (monthlyBytes > 30_000) {
+      console.warn(`[Report] Monthly card exceeds 30KB hard limit (${monthlyBytes} bytes) — sending anyway`);
+    } else if (monthlyBytes > 20_000) {
+      console.warn(`[Report] Monthly card exceeds 20KB warn threshold (${monthlyBytes} bytes)`);
+    }
+
+    const monthlyProjectIds = JSON.stringify(
+      promptReport.input.projects.map((p) => p.projectId)
+    );
+    const monthlyCompletenessJson = JSON.stringify({
+      ...completeness,
+      prompt: "executive-trajectory",
+      usage: promptReport.usage,
+    });
+    const monthlyDigestJson = JSON.stringify(promptReport.input);
+
+    try {
+      db.run(
+        `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness, digest_json)
+         VALUES ('monthly', ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(type, period_start, period_end)
+         DO UPDATE SET content = excluded.content,
+                       completeness = excluded.completeness,
+                       project_ids = excluded.project_ids,
+                       digest_json = excluded.digest_json`,
+        [
+          promptReport.input.period.startUnix,
+          promptReport.input.period.endUnix,
+          monthlyProjectIds,
+          monthlyJson,
+          monthlyCompletenessJson,
+          monthlyDigestJson,
+        ]
+      );
+
+      const monthlyRow = db
+        .query<{ id: number }, [string, number, number]>(
+          "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
+        )
+        .get("monthly", promptReport.input.period.startUnix, promptReport.input.period.endUnix)!;
+      db.run(
+        `INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)
+         ON CONFLICT(report_id, card_index)
+         DO UPDATE SET content = excluded.content
+         WHERE report_deliveries.status != 'sent'`,
+        [monthlyRow.id, monthlyJson]
+      );
+      db.run(
+        "DELETE FROM report_deliveries WHERE report_id = ? AND card_index >= 1 AND status != 'sent'",
+        [monthlyRow.id]
+      );
+    } catch (err) {
+      const msg = `Monthly DB upsert failed: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`[Report] ${msg}`);
+      errors.push(msg);
+    }
+
+    try {
+      const monthlyDate = `monthly-${promptReport.input.period.month}`;
+      const filePath = writeReportFile({
+        date: monthlyDate,
+        card: monthlyCard,
+        analyses: [],
+        completeness: {
+          ...completeness,
+          status: "prompt-executive-trajectory",
+          prTotal: promptReport.input.activitySummary.totalPrs,
+        },
+      });
+      console.log(`[Report] Monthly written to ${filePath}`);
+    } catch (err) {
+      const msg = `Monthly file write failed: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(`[Report] ${msg}`);
+      errors.push(msg);
+    }
+
+    return errors;
+  } catch (err) {
+    errors.push(`Monthly prompt report failed: ${err instanceof Error ? err.message : String(err)}`);
     return errors;
   }
 }

@@ -15,6 +15,7 @@ export interface WeeklyPromptCardInput {
   markdown: string;
   totalPrs: number;
   projectCount: number;
+  dailyCoverage?: { present: number; missing: number };
 }
 
 const ACTION_SECTION_TITLES = new Set(["优先跟进事项", "Action Items", "优先跟进"]);
@@ -151,10 +152,15 @@ export function normalizeLarkMarkdown(markdown: string): string {
 }
 
 function visibleSummary(input: WeeklyPromptCardInput): string {
-  return [
+  const lines = [
     `**范围**：${input.totalPrs} 个 PR · ${input.projectCount} 个项目`,
-    "_详细内容已折叠，请按章节展开查看。_",
-  ].join("\n");
+  ];
+  if (input.dailyCoverage && input.dailyCoverage.missing > 0) {
+    const total = input.dailyCoverage.present + input.dailyCoverage.missing;
+    lines.push(`⚠ 本周 ${total} 天中 ${input.dailyCoverage.present} 天有日报数据，${input.dailyCoverage.missing} 天缺失`);
+  }
+  lines.push("_详细内容已折叠，请按章节展开查看。_");
+  return lines.join("\n");
 }
 
 function formatActionPanelTitle(title: string): LarkText {

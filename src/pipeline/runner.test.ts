@@ -333,7 +333,7 @@ describe("runPipeline — config reload cold start failures", () => {
     },
     lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
     github: { tokenEnvVar: "GITHUB_TOKEN" },
-    schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", timezone: "UTC" },
+    schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", monthlyCron: "0 10 1 * *", timezone: "UTC" },
     budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
   };
   const validProjects = [{ org: "base", repo: "base", url: "https://github.com/base/base" }];

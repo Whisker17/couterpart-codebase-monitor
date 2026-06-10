@@ -4,8 +4,9 @@
  * Usage:
  *   bun run src/e2e-run.ts                     # daily (default)
  *   bun run src/e2e-run.ts --mode weekly        # weekly (daily + weekly reports)
- *   bun run src/e2e-run.ts --mode all           # same as weekly, monthly skipped
- *   bun run src/e2e-run.ts --mode monthly       # exits 1 — not implemented yet
+ *   bun run src/e2e-run.ts --mode monthly       # monthly (daily + monthly reports)
+ *   bun run src/e2e-run.ts --mode monthly --month 2026-06
+ *   bun run src/e2e-run.ts --mode all           # daily + weekly + monthly reports
  *   bun run src/e2e-run.ts --mode weekly --no-dispatch  # skip Lark delivery
  */
 import type { Database } from "bun:sqlite";
@@ -16,20 +17,30 @@ import { stage as collect } from "./pipeline/stages/collect";
 import { stage as analyze } from "./pipeline/stages/analyze";
 import { stage as report } from "./pipeline/stages/report";
 import { stage as dispatch } from "./pipeline/stages/dispatch";
-import { getYesterdayPeriod, getWeekPeriod } from "./utils/time-window";
+import { getMonthPeriod, getPreviousMonthString, getYesterdayPeriod, getWeekPeriod } from "./utils/time-window";
 
 export type RunMode = "daily" | "weekly" | "monthly" | "all";
 
 export interface E2EOptions {
   mode: RunMode;
   noDispatch: boolean;
+  month?: string;
 }
 
 const VALID_MODES: RunMode[] = ["daily", "weekly", "monthly", "all"];
 
+function parseMonth(value: string): string | undefined {
+  const match = /^(\d{4})-(\d{2})$/.exec(value);
+  if (!match) return undefined;
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return undefined;
+  return value;
+}
+
 export function parseOptions(argv: string[]): E2EOptions {
   let mode: RunMode = "daily";
   let noDispatch = false;
+  let month: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--mode" && i + 1 < argv.length) {
@@ -40,28 +51,20 @@ export function parseOptions(argv: string[]): E2EOptions {
       }
     } else if (argv[i] === "--no-dispatch") {
       noDispatch = true;
+    } else if (argv[i] === "--month" && i + 1 < argv.length) {
+      const value = argv[i + 1];
+      if (value !== undefined) month = parseMonth(value);
+      i++;
     }
   }
 
-  return { mode, noDispatch };
+  return month ? { mode, noDispatch, month } : { mode, noDispatch };
 }
 
 export function getRunStages(noDispatch: boolean): PipelineStage[] {
   const stages: PipelineStage[] = [collect, analyze, report];
   if (!noDispatch) stages.push(dispatch);
   return stages;
-}
-
-export function getPipelineReportMode(mode: RunMode): ReportMode {
-  if (mode === "all") return "weekly";
-  return mode as ReportMode;
-}
-
-export function getModeNotImplementedMessage(mode: RunMode): string | null {
-  if (mode === "monthly") {
-    return "[E2E] Monthly mode is not implemented yet. Implement buildMonthlyReport/monthly card before enabling this scenario.";
-  }
-  return null;
 }
 
 export function getE2EStages(): PipelineStage[] {
@@ -115,10 +118,13 @@ export function printPostRunSummary(
   results: Map<string, StageResult>,
   maxAnalysisIdBefore: number,
   injectedDb?: Database,
-  injectedTimezone?: string
+  injectedTimezone?: string,
+  injectedNow?: Date,
+  monthlyMonth?: string
 ): 0 | 1 {
   const db = injectedDb ?? getDb();
   const timezone = injectedTimezone ?? getSettings().schedule.timezone;
+  const now = injectedNow ?? new Date();
 
   console.log("\nStage results:");
   for (const [name, r] of results) {
@@ -136,16 +142,27 @@ export function printPostRunSummary(
 
   const anyFailed = [...results.values()].some((r) => !r.success);
 
-  const expectedTypes: string[] = mode === "daily" ? ["daily"] : ["daily", "weekly"];
+  const expectedTypes: string[] =
+    mode === "daily"
+      ? ["daily"]
+      : mode === "weekly"
+        ? ["daily", "weekly"]
+        : mode === "monthly"
+          ? ["daily", "monthly"]
+          : ["daily", "weekly", "monthly"];
 
-  const { startUnix: dailyStart, endUnix: dailyEnd } = getYesterdayPeriod(timezone);
-  const { startUnix: weeklyStart } = getWeekPeriod(timezone);
+  const { startUnix: dailyStart, endUnix: dailyEnd } = getYesterdayPeriod(timezone, now);
+  const { startUnix: weeklyStart, endUnix: weeklyEnd } = getWeekPeriod(timezone, now);
+  const monthlyPeriod = getMonthPeriod(timezone, monthlyMonth ?? getPreviousMonthString(timezone, now), now);
 
   console.log("\nReports:");
   let reportsMissing = false;
 
   for (const reportType of expectedTypes) {
-    const periodStart = reportType === "weekly" ? weeklyStart : dailyStart;
+    const periodStart =
+      reportType === "weekly" ? weeklyStart : reportType === "monthly" ? monthlyPeriod.startUnix : dailyStart;
+    const periodEnd =
+      reportType === "weekly" ? weeklyEnd : reportType === "monthly" ? monthlyPeriod.endUnix : dailyEnd;
     const row = db
       .query<ReportRow, [string, number]>(
         "SELECT id, type, period_start, period_end, created_at FROM reports WHERE type = ? AND period_start >= ? ORDER BY period_start DESC LIMIT 1"
@@ -153,7 +170,6 @@ export function printPostRunSummary(
       .get(reportType, periodStart);
 
     if (!row) {
-      const periodEnd = dailyEnd;
       const analysisCount = db
         .query<{ count: number }, [number, number]>(
           `SELECT COUNT(*) as count
@@ -187,9 +203,9 @@ export function printPostRunSummary(
     const failed = deliveries.filter((d) => d.status === "failed").length;
     const pending = deliveries.filter((d) => d.status === "pending").length;
     const periodStr =
-      reportType === "weekly"
-        ? `${formatUnixDate(row.period_start, timezone)}..${formatUnixDate(row.period_end, timezone)}`
-        : formatUnixDate(row.period_start, timezone);
+      reportType === "daily"
+        ? formatUnixDate(row.period_start, timezone)
+        : `${formatUnixDate(row.period_start, timezone)}..${formatUnixDate(row.period_end, timezone)}`;
 
     console.log(
       `  ${reportType}  #${row.id} ${periodStr} cards=${deliveries.length} deliveries=sent:${sent} failed:${failed} pending:${pending}`
@@ -198,10 +214,6 @@ export function printPostRunSummary(
     if (!noDispatch && failed > 0) {
       console.error(`  ERROR: ${failed} delivery(ies) failed`);
     }
-  }
-
-  if (mode === "all") {
-    console.log("  [SKIPPED] monthly: not implemented");
   }
 
   // Analysis sample and cost from this run
@@ -247,7 +259,8 @@ export function printPostRunSummary(
   const messageIds: string[] = [];
   if (!noDispatch) {
     for (const reportType of expectedTypes) {
-      const lookupStart = reportType === "weekly" ? weeklyStart : dailyStart;
+      const lookupStart =
+        reportType === "weekly" ? weeklyStart : reportType === "monthly" ? monthlyPeriod.startUnix : dailyStart;
       const row = db
         .query<ReportRow, [string, number]>(
           "SELECT id FROM reports WHERE type = ? AND period_start >= ? ORDER BY period_start DESC LIMIT 1"
@@ -276,13 +289,7 @@ export function printPostRunSummary(
 }
 
 export async function runE2E(argv: string[] = process.argv.slice(2)): Promise<number> {
-  const { mode, noDispatch } = parseOptions(argv);
-
-  const notImplemented = getModeNotImplementedMessage(mode);
-  if (notImplemented) {
-    console.error(notImplemented);
-    return 1;
-  }
+  const { mode, noDispatch, month } = parseOptions(argv);
 
   validateEnv();
   const db = getDb();
@@ -290,22 +297,22 @@ export async function runE2E(argv: string[] = process.argv.slice(2)): Promise<nu
   const maxIdRow = db.query<{ maxId: number }, []>("SELECT COALESCE(MAX(id), 0) as maxId FROM analyses").get()!;
   const maxAnalysisIdBefore = maxIdRow.maxId;
 
-  const reportMode = getPipelineReportMode(mode);
+  const reportMode = mode as ReportMode;
   const stages = getRunStages(noDispatch);
 
-  console.log(`[E2E] Mode: ${mode}${noDispatch ? " (no-dispatch)" : ""}`);
+  console.log(`[E2E] Mode: ${mode}${month ? ` (${month})` : ""}${noDispatch ? " (no-dispatch)" : ""}`);
   const stageNames = stages.map((s) => s.name).join(" → ");
   console.log(`[E2E] Stages: ${stageNames}`);
 
   const timezone = getSettings().schedule.timezone;
 
   const start = Date.now();
-  const results = await runPipeline(stages, { reportMode, timezone });
+  const results = await runPipeline(stages, { reportMode, timezone, monthlyMonth: month });
   const totalMs = Date.now() - start;
 
   console.log(`\n[E2E] Pipeline complete in ${(totalMs / 1000).toFixed(1)}s`);
 
-  return printPostRunSummary(mode, noDispatch, results, maxAnalysisIdBefore);
+  return printPostRunSummary(mode, noDispatch, results, maxAnalysisIdBefore, undefined, undefined, undefined, month);
 }
 
 if (import.meta.main) {

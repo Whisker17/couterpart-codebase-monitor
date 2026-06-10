@@ -53,6 +53,7 @@ The default settings live in `config/settings.json`:
 - `llm.maxManifestEntries`: maximum detailed file manifest entries before aggregation.
 - `schedule.dailyCron`: daily pipeline schedule.
 - `schedule.weeklyCron`: weekly pipeline schedule.
+- `schedule.monthlyCron`: monthly report schedule.
 - `budget.monthlyCap`: hard monthly analysis cost cap.
 
 Tracked projects live in `config/projects.json`. Each project needs:
@@ -140,14 +141,17 @@ bun run src/e2e-run.ts --mode daily
 # Weekly report — collect → analyze → report(daily+weekly) → dispatch
 bun run src/e2e-run.ts --mode weekly
 
-# Same as weekly; also prints "[SKIPPED] monthly: not implemented"
-bun run src/e2e-run.ts --mode all
-
-# Monthly — exits 1 (not implemented yet)
+# Monthly report — collect → analyze → report(daily+monthly) → dispatch.
+# Defaults to the previous complete month.
 bun run src/e2e-run.ts --mode monthly
+bun run src/e2e-run.ts --mode monthly --month 2026-06
+
+# Full report validation — collect → analyze → report(daily+weekly+monthly) → dispatch
+bun run src/e2e-run.ts --mode all
 
 # Skip Lark delivery — useful to inspect report JSON before sending
 bun run src/e2e-run.ts --mode weekly --no-dispatch
+bun run src/e2e-run.ts --mode monthly --no-dispatch
 bun run src/e2e-run.ts --mode all --no-dispatch
 ```
 
@@ -157,8 +161,8 @@ When to use each mode:
 
 - **daily**: validate today's collect/analyze/report/dispatch end-to-end
 - **weekly**: validate weekly aggregation in addition to daily (use on Sundays or before a weekly release)
-- **all**: comprehensive check — equivalent to weekly with a monthly-skipped note; exit 0 as long as daily+weekly pass
-- **monthly**: reserved for after `buildMonthlyReport` is implemented
+- **monthly**: validate monthly aggregation in addition to daily; by default this targets the previous complete month, or use `--month YYYY-MM`
+- **all**: comprehensive check — daily, weekly, and monthly reports in one run
 - **`--no-dispatch`**: generate and inspect reports in DB without sending to Lark
 
 Expected runtime outputs:
@@ -168,6 +172,7 @@ Expected runtime outputs:
 - `data/analysis-inputs/<analysis-id>.diff`
 - `data/reports/daily-YYYY-MM-DD.json`
 - `data/reports/weekly-YYYY-MM-DD.json` (weekly/all modes)
+- `data/reports/monthly-YYYY-MM.json` (monthly/all modes)
 - `report_deliveries` rows updated to `sent` after successful Lark delivery
 
 ## Scheduled Run
@@ -178,7 +183,9 @@ Start the app entrypoint:
 bun run dev
 ```
 
-This validates required environment variables, initializes SQLite, registers the pi-agent hello-world tool, and starts the scheduler. Daily and weekly schedules are configured in `config/settings.json`.
+This validates required environment variables, initializes SQLite, registers the pi-agent hello-world tool, and starts the scheduler. Daily, weekly, and monthly schedules are configured in `config/settings.json`.
+
+The monthly cron runs `report → dispatch` only. It synthesizes the previous complete month from already-collected analyses and daily/weekly report digests instead of spending GitHub API quota and LLM budget on another collection pass.
 
 ## Audit Export
 

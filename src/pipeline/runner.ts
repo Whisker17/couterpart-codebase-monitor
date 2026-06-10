@@ -17,12 +17,14 @@ export interface StageResult {
   resolvedProjectCount?: number;
 }
 
-export type ReportMode = "daily" | "weekly" | "monthly";
+export type ReportMode = "daily" | "weekly" | "monthly" | "all";
 
 export interface PipelineContext {
   stageResults: Map<string, StageResult>;
   reportMode: ReportMode;
   timezone?: string;
+  monthlyMonth?: string;
+  skipDailyReport?: boolean;
 }
 
 export interface PipelineStage {
@@ -197,7 +199,13 @@ function logConfigReloadDiff(
 
 export async function runPipeline(
   stages: PipelineStage[],
-  options?: { reportMode?: ReportMode; timezone?: string; healthCheckOptions?: HealthCheckOptions }
+  options?: {
+    reportMode?: ReportMode;
+    timezone?: string;
+    monthlyMonth?: string;
+    skipDailyReport?: boolean;
+    healthCheckOptions?: HealthCheckOptions;
+  }
 ): Promise<Map<string, StageResult>> {
   const { snapshot, prevSnapshot } = reloadSafeConfig();
   let projects: TrackedProject[] = [];
@@ -213,6 +221,8 @@ export async function runPipeline(
     stageResults: new Map(),
     reportMode: options?.reportMode ?? "daily",
     timezone: options?.timezone ?? "UTC",
+    monthlyMonth: options?.monthlyMonth,
+    skipDailyReport: options?.skipDailyReport,
   };
 
   for (const stage of stages) {

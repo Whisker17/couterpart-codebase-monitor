@@ -16,6 +16,7 @@
   "schedule": {
     "dailyCron": "0 9 * * *",
     "weeklyCron": "30 9 * * 1",
+    "monthlyCron": "0 10 1 * *",
     "timezone": "Asia/Shanghai"
   },
   "budget": {

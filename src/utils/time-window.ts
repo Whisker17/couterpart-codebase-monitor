@@ -169,3 +169,14 @@ export function getMonthPeriod(
     isPartial,
   };
 }
+
+export function getPreviousMonthString(timezone: string, now: Date = new Date()): string {
+  const { year: localYear, month: localMonth } = getLocalDateParts(timezone, now);
+  let year = localYear;
+  let month = localMonth - 1;
+  if (month === 0) {
+    year -= 1;
+    month = 12;
+  }
+  return `${year}-${String(month).padStart(2, "0")}`;
+}

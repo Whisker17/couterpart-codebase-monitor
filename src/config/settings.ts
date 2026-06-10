@@ -19,6 +19,7 @@ interface SettingsConfig {
   schedule: {
     dailyCron: string;
     weeklyCron: string;
+    monthlyCron: string;
     timezone: string;
   };
   budget: {
@@ -46,6 +47,7 @@ export interface Settings {
   schedule: {
     dailyCron: string;
     weeklyCron: string;
+    monthlyCron: string;
     timezone: string;
   };
   budget: {

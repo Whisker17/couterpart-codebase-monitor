@@ -40,6 +40,7 @@ describe("getSettings", () => {
     expect(s.budget.warningThreshold).toBe(0.8);
     expect(typeof s.schedule.dailyCron).toBe("string");
     expect(typeof s.schedule.weeklyCron).toBe("string");
+    expect(typeof s.schedule.monthlyCron).toBe("string");
   });
 
   it("resolves llm.baseUrl from env var", () => {
@@ -152,7 +153,7 @@ describe("reloadSafeConfig", () => {
     },
     lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
     github: { tokenEnvVar: "GITHUB_TOKEN" },
-    schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", timezone: "UTC" },
+    schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", monthlyCron: "0 10 1 * *", timezone: "UTC" },
     budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
   };
 
@@ -247,6 +248,7 @@ describe("reloadSafeConfig", () => {
     expect(s.llm.model).toBe("test-model");
     expect(s.github.token).toBe("ghp_test");
     expect(s.schedule.dailyCron).toBe("0 9 * * *");
+    expect(s.schedule.monthlyCron).toBe("0 10 1 * *");
   });
 
   // Test 6: Unsafe fields unchanged on warm reload
@@ -269,7 +271,7 @@ describe("reloadSafeConfig", () => {
         },
         lark: { webhookUrlEnvVar: "OTHER_WEBHOOK" },
         github: { tokenEnvVar: "OTHER_TOKEN" },
-        schedule: { dailyCron: "0 10 * * *", weeklyCron: "0 10 * * 1", timezone: "America/New_York" },
+        schedule: { dailyCron: "0 10 * * *", weeklyCron: "0 10 * * 1", monthlyCron: "0 10 1 * *", timezone: "America/New_York" },
         budget: { monthlyCap: 100, warningThreshold: 0.8, cutoffThreshold: 1.0 },
       })
     );
@@ -323,7 +325,7 @@ describe("getSettings — validation path", () => {
         },
         lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
         github: { tokenEnvVar: "GITHUB_TOKEN" },
-        schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", timezone: "UTC" },
+        schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", monthlyCron: "0 10 1 * *", timezone: "UTC" },
         budget: { monthlyCap: "not_a_number", warningThreshold: 0.8, cutoffThreshold: 1.0 },
       })
     );

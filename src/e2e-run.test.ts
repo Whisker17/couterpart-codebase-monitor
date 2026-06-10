@@ -6,13 +6,10 @@ import {
   getExitCode,
   parseOptions,
   getRunStages,
-  getPipelineReportMode,
-  getModeNotImplementedMessage,
   printPostRunSummary,
-  runE2E,
 } from "./e2e-run";
 import type { StageResult } from "./pipeline/runner";
-import { getYesterdayPeriod } from "./utils/time-window";
+import { getMonthPeriod, getPreviousMonthString, getYesterdayPeriod } from "./utils/time-window";
 
 function result(success: boolean): StageResult {
   return { success, itemsProcessed: 0, errors: success ? [] : ["failed"], durationMs: 0 };
@@ -68,6 +65,21 @@ describe("parseOptions", () => {
     expect(parseOptions(["--mode", "monthly"])).toEqual({ mode: "monthly", noDispatch: false });
   });
 
+  it("parses --month for monthly report targeting", () => {
+    expect(parseOptions(["--mode", "monthly", "--month", "2026-06"])).toEqual({
+      mode: "monthly",
+      noDispatch: false,
+      month: "2026-06",
+    });
+  });
+
+  it("ignores invalid --month values", () => {
+    expect(parseOptions(["--mode", "monthly", "--month", "2026-6"])).toEqual({
+      mode: "monthly",
+      noDispatch: false,
+    });
+  });
+
   it("parses --mode all", () => {
     expect(parseOptions(["--mode", "all"])).toEqual({ mode: "all", noDispatch: false });
   });
@@ -117,54 +129,7 @@ describe("getRunStages", () => {
   });
 });
 
-describe("getPipelineReportMode", () => {
-  it("maps 'all' to 'weekly' since weekly covers daily+weekly", () => {
-    expect(getPipelineReportMode("all")).toBe("weekly");
-  });
-
-  it("passes through 'daily'", () => {
-    expect(getPipelineReportMode("daily")).toBe("daily");
-  });
-
-  it("passes through 'weekly'", () => {
-    expect(getPipelineReportMode("weekly")).toBe("weekly");
-  });
-});
-
-describe("getModeNotImplementedMessage", () => {
-  it("returns null for daily", () => {
-    expect(getModeNotImplementedMessage("daily")).toBeNull();
-  });
-
-  it("returns null for weekly", () => {
-    expect(getModeNotImplementedMessage("weekly")).toBeNull();
-  });
-
-  it("returns null for all", () => {
-    expect(getModeNotImplementedMessage("all")).toBeNull();
-  });
-
-  it("returns error message for monthly", () => {
-    const msg = getModeNotImplementedMessage("monthly");
-    expect(msg).not.toBeNull();
-    expect(msg).toContain("[E2E]");
-    expect(msg).toContain("Monthly mode is not implemented");
-  });
-});
-
-describe("runE2E --mode monthly exits 1 immediately", () => {
-  it("returns exit code 1 for --mode monthly without touching env or DB", async () => {
-    // runE2E checks monthly before validateEnv, so no real env or DB needed
-    const exitCode = await runE2E(["--mode", "monthly"]);
-    expect(exitCode).toBe(1);
-  });
-});
-
-describe("--mode all maps to weekly pipeline mode", () => {
-  it("all mode uses weekly reportMode (covers daily + weekly in one pass)", () => {
-    expect(getPipelineReportMode("all")).toBe("weekly");
-  });
-
+describe("--mode all maps to all pipeline mode", () => {
   it("all mode with --no-dispatch selects 3 stages", () => {
     const { noDispatch } = parseOptions(["--mode", "all", "--no-dispatch"]);
     expect(getRunStages(noDispatch).map((s) => s.name)).toEqual(["collect", "analyze", "report"]);
@@ -317,5 +282,26 @@ describe("printPostRunSummary — no-data check uses merged_at", () => {
   it("returns exit code 0 when daily report is missing and no merged_at analyses in window", () => {
     const exitCode = printPostRunSummary("daily", true, new Map(), 0, db, TZ);
     expect(exitCode).toBe(0);
+  });
+
+  it("prints monthly report when --mode monthly generated a monthly row", () => {
+    const now = new Date("2026-06-10T12:00:00Z");
+    const { startUnix, endUnix } = getMonthPeriod(TZ, getPreviousMonthString(TZ, now), now);
+    db.run(
+      `INSERT INTO reports (type, period_start, period_end, content) VALUES ('monthly', ?, ?, '{}')`,
+      [startUnix, endUnix]
+    );
+
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    try {
+      printPostRunSummary("monthly", true, new Map(), 0, db, TZ, now);
+    } finally {
+      console.log = orig;
+    }
+
+    expect(logs.some((l) => l.includes("monthly"))).toBe(true);
+    expect(logs.some((l) => l.includes("[SKIPPED] monthly"))).toBe(false);
   });
 });

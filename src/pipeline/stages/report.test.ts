@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { rmSync } from "fs";
-import { getYesterdayPeriod, getWeekPeriod } from "../../utils/time-window";
+import { getMonthPeriod, getPreviousMonthString, getYesterdayPeriod, getWeekPeriod } from "../../utils/time-window";
 
 const TEST_DB_PATH = "data/test-report-stage.db";
 let testDb: Database;
@@ -94,6 +94,101 @@ async function defaultGenerateWeeklyPromptReport(db: Database, timezone: string)
 const mockGenerateWeeklyPromptReport = mock(defaultGenerateWeeklyPromptReport);
 mock.module("../../extensions/report-generator/weekly-prompt-report", () => ({
   generateWeeklyPromptReport: mockGenerateWeeklyPromptReport,
+}));
+
+async function defaultGenerateMonthlyPromptReport(
+  db: Database,
+  timezone: string,
+  deps: { month?: string; now?: Date } = {}
+) {
+  const now = deps.now ?? new Date();
+  const periodMonth = deps.month ?? "2026-06";
+  const { startUnix, endUnix, startDate, endDate, month, isPartial } = getMonthPeriod(timezone, periodMonth, now);
+  const rows = db
+    .query<
+      { project_id: string; pr_number: number; title: string; project_url: string },
+      [number, number]
+    >(
+      `SELECT pr.project_id, pr.pr_number, pr.title, p.url AS project_url
+       FROM pull_requests pr
+       JOIN projects p ON p.id = pr.project_id
+       WHERE pr.merged_at >= ? AND pr.merged_at <= ?
+       ORDER BY pr.merged_at DESC`
+    )
+    .all(startUnix, endUnix);
+  const projectCount = new Set(rows.map((row) => row.project_id)).size;
+  const first = rows[0];
+  if (rows.length === 0) {
+    throw new Error("No monthly analyses available for prompt report");
+  }
+  const evidence = first
+    ? `[${first.project_id}#${first.pr_number}](${first.project_url}/pull/${first.pr_number})`
+    : "无证据 PR";
+
+  return {
+    markdown: `## 执行摘要
+
+本月最重要的工程主题来自 ${evidence}。
+
+## 项目轨迹
+
+- ${first?.title ?? "本月无明确事项"}
+
+## 下月观察
+
+- 继续观察代表性变化。
+`,
+    input: {
+      period: {
+        startUnix,
+        endUnix,
+        startDate,
+        endDate,
+        month,
+        label: `${startDate}..${endDate}`,
+        timezone,
+        isPartial,
+        completedDays: 9,
+      },
+      activitySummary: {
+        totalPrs: rows.length,
+        projectCount,
+        directionalShiftCount: 0,
+        notableCount: rows.length,
+        routineCount: 0,
+      },
+      coverage: {
+        dailyReports: { present: 0, nullDigest: 0, missing: 9 },
+        weeklyReports: { present: 0, nullDigest: 0 },
+      },
+      monthlyShape: {
+        categoryCounts: [],
+        narrativeSignals: [],
+        timeBuckets: [],
+      },
+      projects: Array.from(new Set(rows.map((row) => row.project_id))).map((projectId) => ({
+        projectId,
+        organization: "org",
+        repository: "repo-a",
+        prCount: rows.filter((row) => row.project_id === projectId).length,
+        directionalShiftCount: 0,
+        notableCount: rows.filter((row) => row.project_id === projectId).length,
+        routineCount: 0,
+        activeDays: 1,
+        firstHalfPrs: rows.filter((row) => row.project_id === projectId).length,
+        secondHalfPrs: 0,
+        topCategories: [],
+        topSignals: [],
+        representativePrs: [],
+      })),
+    },
+    usage: { inputTokens: 30, outputTokens: 40 },
+  };
+}
+
+const mockGenerateMonthlyPromptReport = mock(defaultGenerateMonthlyPromptReport);
+mock.module("../../extensions/report-generator/monthly-prompt-report", () => ({
+  generateMonthlyPromptReport: mockGenerateMonthlyPromptReport,
 }));
 
 async function defaultGenerateDailyPromptReport(db: Database, timezone: string) {
@@ -315,6 +410,13 @@ function insertAnalyzedPr(
   );
 }
 
+function insertPreviousMonthPr(db: Database, prNumber: number, title = "Previous Month PR"): void {
+  const now = new Date();
+  const previousMonth = getPreviousMonthString(TZ, now);
+  const { startUnix } = getMonthPeriod(TZ, previousMonth, now);
+  insertAnalyzedPr(db, prNumber, title, startUnix + 3600, startUnix + 3600);
+}
+
 describe("report stage", () => {
   beforeEach(() => {
     testDb = new Database(TEST_DB_PATH);
@@ -322,6 +424,8 @@ describe("report stage", () => {
     mockWriteReportFile.mockClear();
     mockGenerateWeeklyPromptReport.mockClear();
     mockGenerateWeeklyPromptReport.mockImplementation(defaultGenerateWeeklyPromptReport);
+    mockGenerateMonthlyPromptReport.mockClear();
+    mockGenerateMonthlyPromptReport.mockImplementation(defaultGenerateMonthlyPromptReport);
     mockGenerateDailyPromptReport.mockClear();
     mockGenerateDailyPromptReport.mockImplementation(defaultGenerateDailyPromptReport);
   });
@@ -473,6 +577,123 @@ describe("report stage", () => {
     const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
     await execute(ctx);
     expect(mockWriteReportFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("stores weekly prompt input in digest_json for future aggregation", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
+    await execute(ctx);
+
+    const row = testDb.query<{ digest_json: string | null }, []>("SELECT digest_json FROM reports WHERE type='weekly'").get()!;
+    expect(row.digest_json).toBeDefined();
+    const digest = JSON.parse(row.digest_json!);
+    expect(digest.period.label).toBe("2026-06-01..2026-06-07");
+    expect(digest.activitySummary.totalPrs).toBeGreaterThan(0);
+  });
+
+  it("writes monthly report row when reportMode is monthly", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 20);
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ };
+    await execute(ctx);
+    const monthlyRow = testDb.query<{ type: string }, []>("SELECT type FROM reports WHERE type='monthly'").get();
+    expect(monthlyRow).toBeDefined();
+    expect(monthlyRow!.type).toBe("monthly");
+  });
+
+  it("monthly run calls writeReportFile twice (daily + monthly)", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 21);
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ };
+    await execute(ctx);
+    expect(mockWriteReportFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("monthly run is idempotent — running twice produces only one monthly row", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 22);
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ };
+    await execute(ctx);
+    await execute(ctx);
+    const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='monthly'").get()!;
+    expect(count.n).toBe(1);
+  });
+
+  it("monthly report content contains full GitHub PR URL", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 24);
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ };
+    await execute(ctx);
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='monthly'").get()!;
+    expect(row.content).toContain("https://github.com/org/repo-a/pull/24");
+  });
+
+  it("stores monthly prompt input in digest_json for future aggregation", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 27);
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ };
+    await execute(ctx);
+
+    const row = testDb.query<{ digest_json: string | null }, []>("SELECT digest_json FROM reports WHERE type='monthly'").get()!;
+    expect(row.digest_json).toBeDefined();
+    const digest = JSON.parse(row.digest_json!);
+    expect(digest.period.month).toBe(getPreviousMonthString(TZ));
+    expect(digest.activitySummary.totalPrs).toBeGreaterThan(0);
+  });
+
+  it("monthly run can target an explicit month", async () => {
+    const { startUnix } = getMonthPeriod(TZ, "2026-06", new Date("2026-07-10T12:00:00Z"));
+    insertAnalyzedPr(testDb, 26, "Explicit Month PR", startUnix + 3600, startUnix + 3600);
+
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ, monthlyMonth: "2026-06" };
+    await execute(ctx);
+
+    const row = testDb
+      .query<{ period_start: number; content: string }, []>("SELECT period_start, content FROM reports WHERE type='monthly'")
+      .get()!;
+    expect(row.period_start).toBe(startUnix);
+    expect(row.content).toContain("https://github.com/org/repo-a/pull/26");
+  });
+
+  it("monthly report-only runs do not write a daily report row", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 28);
+    const ctx = {
+      stageResults: new Map(),
+      reportMode: "monthly" as const,
+      timezone: TZ,
+      skipDailyReport: true,
+    };
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(true);
+    expect(testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='daily'").get()!.n).toBe(0);
+    expect(testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='monthly'").get()!.n).toBe(1);
+  });
+
+  it("does not write monthly report row when the target month has no analyses", async () => {
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ, monthlyMonth: "2026-06" };
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.some((error) => error.includes("No monthly analyses available"))).toBe(true);
+
+    const count = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type='monthly'").get()!;
+    expect(count.n).toBe(0);
+  });
+
+  it("all run writes daily, weekly, and monthly report rows", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 25);
+    const ctx = { stageResults: new Map(), reportMode: "all" as const, timezone: TZ };
+    await execute(ctx);
+
+    const types = testDb
+      .query<{ type: string }, []>("SELECT type FROM reports ORDER BY type")
+      .all()
+      .map((row) => row.type);
+    expect(types).toEqual(["daily", "monthly", "weekly"]);
+    expect(mockWriteReportFile).toHaveBeenCalledTimes(3);
   });
 
   it("daily report still succeeds on weekly run", async () => {
@@ -634,6 +855,25 @@ describe("report stage", () => {
       .query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type = 'weekly'")
       .get()!;
     expect(weeklyCount.n).toBe(0);
+  });
+
+  it("does not fall back to a rule-based monthly card when prompt generation fails", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 23);
+    mockGenerateMonthlyPromptReport.mockImplementationOnce(async () => {
+      throw new Error("prompt failed");
+    });
+
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ };
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.some((error) => error.includes("Monthly prompt report failed"))).toBe(true);
+
+    const monthlyCount = testDb
+      .query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type = 'monthly'")
+      .get()!;
+    expect(monthlyCount.n).toBe(0);
   });
 
   it("creates reports row with empty digest when no analyses exist", async () => {
@@ -970,5 +1210,76 @@ describe("report stage", () => {
     const row = testDb.query<{ completeness: string }, []>("SELECT completeness FROM reports WHERE type='daily'").get()!;
     const completeness = JSON.parse(row.completeness);
     expect(completeness.subscriptionNote).toBeUndefined();
+  });
+
+  it("weekly card shows coverage warning when daily reports are missing", async () => {
+    insertTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
+    await execute(ctx);
+
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='weekly'").get()!;
+    const card = JSON.parse(row.content);
+    const summaryEl = card.elements.find((e: { tag: string }) => e.tag === "markdown");
+    expect(summaryEl.content).toContain("⚠");
+    expect(summaryEl.content).toContain("天缺失");
+  });
+
+  it("weekly card omits coverage warning when all days are present", async () => {
+    insertTestData(testDb);
+    mockGenerateWeeklyPromptReport.mockImplementationOnce(async (db, timezone) => {
+      const base = await defaultGenerateWeeklyPromptReport(db, timezone);
+      return {
+        ...base,
+        input: {
+          ...base.input,
+          dailyDigestCoverage: { present: 7, nullDigest: 0, missing: 0 },
+        },
+      };
+    });
+    const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
+    await execute(ctx);
+
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='weekly'").get()!;
+    const card = JSON.parse(row.content);
+    const summaryEl = card.elements.find((e: { tag: string }) => e.tag === "markdown");
+    expect(summaryEl.content).not.toContain("天缺失");
+  });
+
+  it("monthly card shows coverage warning when daily reports are missing", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 30);
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ };
+    await execute(ctx);
+
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='monthly'").get()!;
+    const card = JSON.parse(row.content);
+    const summaryEl = card.elements.find((e: { tag: string }) => e.tag === "markdown");
+    expect(summaryEl.content).toContain("⚠");
+    expect(summaryEl.content).toContain("天缺失");
+  });
+
+  it("monthly card omits coverage warning when all days are present", async () => {
+    insertTestData(testDb);
+    insertPreviousMonthPr(testDb, 31);
+    mockGenerateMonthlyPromptReport.mockImplementationOnce(async (db, timezone, deps) => {
+      const base = await defaultGenerateMonthlyPromptReport(db, timezone, deps);
+      return {
+        ...base,
+        input: {
+          ...base.input,
+          coverage: {
+            dailyReports: { present: 30, nullDigest: 0, missing: 0 },
+            weeklyReports: { present: 4, nullDigest: 0 },
+          },
+        },
+      };
+    });
+    const ctx = { stageResults: new Map(), reportMode: "monthly" as const, timezone: TZ };
+    await execute(ctx);
+
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='monthly'").get()!;
+    const card = JSON.parse(row.content);
+    const summaryEl = card.elements.find((e: { tag: string }) => e.tag === "markdown");
+    expect(summaryEl.content).not.toContain("天缺失");
   });
 });

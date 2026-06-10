@@ -6,7 +6,8 @@ import { stage as analyze } from "../pipeline/stages/analyze";
 import { stage as report } from "../pipeline/stages/report";
 import { stage as dispatch } from "../pipeline/stages/dispatch";
 
-const STAGES = [collect, analyze, report, dispatch];
+const FULL_PIPELINE_STAGES = [collect, analyze, report, dispatch];
+const REPORT_ONLY_STAGES = [report, dispatch];
 
 function validateTimezone(tz: string): void {
   try {
@@ -26,21 +27,26 @@ export function registerScheduler(): void {
 
   new Cron(schedule.dailyCron, { timezone }, async () => {
     console.log("[Scheduler] Daily pipeline triggered");
-    await runPipeline(STAGES, { timezone });
+    await runPipeline(FULL_PIPELINE_STAGES, { timezone });
   });
 
   new Cron(schedule.weeklyCron, { timezone }, async () => {
     console.log("[Scheduler] Weekly pipeline triggered");
-    await runPipeline(STAGES, { reportMode: "weekly", timezone });
+    await runPipeline(FULL_PIPELINE_STAGES, { reportMode: "weekly", timezone });
+  });
+
+  new Cron(schedule.monthlyCron, { timezone }, async () => {
+    console.log("[Scheduler] Monthly pipeline triggered");
+    await runPipeline(REPORT_ONLY_STAGES, { reportMode: "monthly", timezone, skipDailyReport: true });
   });
 
   console.log(
-    `[Scheduler] Registered daily (${schedule.dailyCron}) and weekly (${schedule.weeklyCron}) jobs, timezone=${timezone}`
+    `[Scheduler] Registered daily (${schedule.dailyCron}), weekly (${schedule.weeklyCron}), and monthly (${schedule.monthlyCron}) jobs, timezone=${timezone}`
   );
 }
 
 export async function runNow(): Promise<void> {
   const { schedule } = getSettings();
   console.log("[Scheduler] Manual pipeline trigger");
-  await runPipeline(STAGES, { timezone: schedule.timezone });
+  await runPipeline(FULL_PIPELINE_STAGES, { timezone: schedule.timezone });
 }

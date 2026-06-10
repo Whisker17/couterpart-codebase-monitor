@@ -8,6 +8,7 @@ export interface MonthlyPromptCardInput {
   totalPrs: number;
   projectCount: number;
   isPartial: boolean;
+  dailyCoverage?: { present: number; missing: number; total: number };
 }
 
 const COLLAPSED_SECTION_TITLES = new Set(["下月观察", "证据索引"]);
@@ -17,6 +18,9 @@ function visibleSummary(input: MonthlyPromptCardInput): string {
     `**范围**：${input.periodLabel}`,
     `**规模**：${input.totalPrs} 个 PR · ${input.projectCount} 个项目`,
   ];
+  if (input.dailyCoverage && input.dailyCoverage.missing > 0) {
+    lines.push(`⚠ 本月 ${input.dailyCoverage.total} 天中 ${input.dailyCoverage.present} 天有日报数据，${input.dailyCoverage.missing} 天缺失`);
+  }
   if (input.isPartial) {
     lines.push("_本月报为月初至今观察，尚非完整自然月。_");
   }
