@@ -66,6 +66,64 @@ Tracked projects live in `config/projects.json`. Each project needs:
 }
 ```
 
+## External Project Subscription
+
+Set `PROJECTS_SUBSCRIPTION_URL` in `.env` to load tracked projects from an external JSON file instead of the local `config/projects.json`. When set, the remote list takes precedence and `config/projects.json` is not read.
+
+```env
+PROJECTS_SUBSCRIPTION_URL=https://raw.githubusercontent.com/your-org/your-repo/main/projects.json
+```
+
+**Raw URL requirement**: the value must be a raw file URL that returns plain JSON — not a GitHub `blob` page URL. Use the `https://raw.githubusercontent.com/…` form:
+
+```
+# Correct — raw content URL
+https://raw.githubusercontent.com/your-org/your-repo/main/projects.json
+
+# Wrong — GitHub blob page URL (returns HTML, not JSON)
+https://github.com/your-org/your-repo/blob/main/projects.json
+```
+
+### Subscription JSON format
+
+The external file must be a JSON array of project objects. Each entry requires `url`; `tags` and `notes` are optional:
+
+```json
+[
+  {
+    "url": "https://github.com/vercel/next.js",
+    "tags": ["frontend", "framework"],
+    "notes": "Primary frontend framework"
+  },
+  {
+    "url": "https://github.com/oven-sh/bun"
+  }
+]
+```
+
+Fields:
+
+- `url` (required) — full GitHub repository URL.
+- `tags` (optional) — array of strings; used to build LLM project context.
+- `notes` (optional) — free-form string; surfaced in LLM prompts.
+
+### Local JSON fallback
+
+When `PROJECTS_SUBSCRIPTION_URL` is not set, the pipeline falls back to `config/projects.json`. The local format uses explicit `org` and `repo` fields:
+
+```json
+{
+  "org": "vercel",
+  "repo": "next.js",
+  "url": "https://github.com/vercel/next.js",
+  "tags": ["frontend", "framework", "react"]
+}
+```
+
+### Known behavior: switching from subscription to local
+
+Removing `PROJECTS_SUBSCRIPTION_URL` does not automatically deactivate projects that were previously loaded from the external subscription. Those rows remain active in SQLite until an operator explicitly deactivates them or a migration path is defined in a follow-up.
+
 ## Local E2E Run
 
 The E2E runner is a manual validation tool that drives the full pipeline against real external services.
