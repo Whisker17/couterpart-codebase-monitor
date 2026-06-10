@@ -78,7 +78,7 @@ function insertAnalyzedPr(
   const [org, repo] = params.projectId.split("/");
   db.run(
     "INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)",
-    [params.projectId, org, repo, `https://github.com/${params.projectId}`]
+    [params.projectId, org!, repo!, `https://github.com/${params.projectId}`]
   );
   db.run(
     `INSERT INTO pull_requests
@@ -299,6 +299,8 @@ describe("monthly prompt lab", () => {
         month: "2026-06",
         now,
         runId: "test-run",
+        dryRun: false,
+        maxOutputTokens: 8192,
       },
       {
         db,
