@@ -340,9 +340,12 @@ describe("runPipeline — config reload cold start failures", () => {
 
   let settingsTmp: string;
   let projectsTmp: string;
+  let originalProjectsSubscriptionUrl: string | undefined;
 
   beforeEach(() => {
     const os = require("node:os");
+    originalProjectsSubscriptionUrl = process.env["PROJECTS_SUBSCRIPTION_URL"];
+    delete process.env["PROJECTS_SUBSCRIPTION_URL"];
     settingsTmp = join(os.tmpdir(), `runner-settings-${Date.now()}.json`);
     projectsTmp = join(os.tmpdir(), `runner-projects-${Date.now()}.json`);
     writeFileSync(settingsTmp, JSON.stringify(validSettings));
@@ -370,6 +373,8 @@ describe("runPipeline — config reload cold start failures", () => {
     delete process.env["LLM_BASE_URL"];
     delete process.env["LLM_API_KEY"];
     delete process.env["GITHUB_TOKEN"];
+    if (originalProjectsSubscriptionUrl === undefined) delete process.env["PROJECTS_SUBSCRIPTION_URL"];
+    else process.env["PROJECTS_SUBSCRIPTION_URL"] = originalProjectsSubscriptionUrl;
   });
 
   it("settings cold start failure throws before any stage executes", async () => {

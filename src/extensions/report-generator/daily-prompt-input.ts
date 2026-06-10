@@ -106,6 +106,15 @@ export function buildDailyPromptInput(
   now: Date = new Date()
 ): DailyPromptInput {
   const { startUnix, endUnix } = getYesterdayPeriod(timezone, now);
+  return buildDailyPromptInputForPeriod(db, timezone, startUnix, endUnix);
+}
+
+export function buildDailyPromptInputForPeriod(
+  db: Database,
+  timezone: string,
+  startUnix: number,
+  endUnix: number
+): DailyPromptInput {
   const date = formatDate(startUnix, timezone);
 
   const rows = db

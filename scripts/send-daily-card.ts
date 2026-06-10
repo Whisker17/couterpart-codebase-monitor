@@ -7,30 +7,22 @@
  *   bun run scripts/send-daily-card.ts --date 2026-06-07
  *   bun run scripts/send-daily-card.ts --prompt prompts/reports/daily/significance-first.md
  */
-import { readFile } from "fs/promises";
-import { generateText } from "ai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { getDb, closeDb } from "../src/storage/db";
 import { getSettings } from "../src/config/settings";
-import { buildDailyPromptInput, renderDailyPrompt } from "../src/extensions/report-generator/daily-prompt-input";
+import { buildDailyPromptInput } from "../src/extensions/report-generator/daily-prompt-input";
+import {
+  DEFAULT_DAILY_PROMPT_PATH,
+  generateDailyPromptReport,
+} from "../src/extensions/report-generator/daily-prompt-report";
 import { buildDailyPromptCard } from "../src/extensions/report-generator/templates/daily-prompt-card";
 import { sendCard } from "../src/extensions/lark-dispatcher/webhook";
-
-const DEFAULT_PROMPT = "prompts/reports/daily/structured-table.md";
-const MAX_OUTPUT_TOKENS = 4096;
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const dateIdx = args.indexOf("--date");
 const dateArg = dateIdx !== -1 ? args[dateIdx + 1] : undefined;
 const promptIdx = args.indexOf("--prompt");
-const promptPath = promptIdx !== -1 ? args[promptIdx + 1]! : DEFAULT_PROMPT;
-
-function resolveBaseUrl(rawUrl: string): string | undefined {
-  if (!rawUrl) return undefined;
-  const trimmed = rawUrl.replace(/\/+$/, "");
-  return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
-}
+const promptPath = promptIdx !== -1 ? args[promptIdx + 1]! : DEFAULT_DAILY_PROMPT_PATH;
 
 const db = getDb();
 const settings = getSettings();
@@ -46,44 +38,32 @@ try {
     process.exit(0);
   }
 
-  const template = await readFile(promptPath, "utf-8");
-  const prompt = renderDailyPrompt(template, input);
-
-  let markdown: string;
-  let usage = { inputTokens: 0, outputTokens: 0 };
-
-  if (dryRun) {
-    markdown = `## 总览\n\nDry run — ${input.activitySummary.totalPrs} PRs across ${input.activitySummary.projectCount} projects.\nReview the rendered prompt at data/reports/prompt-lab/daily-card-test-prompt.md`;
-    await Bun.write("data/reports/prompt-lab/daily-card-test-prompt.md", prompt);
-    console.log("[send-daily-card] Prompt written to data/reports/prompt-lab/daily-card-test-prompt.md");
-  } else {
-    if (!settings.llm.apiKey || !settings.llm.baseUrl) {
-      console.error("[send-daily-card] LLM credentials missing. Set LLM_BASE_URL and LLM_API_KEY, or use --dry-run.");
-      process.exit(1);
-    }
-    const anthropic = createAnthropic({
-      baseURL: resolveBaseUrl(settings.llm.baseUrl),
-      apiKey: settings.llm.apiKey,
-    });
-    const result = await generateText({
-      model: anthropic(settings.llm.model),
-      prompt,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      maxRetries: 2,
-    });
-    markdown = result.text;
-    usage = { inputTokens: result.usage.inputTokens ?? 0, outputTokens: result.usage.outputTokens ?? 0 };
-  }
+  const report = await generateDailyPromptReport(db, tz, {
+    promptPath,
+    now,
+    ...(dryRun
+      ? {
+          generateFn: async ({ prompt }) => {
+            await Bun.write("data/reports/prompt-lab/daily-card-test-prompt.md", prompt);
+            console.log("[send-daily-card] Prompt written to data/reports/prompt-lab/daily-card-test-prompt.md");
+            return {
+              text: `## 总览\n\nDry run — ${input.activitySummary.totalPrs} PRs across ${input.activitySummary.projectCount} projects.\nReview the rendered prompt at data/reports/prompt-lab/daily-card-test-prompt.md`,
+              usage: { inputTokens: 0, outputTokens: 0 },
+            };
+          },
+        }
+      : {}),
+  });
 
   const card = buildDailyPromptCard({
-    date: input.period.date,
-    markdown,
-    totalPrs: input.activitySummary.totalPrs,
-    projectCount: input.activitySummary.projectCount,
-    directionalShiftCount: input.activitySummary.directionalShiftCount,
-    notableCount: input.activitySummary.notableCount,
-    routineCount: input.activitySummary.routineCount,
-    projects: input.projects,
+    date: report.input.period.date,
+    markdown: report.markdown,
+    totalPrs: report.input.activitySummary.totalPrs,
+    projectCount: report.input.activitySummary.projectCount,
+    directionalShiftCount: report.input.activitySummary.directionalShiftCount,
+    notableCount: report.input.activitySummary.notableCount,
+    routineCount: report.input.activitySummary.routineCount,
+    projects: report.input.projects,
   });
 
   const json = JSON.stringify(card, null, 2);
@@ -93,7 +73,7 @@ try {
 
   console.log(`[send-daily-card] Card: ${bytes} bytes, ${input.period.date}`);
   console.log(`[send-daily-card] PRs: ${input.activitySummary.totalPrs} (🔴${input.activitySummary.directionalShiftCount} 🟡${input.activitySummary.notableCount} ⚪${input.activitySummary.routineCount})`);
-  if (!dryRun) console.log(`[send-daily-card] Usage: input=${usage.inputTokens}, output=${usage.outputTokens}`);
+  if (!dryRun) console.log(`[send-daily-card] Usage: input=${report.usage.inputTokens}, output=${report.usage.outputTokens}`);
   console.log(`[send-daily-card] Saved to ${outPath}`);
 
   if (dryRun) {

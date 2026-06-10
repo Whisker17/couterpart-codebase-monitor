@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { LarkCollapsiblePanel, LarkElement, LarkTableElement } from "./daily-card";
+import type { LarkCollapsiblePanel, LarkElement, LarkTableElement } from "./lark-card";
 import { buildDailyPromptCard } from "./daily-prompt-card";
 
 function panels(elements: LarkElement[]): LarkCollapsiblePanel[] {

@@ -1,4 +1,4 @@
-import type { LarkCard, LarkElement, LarkText } from "./daily-card";
+import type { LarkCard, LarkElement, LarkText } from "./lark-card";
 import { normalizeLarkMarkdown, splitMarkdownSections } from "./weekly-prompt-card";
 
 export interface MonthlyPromptCardInput {

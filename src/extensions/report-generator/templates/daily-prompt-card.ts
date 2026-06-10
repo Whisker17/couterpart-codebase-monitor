@@ -1,4 +1,4 @@
-import type { LarkCard, LarkElement } from "./daily-card";
+import type { LarkCard, LarkElement } from "./lark-card";
 import {
   normalizeLarkMarkdown,
   splitMarkdownSections,
@@ -14,6 +14,7 @@ export interface DailyPromptCardInput {
   directionalShiftCount: number;
   notableCount: number;
   routineCount: number;
+  notices?: string[];
   projects?: DailyPromptCardProject[];
 }
 
@@ -61,10 +62,15 @@ function resolveHeaderTemplate(input: DailyPromptCardInput): string {
 }
 
 function visibleMetricLine(input: DailyPromptCardInput): string {
-  return [
+  const lines = [
     `**范围**：${input.totalPrs} 个 PR · ${input.projectCount} 个项目`,
     `🔴 ${input.directionalShiftCount} · 🟡 ${input.notableCount} · ⚪ ${input.routineCount}`,
-  ].join("\n");
+  ];
+  for (const notice of input.notices ?? []) {
+    const normalized = notice.trim();
+    if (normalized) lines.push(`⚠ ${normalized}`);
+  }
+  return lines.join("\n");
 }
 
 function stripMarkdownDividers(markdown: string): string {

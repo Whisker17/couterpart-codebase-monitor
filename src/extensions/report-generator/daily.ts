@@ -1,6 +1,6 @@
 import { getDb } from "../../storage/db";
-import type { ProjectAnalysis, GroupedAnalyses } from "./templates/daily-card";
-import { buildPrHtmlUrl } from "./templates/daily-card";
+import type { ProjectAnalysis, GroupedAnalyses } from "./report-data";
+import { buildPrHtmlUrl } from "./report-data";
 import { getBudgetStatus } from "../../utils/budget-tracker";
 import { getYesterdayPeriod } from "../../utils/time-window";
 

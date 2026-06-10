@@ -87,7 +87,7 @@ mock.module("../../config/projects", () => ({
   getMantleConfig: () => TEST_MANTLE_CONFIG,
 }));
 
-const { selectWeeklyCandidates } = await import("./weekly");
+const { selectWeeklyCandidates } = await import("./weekly-candidates");
 
 // ---------------------------------------------------------------------------
 // Fixed time reference
