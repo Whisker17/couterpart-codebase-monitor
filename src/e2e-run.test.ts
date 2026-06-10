@@ -73,6 +73,14 @@ describe("parseOptions", () => {
     });
   });
 
+  it("parses --timezone override", () => {
+    expect(parseOptions(["--mode", "monthly", "--timezone", "Asia/Shanghai"])).toEqual({
+      mode: "monthly",
+      noDispatch: false,
+      timezone: "Asia/Shanghai",
+    });
+  });
+
   it("ignores invalid --month values", () => {
     expect(parseOptions(["--mode", "monthly", "--month", "2026-6"])).toEqual({
       mode: "monthly",

@@ -65,6 +65,7 @@ const SCHEMA = `
     language TEXT,
     topics TEXT,
     last_synced_at INTEGER,
+    last_collected_at INTEGER,
     active INTEGER NOT NULL DEFAULT 1,
     inactive_reason TEXT,
     source TEXT DEFAULT 'local',
@@ -416,7 +417,7 @@ describe("collect stage", () => {
     expect(callArg.getTime()).toBe((startUnix - 1) * 1000);
   });
 
-  it("skipSyncUpdate: does not update last_synced_at when true", async () => {
+  it("skipSyncUpdate: does not update last_synced_at or last_collected_at when true", async () => {
     testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
     testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
 
@@ -429,8 +430,29 @@ describe("collect stage", () => {
     await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps(), options);
 
     const row = testDb
-      .query("SELECT last_synced_at FROM projects WHERE id = 'org/repo'")
-      .get() as { last_synced_at: number | null } | null;
+      .query("SELECT last_synced_at, last_collected_at FROM projects WHERE id = 'org/repo'")
+      .get() as { last_synced_at: number | null; last_collected_at: number | null } | null;
     expect(row!.last_synced_at).toBeNull();
+    expect(row!.last_collected_at).toBeNull();
+  });
+
+  it("updates last_collected_at even when 0 PRs found", async () => {
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org2/repo2', 'org2', 'repo2', 'https://github.com/org2/repo2')`);
+
+    // Both projects return 0 PRs
+    mockFetchMergedPRs.mockResolvedValue([]);
+
+    const before = Math.floor(Date.now() / 1000) - 1;
+    await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+
+    const row = testDb
+      .query("SELECT last_synced_at, last_collected_at FROM projects WHERE id = 'org/repo'")
+      .get() as { last_synced_at: number | null; last_collected_at: number | null } | null;
+    // last_synced_at should remain null (no PRs to advance it)
+    expect(row!.last_synced_at).toBeNull();
+    // last_collected_at must be set to a recent timestamp
+    expect(row!.last_collected_at).not.toBeNull();
+    expect(row!.last_collected_at!).toBeGreaterThanOrEqual(before);
   });
 });

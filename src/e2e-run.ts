@@ -25,6 +25,7 @@ export interface E2EOptions {
   mode: RunMode;
   noDispatch: boolean;
   month?: string;
+  timezone?: string;
 }
 
 const VALID_MODES: RunMode[] = ["daily", "weekly", "monthly", "all"];
@@ -41,6 +42,7 @@ export function parseOptions(argv: string[]): E2EOptions {
   let mode: RunMode = "daily";
   let noDispatch = false;
   let month: string | undefined;
+  let timezone: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--mode" && i + 1 < argv.length) {
@@ -55,10 +57,19 @@ export function parseOptions(argv: string[]): E2EOptions {
       const value = argv[i + 1];
       if (value !== undefined) month = parseMonth(value);
       i++;
+    } else if (argv[i] === "--timezone" && i + 1 < argv.length) {
+      const value = argv[i + 1];
+      if (value !== undefined) timezone = value;
+      i++;
     }
   }
 
-  return month ? { mode, noDispatch, month } : { mode, noDispatch };
+  return {
+    mode,
+    noDispatch,
+    ...(month ? { month } : {}),
+    ...(timezone ? { timezone } : {}),
+  };
 }
 
 export function getRunStages(noDispatch: boolean): PipelineStage[] {
@@ -289,7 +300,7 @@ export function printPostRunSummary(
 }
 
 export async function runE2E(argv: string[] = process.argv.slice(2)): Promise<number> {
-  const { mode, noDispatch, month } = parseOptions(argv);
+  const { mode, noDispatch, month, timezone: timezoneOverride } = parseOptions(argv);
 
   validateEnv();
   const db = getDb();
@@ -304,7 +315,7 @@ export async function runE2E(argv: string[] = process.argv.slice(2)): Promise<nu
   const stageNames = stages.map((s) => s.name).join(" → ");
   console.log(`[E2E] Stages: ${stageNames}`);
 
-  const timezone = getSettings().schedule.timezone;
+  const timezone = timezoneOverride ?? getSettings().schedule.timezone;
 
   const start = Date.now();
   const results = await runPipeline(stages, { reportMode, timezone, monthlyMonth: month });

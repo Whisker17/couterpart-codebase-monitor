@@ -150,6 +150,11 @@ export async function execute(
         db.run(`UPDATE projects SET last_synced_at = ? WHERE id = ?`, [maxMergedAt, pid]);
       }
 
+      // Record that the collector successfully checked this project (even when 0 PRs found)
+      if (!options.skipSyncUpdate) {
+        db.run(`UPDATE projects SET last_collected_at = unixepoch() WHERE id = ?`, [pid]);
+      }
+
       totalPRs += prs.length;
     } catch (err) {
       if (err instanceof RepoNotFoundError) {

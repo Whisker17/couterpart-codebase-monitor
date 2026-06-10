@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { closeDatabaseHandle } from "./db";
-import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005 } from "./schema";
+import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006 } from "./schema";
 import { syncSubscriptionProjects } from "../config/projects";
 import type { TrackedProject } from "../config/projects";
 
@@ -36,6 +36,38 @@ function buildTestDbWithAll(): Database {
   db.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("005_add_subscription_fields");
   return db;
 }
+
+describe("MIGRATION_006 — last_collected_at column", () => {
+  let db: Database;
+
+  afterEach(() => {
+    db?.close();
+  });
+
+  it("adds last_collected_at column to projects", () => {
+    db = new Database(":memory:");
+    db.exec("PRAGMA foreign_keys=ON");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS migrations (
+        version TEXT PRIMARY KEY,
+        applied_at INTEGER DEFAULT (unixepoch())
+      )
+    `);
+    db.exec(MIGRATION_001);
+    db.exec(MIGRATION_002);
+    db.exec(MIGRATION_003);
+    db.exec(MIGRATION_004);
+    db.exec(MIGRATION_005);
+    db.exec(MIGRATION_006);
+
+    const cols = db
+      .query<{ name: string }, []>("PRAGMA table_info(projects)")
+      .all()
+      .map((r) => r.name);
+
+    expect(cols).toContain("last_collected_at");
+  });
+});
 
 describe("MIGRATION_004 — digest_json column", () => {
   let db: Database;

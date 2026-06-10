@@ -26,3 +26,8 @@ export const MIGRATION_005 = readFileSync(
   join(import.meta.dir, "migrations/005_add_subscription_fields.sql"),
   "utf-8"
 );
+
+export const MIGRATION_006 = readFileSync(
+  join(import.meta.dir, "migrations/006_add_last_collected_at.sql"),
+  "utf-8"
+);

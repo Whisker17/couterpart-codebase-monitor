@@ -1,11 +1,12 @@
 import { Database, constants } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
-import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005 } from "./schema";
+import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006 } from "./schema";
 
 const DB_PATH = "data/monitor.db";
 
 let db: Database | null = null;
+let dbPath = DB_PATH;
 
 interface ClosableDatabase {
   fileControl: (op: number, value: number) => unknown;
@@ -60,18 +61,30 @@ function runMigrations(database: Database): void {
     database.exec(MIGRATION_005);
     database.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("005_add_subscription_fields");
   }
+
+  if (!applied.includes("006_add_last_collected_at")) {
+    database.exec(MIGRATION_006);
+    database.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("006_add_last_collected_at");
+  }
 }
 
 export function getDb(): Database {
   if (db) return db;
 
-  mkdirSync(dirname(DB_PATH), { recursive: true });
-  db = new Database(DB_PATH);
+  mkdirSync(dirname(dbPath), { recursive: true });
+  db = new Database(dbPath);
 
   applyPragmas(db);
   runMigrations(db);
 
   return db;
+}
+
+export function setDbPathForProcess(path: string): void {
+  if (db) {
+    throw new Error("Cannot change database path after the database has been opened");
+  }
+  dbPath = path;
 }
 
 export function closeDb(): void {
