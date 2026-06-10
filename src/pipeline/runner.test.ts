@@ -399,4 +399,25 @@ describe("runPipeline — config reload cold start failures", () => {
     await expect(runPipeline([stage])).rejects.toThrow("[config-reload]");
     expect(executed).toBe(false);
   });
+
+  it("subscription mode: pipeline reaches collect stage when projects.json is absent", async () => {
+    unlinkSync(projectsTmp);
+    const origUrl = process.env["PROJECTS_SUBSCRIPTION_URL"];
+    process.env["PROJECTS_SUBSCRIPTION_URL"] = "https://subscription.example.com/projects.json";
+    let stageReached = false;
+    const stage: PipelineStage = {
+      name: "collect",
+      execute: async () => {
+        stageReached = true;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+    try {
+      await runPipeline([stage]);
+      expect(stageReached).toBe(true);
+    } finally {
+      if (origUrl === undefined) delete process.env["PROJECTS_SUBSCRIPTION_URL"];
+      else process.env["PROJECTS_SUBSCRIPTION_URL"] = origUrl;
+    }
+  });
 });
