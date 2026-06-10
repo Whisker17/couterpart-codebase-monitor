@@ -200,7 +200,13 @@ export async function runPipeline(
   options?: { reportMode?: ReportMode; timezone?: string; healthCheckOptions?: HealthCheckOptions }
 ): Promise<Map<string, StageResult>> {
   const { snapshot, prevSnapshot } = reloadSafeConfig();
-  const { projects, prevProjects } = reloadTrackedProjects();
+  let projects: TrackedProject[] = [];
+  let prevProjects: TrackedProject[] | null = null;
+  if (!process.env.PROJECTS_SUBSCRIPTION_URL) {
+    const reload = reloadTrackedProjects();
+    projects = reload.projects;
+    prevProjects = reload.prevProjects;
+  }
   logConfigReloadDiff(prevSnapshot, snapshot, prevProjects, projects);
 
   const ctx: PipelineContext = {
