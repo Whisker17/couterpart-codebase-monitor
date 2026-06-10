@@ -14,15 +14,15 @@ import { execute as analyzeExecute } from "../src/pipeline/stages/analyze";
 import type { AnalyzeOptions } from "../src/pipeline/stages/analyze";
 import { buildDailyReportForPeriod } from "../src/extensions/report-generator/daily";
 import type { DailyReportData } from "../src/extensions/report-generator/daily";
-import { buildFinalCard } from "../src/pipeline/stages/report";
-import type { FinalCardResult } from "../src/pipeline/stages/report";
+import { buildDailyPromptCard } from "../src/extensions/report-generator/templates/daily-prompt-card";
+import { generateDailyPromptReportForPeriod } from "../src/extensions/report-generator/daily-prompt-report";
+import type { DailyPromptReportResult } from "../src/extensions/report-generator/daily-prompt-report";
 import { writeReportFile, type ReportCompleteness, type ReportFileContent } from "../src/extensions/report-generator/file-writer";
 import { getTrackedProjects } from "../src/config/projects";
 import type { TrackedProject } from "../src/config/projects";
 import { fetchMergedPRs, fetchRepoMetadata, fetchPRStats } from "../src/extensions/github-collector/fetcher";
 import { fetchAndStoreDiff } from "../src/extensions/github-collector/diff-fetcher";
 import type { PipelineContext, StageResult } from "../src/pipeline/runner";
-import type { GroupedAnalyses } from "../src/extensions/report-generator/templates/daily-card";
 import { Database } from "bun:sqlite";
 
 export interface DaySummary {
@@ -46,7 +46,13 @@ export interface BackfillDeps {
   collectDeps: CollectDeps;
   getTrackedProjects: () => TrackedProject[];
   buildDailyReportForPeriod: (startUnix: number, endUnix: number) => DailyReportData;
-  buildFinalCard: (date: string, grouped: GroupedAnalyses, partialWarning: string | undefined) => FinalCardResult;
+  generateDailyPromptReportForPeriod: (
+    db: Database,
+    timezone: string,
+    startUnix: number,
+    endUnix: number
+  ) => Promise<DailyPromptReportResult>;
+  buildDailyPromptCard: typeof buildDailyPromptCard;
   writeReportFile: (content: ReportFileContent) => string;
 }
 
@@ -66,7 +72,8 @@ function makeProductionDeps(): BackfillDeps {
     collectDeps: realCollectDeps,
     getTrackedProjects,
     buildDailyReportForPeriod,
-    buildFinalCard,
+    generateDailyPromptReportForPeriod,
+    buildDailyPromptCard,
     writeReportFile,
   };
 }
@@ -329,14 +336,26 @@ export async function runBackfill(
       cleanupDeliveries(db, periodStartUnix, periodEndUnix);
       console.log(`[Backfill] ${dayString}: empty day (${dayStatus})`);
     } else {
-      // Non-empty day: generate card and write file
-      const { card, errors: cardErrors } = deps.buildFinalCard(dayString, grouped, undefined);
-      if (cardErrors.length > 0) {
-        console.warn(`[Backfill] ${dayString}: card build warnings: ${cardErrors.join(", ")}`);
-      }
+      // Non-empty day: generate prompt-based card and write file
+      const promptReport = await deps.generateDailyPromptReportForPeriod(
+        db,
+        timezone,
+        periodStartUnix,
+        periodEndUnix
+      );
+      const card = deps.buildDailyPromptCard({
+        date: promptReport.input.period.date,
+        markdown: promptReport.markdown,
+        totalPrs: promptReport.input.activitySummary.totalPrs,
+        projectCount: promptReport.input.activitySummary.projectCount,
+        directionalShiftCount: promptReport.input.activitySummary.directionalShiftCount,
+        notableCount: promptReport.input.activitySummary.notableCount,
+        routineCount: promptReport.input.activitySummary.routineCount,
+        projects: promptReport.input.projects,
+      });
 
       const cardContent = JSON.stringify(card);
-      const projectIds = JSON.stringify(grouped.map((g) => g.projectId));
+      const projectIds = JSON.stringify(promptReport.input.projects.map((g) => g.projectId));
 
       try {
         deps.writeReportFile({ date: dayString, card, analyses: grouped, completeness });

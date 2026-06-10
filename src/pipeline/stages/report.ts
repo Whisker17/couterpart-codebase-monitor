@@ -3,38 +3,11 @@ import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import type { SyncResult } from "../../config/projects";
 import { getDb } from "../../storage/db";
 import { buildDailyReport } from "../../extensions/report-generator/daily";
-import { type GroupedAnalyses, type LarkCard } from "../../extensions/report-generator/templates/daily-card";
-import { buildWeeklyReport } from "../../extensions/report-generator/weekly";
-import { buildWeeklyCard } from "../../extensions/report-generator/templates/weekly-card";
 import { buildWeeklyPromptCard } from "../../extensions/report-generator/templates/weekly-prompt-card";
 import { generateWeeklyPromptReport } from "../../extensions/report-generator/weekly-prompt-report";
+import { buildDailyPromptCard } from "../../extensions/report-generator/templates/daily-prompt-card";
+import { generateDailyPromptReport } from "../../extensions/report-generator/daily-prompt-report";
 import { writeReportFile } from "../../extensions/report-generator/file-writer";
-import { formatReport } from "../../extensions/lark-dispatcher/formatter";
-import {
-  localizeDailyDelivery as defaultLocalizeDailyDelivery,
-  localizeWeeklyDelivery as defaultLocalizeWeeklyDelivery,
-} from "../../extensions/report-generator/delivery-localizer";
-
-export interface FinalCardResult {
-  content: string;
-  card: LarkCard | LarkCard[];
-  errors: string[];
-}
-
-export interface ReportStageDeps {
-  localizeDailyDelivery?: typeof defaultLocalizeDailyDelivery;
-  localizeWeeklyDelivery?: typeof defaultLocalizeWeeklyDelivery;
-}
-
-export function buildFinalCard(
-  date: string,
-  analyses: GroupedAnalyses,
-  partialWarning: string | undefined
-): FinalCardResult {
-  const { cards, errors } = formatReport(date, analyses, partialWarning);
-  const card = cards.length === 1 ? cards[0]! : cards;
-  return { content: JSON.stringify(card), card, errors };
-}
 
 function formatDate(unixSeconds: number, timezone: string): string {
   const d = new Date(unixSeconds * 1000);
@@ -44,11 +17,6 @@ function formatDate(unixSeconds: number, timezone: string): string {
     month: "2-digit",
     day: "2-digit",
   }).format(d);
-}
-
-function formatShortDate(unixSeconds: number, timezone: string): string {
-  const d = new Date(unixSeconds * 1000);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: timezone });
 }
 
 function formatChineseShortDate(unixSeconds: number, timezone: string): string {
@@ -78,11 +46,9 @@ function buildSubscriptionNote(syncResult?: SyncResult): string | undefined {
   return parts.length > 0 ? parts.join("; ") : undefined;
 }
 
-export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}): Promise<StageResult> {
+export async function execute(ctx: PipelineContext): Promise<StageResult> {
   const db = getDb();
   const errors: string[] = [];
-  const localizeDailyDelivery = deps.localizeDailyDelivery ?? defaultLocalizeDailyDelivery;
-  const localizeWeeklyDelivery = deps.localizeWeeklyDelivery ?? defaultLocalizeWeeklyDelivery;
   const timezone = ctx.timezone ?? "UTC";
 
   const reportData = buildDailyReport(timezone);
@@ -130,7 +96,7 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
       console.error(`[Report] Empty digest upsert failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (ctx.reportMode === "weekly") {
-      const weeklyErrors = await generateWeeklyReport(db, completeness, localizeWeeklyDelivery, timezone);
+      const weeklyErrors = await generateWeeklyReport(db, completeness, timezone);
       if (weeklyErrors.length > 0) {
         console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
       }
@@ -148,17 +114,41 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
 
   const combinedNote = [partialWarning, subscriptionNote].filter(Boolean).join(" | ") || undefined;
 
-  const localizedGrouped = await localizeDailyDelivery(deliverableGrouped);
-  const { cards, errors: cardErrors } = formatReport(date, localizedGrouped, combinedNote, reportData.budgetLine);
-  if (cardErrors.length > 0) {
-    for (const e of cardErrors) console.warn(`[Report] ⚠ ${e}`);
-    errors.push(...cardErrors);
+  let promptReport: Awaited<ReturnType<typeof generateDailyPromptReport>>;
+  try {
+    promptReport = await generateDailyPromptReport(db, timezone);
+  } catch (err) {
+    const msg = `Daily prompt report failed: ${err instanceof Error ? err.message : String(err)}`;
+    console.error(`[Report] ${msg}`);
+    errors.push(msg);
+    return {
+      success: false,
+      itemsProcessed: deliverableGrouped.length,
+      errors,
+      durationMs: 0,
+    };
   }
 
-  const finalCard = cards.length === 1 ? cards[0]! : cards;
+  const notices = [combinedNote, reportData.budgetLine].filter((line): line is string => Boolean(line));
+  const finalCard = buildDailyPromptCard({
+    date: promptReport.input.period.date,
+    markdown: promptReport.markdown,
+    totalPrs: promptReport.input.activitySummary.totalPrs,
+    projectCount: promptReport.input.activitySummary.projectCount,
+    directionalShiftCount: promptReport.input.activitySummary.directionalShiftCount,
+    notableCount: promptReport.input.activitySummary.notableCount,
+    routineCount: promptReport.input.activitySummary.routineCount,
+    projects: promptReport.input.projects,
+    notices,
+  });
+  const cards = [finalCard];
   const cardContent = JSON.stringify(finalCard);
-  const completenessJson = JSON.stringify(completeness);
-  const projectIds = JSON.stringify(localizedGrouped.map((g) => g.projectId));
+  const completenessJson = JSON.stringify({
+    ...completeness,
+    prompt: promptReport.promptName,
+    usage: promptReport.usage,
+  });
+  const projectIds = JSON.stringify(promptReport.input.projects.map((g) => g.projectId));
 
   try {
     db.run(
@@ -197,12 +187,12 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
   }
 
   try {
-    const filePath = writeReportFile({
-      date: `daily-${date}`,
-      card: finalCard,
-      analyses: localizedGrouped,
-      completeness,
-    });
+      const filePath = writeReportFile({
+        date: `daily-${date}`,
+        card: finalCard,
+        analyses: deliverableGrouped,
+        completeness,
+      });
     console.log(`[Report] Written to ${filePath}`);
   } catch (err) {
     const msg = `File write failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -211,7 +201,7 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
   }
 
   if (ctx.reportMode === "weekly") {
-    const weeklyErrors = await generateWeeklyReport(db, completeness, localizeWeeklyDelivery, timezone);
+    const weeklyErrors = await generateWeeklyReport(db, completeness, timezone);
     if (weeklyErrors.length > 0) {
       console.error(`[Report] Weekly report had ${weeklyErrors.length} error(s):`, weeklyErrors);
       errors.push(...weeklyErrors);
@@ -229,7 +219,6 @@ export async function execute(ctx: PipelineContext, deps: ReportStageDeps = {}):
 async function generateWeeklyReport(
   db: Database,
   completeness: { total: number; success: number; failed: string[] },
-  localizeWeeklyDelivery: typeof defaultLocalizeWeeklyDelivery,
   timezone: string
 ): Promise<string[]> {
   const errors: string[] = [];
@@ -322,91 +311,9 @@ async function generateWeeklyReport(
 
     return errors;
   } catch (err) {
-    console.warn(
-      `[Report] Weekly prompt report failed — falling back to rule-based weekly card: ${err instanceof Error ? err.message : String(err)}`
-    );
-  }
-
-  const weeklyData = await localizeWeeklyDelivery(buildWeeklyReport(timezone));
-
-  if (weeklyData.projectHighlights.length === 0) {
-    console.log("[Report] Weekly: no analyses found for the past 7 days, skipping");
+    errors.push(`Weekly prompt report failed: ${err instanceof Error ? err.message : String(err)}`);
     return errors;
   }
-
-  const startLabel = formatShortDate(weeklyData.periodStartUnix, timezone);
-  const endLabel = formatShortDate(weeklyData.periodEndUnix, timezone);
-  const dateRange = `${startLabel}–${endLabel}`;
-  const weeklyCard = buildWeeklyCard(dateRange, weeklyData);
-  const weeklyJson = JSON.stringify(weeklyCard);
-
-  const weeklyBytes = Buffer.byteLength(weeklyJson, "utf-8");
-  if (weeklyBytes > 30_000) {
-    console.warn(`[Report] Weekly card exceeds 30KB hard limit (${weeklyBytes} bytes) — sending anyway`);
-  } else if (weeklyBytes > 20_000) {
-    console.warn(`[Report] Weekly card exceeds 20KB warn threshold (${weeklyBytes} bytes)`);
-  }
-
-  const weeklyProjectIds = JSON.stringify(
-    weeklyData.projectHighlights.map((p) => p.projectId)
-  );
-  const weeklyCompletenessJson = JSON.stringify(completeness);
-
-  try {
-    db.run(
-      `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness)
-       VALUES ('weekly', ?, ?, ?, ?, ?)
-       ON CONFLICT(type, period_start, period_end)
-       DO UPDATE SET content = excluded.content,
-                     completeness = excluded.completeness,
-                     project_ids = excluded.project_ids`,
-      [
-        weeklyData.periodStartUnix,
-        weeklyData.periodEndUnix,
-        weeklyProjectIds,
-        weeklyJson,
-        weeklyCompletenessJson,
-      ]
-    );
-
-    const weeklyRow = db
-      .query<{ id: number }, [string, number, number]>(
-        "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
-      )
-      .get("weekly", weeklyData.periodStartUnix, weeklyData.periodEndUnix)!;
-    db.run(
-      `INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)
-       ON CONFLICT(report_id, card_index)
-       DO UPDATE SET content = excluded.content
-       WHERE report_deliveries.status != 'sent'`,
-      [weeklyRow.id, weeklyJson]
-    );
-    db.run(
-      "DELETE FROM report_deliveries WHERE report_id = ? AND card_index >= 1 AND status != 'sent'",
-      [weeklyRow.id]
-    );
-  } catch (err) {
-    const msg = `Weekly DB upsert failed: ${err instanceof Error ? err.message : String(err)}`;
-    console.error(`[Report] ${msg}`);
-    errors.push(msg);
-  }
-
-  try {
-    const weeklyDate = `weekly-${formatDate(weeklyData.periodEndUnix, timezone)}`;
-    const filePath = writeReportFile({
-      date: weeklyDate,
-      card: weeklyCard,
-      analyses: [],
-      completeness,
-    });
-    console.log(`[Report] Weekly written to ${filePath}`);
-  } catch (err) {
-    const msg = `Weekly file write failed: ${err instanceof Error ? err.message : String(err)}`;
-    console.error(`[Report] ${msg}`);
-    errors.push(msg);
-  }
-
-  return errors;
 }
 
 export const stage: PipelineStage = {

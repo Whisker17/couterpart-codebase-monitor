@@ -1,4 +1,4 @@
-import type { LarkCard, LarkElement, LarkText } from "./daily-card";
+import type { LarkCard, LarkElement, LarkText } from "./lark-card";
 
 export interface WeeklyPromptSection {
   title: string;

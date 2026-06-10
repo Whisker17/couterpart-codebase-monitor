@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { LarkCollapsiblePanel, LarkMarkdownElement } from "./daily-card";
+import type { LarkCollapsiblePanel, LarkMarkdownElement } from "./lark-card";
 import { buildMonthlyPromptCard } from "./monthly-prompt-card";
 
 describe("monthly prompt Lark card", () => {

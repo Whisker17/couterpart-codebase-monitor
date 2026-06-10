@@ -1,8 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { rmSync, mkdirSync } from "fs";
-import type { GroupedAnalyses } from "../../extensions/report-generator/templates/daily-card";
-import type { WeeklyReportData } from "../../extensions/report-generator/weekly";
+import { rmSync } from "fs";
 import { getYesterdayPeriod, getWeekPeriod } from "../../utils/time-window";
 
 const TEST_DB_PATH = "data/test-report-stage.db";
@@ -28,8 +26,6 @@ mock.module("../../extensions/report-generator/file-writer", () => ({
   writeReportFile: mockWriteReportFile,
 }));
 
-const mockLocalizeDailyDelivery = mock(async (analyses: GroupedAnalyses) => analyses);
-const mockLocalizeWeeklyDelivery = mock(async (data: WeeklyReportData) => data);
 async function defaultGenerateWeeklyPromptReport(db: Database, timezone: string) {
   const { startUnix, endUnix } = getWeekPeriod(timezone);
   const rows = db
@@ -100,7 +96,41 @@ mock.module("../../extensions/report-generator/weekly-prompt-report", () => ({
   generateWeeklyPromptReport: mockGenerateWeeklyPromptReport,
 }));
 
-const { execute, buildFinalCard } = await import("./report");
+async function defaultGenerateDailyPromptReport(db: Database, timezone: string) {
+  const { buildDailyPromptInput } = await import("../../extensions/report-generator/daily-prompt-input");
+  const input = buildDailyPromptInput(db, timezone);
+  const firstProject = input.projects[0];
+  const firstPr = firstProject?.prs[0];
+  const prLine = firstPr
+    ? `- ${firstPr.significance === "directional_shift" ? "🔴" : firstPr.significance === "notable" ? "🟡" : "⚪"} [#${firstPr.prNumber} ${firstPr.title}](${firstPr.htmlUrl})：Prompt summary`
+    : "- 暂无 PR";
+
+  return {
+    markdown: `## 总览
+
+### org
+
+Prompt daily overview.
+
+## 全部 PR
+
+### ${firstProject?.projectId ?? "org/repo-a"}
+
+${prLine}
+`,
+    input,
+    promptPath: "prompts/reports/daily/structured-table.md",
+    promptName: "structured-table",
+    usage: { inputTokens: 11, outputTokens: 22 },
+  };
+}
+
+const mockGenerateDailyPromptReport = mock(defaultGenerateDailyPromptReport);
+mock.module("../../extensions/report-generator/daily-prompt-report", () => ({
+  generateDailyPromptReport: mockGenerateDailyPromptReport,
+}));
+
+const { execute } = await import("./report");
 
 const fixedPromptReport = {
   markdown: `## 优先跟进事项
@@ -290,12 +320,10 @@ describe("report stage", () => {
     testDb = new Database(TEST_DB_PATH);
     applySchema(testDb);
     mockWriteReportFile.mockClear();
-    mockLocalizeDailyDelivery.mockClear();
-    mockLocalizeWeeklyDelivery.mockClear();
     mockGenerateWeeklyPromptReport.mockClear();
-    mockLocalizeDailyDelivery.mockImplementation(async (analyses: GroupedAnalyses) => analyses);
-    mockLocalizeWeeklyDelivery.mockImplementation(async (data: WeeklyReportData) => data);
     mockGenerateWeeklyPromptReport.mockImplementation(defaultGenerateWeeklyPromptReport);
+    mockGenerateDailyPromptReport.mockClear();
+    mockGenerateDailyPromptReport.mockImplementation(defaultGenerateDailyPromptReport);
   });
 
   afterEach(() => {
@@ -325,6 +353,30 @@ describe("report stage", () => {
     const row = testDb.query<{ id: number; type: string }, []>("SELECT * FROM reports").get();
     expect(row).toBeDefined();
     expect(row!.type).toBe("daily");
+  });
+
+  it("persists daily reports using the prompt-based card format", async () => {
+    insertNotableTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+
+    await execute(ctx);
+
+    const report = testDb
+      .query<{ content: string; completeness: string }, []>("SELECT content, completeness FROM reports WHERE type = 'daily'")
+      .get()!;
+    const card = JSON.parse(report.content);
+    expect(card.header.title.content).toContain("Counterpart 日报");
+    expect(card.header.title.content).not.toContain("Daily Digest");
+    expect(report.content).toContain("Prompt daily overview");
+    expect(report.content).toContain("Prompt summary");
+
+    const completeness = JSON.parse(report.completeness);
+    expect(completeness.prompt).toBe("structured-table");
+    expect(completeness.usage).toEqual({ inputTokens: 11, outputTokens: 22 });
+
+    const delivery = testDb.query<{ content: string }, []>("SELECT content FROM report_deliveries LIMIT 1").get()!;
+    expect(delivery.content).toBe(report.content);
+    expect(mockGenerateDailyPromptReport).toHaveBeenCalledTimes(1);
   });
 
   it("is idempotent — running twice doesn't create duplicate rows", async () => {
@@ -532,86 +584,56 @@ describe("report stage", () => {
     expect(card).toHaveProperty("elements");
   });
 
-  it("stores localized daily delivery content before dispatch", async () => {
-    // Use a notable PR so the localized summary appears in the per-project panel body
-    insertNotableTestData(testDb);
-    mockLocalizeDailyDelivery.mockImplementation(async (analyses: any) =>
-      analyses.map((project: any) => ({
-        ...project,
-        prs: project.prs.map((pr: any) => ({
-          ...pr,
-          summary: "中文日报摘要",
-        })),
-      }))
-    );
-
-    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
-    await execute(ctx, { localizeDailyDelivery: mockLocalizeDailyDelivery });
-
-    const delivery = testDb
-      .query<{ content: string }, []>("SELECT content FROM report_deliveries LIMIT 1")
-      .get()!;
-    expect(delivery.content).toContain("中文日报摘要");
-    expect(delivery.content).not.toContain("Test summary");
-    expect(mockLocalizeDailyDelivery).toHaveBeenCalledTimes(1);
-  });
-
-  it("updates existing unsent delivery content when report content changes", async () => {
-    // Use a notable PR so the localized summary appears in the per-project panel body
+  it("uses prompt output directly for daily delivery content", async () => {
     insertNotableTestData(testDb);
     const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
     await execute(ctx);
 
-    mockLocalizeDailyDelivery.mockImplementation(async (analyses: any) =>
-      analyses.map((project: any) => ({
-        ...project,
-        prs: project.prs.map((pr: any) => ({
-          ...pr,
-          summary: "中文重跑摘要",
-        })),
-      }))
-    );
-    await execute(ctx, { localizeDailyDelivery: mockLocalizeDailyDelivery });
+    const delivery = testDb
+      .query<{ content: string }, []>("SELECT content FROM report_deliveries LIMIT 1")
+      .get()!;
+    expect(delivery.content).toContain("Prompt summary");
+    expect(delivery.content).not.toContain("Test summary");
+  });
+
+  it("updates existing unsent delivery content when prompt output changes", async () => {
+    insertNotableTestData(testDb);
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+
+    mockGenerateDailyPromptReport.mockImplementationOnce(async (db, timezone) => {
+      const base = await defaultGenerateDailyPromptReport(db, timezone);
+      return {
+        ...base,
+        markdown: base.markdown.replace("Prompt summary", "中文重跑摘要"),
+      };
+    });
+    await execute(ctx);
 
     const delivery = testDb
       .query<{ content: string; status: string }, []>("SELECT content, status FROM report_deliveries LIMIT 1")
       .get()!;
     expect(delivery.status).toBe("pending");
     expect(delivery.content).toContain("中文重跑摘要");
-    expect(delivery.content).not.toContain("Test summary");
+    expect(delivery.content).not.toContain("Prompt summary");
   });
 
-  it("falls back to localized rule-based weekly delivery when prompt generation fails", async () => {
+  it("does not fall back to a rule-based weekly card when prompt generation fails", async () => {
     insertTestData(testDb);
     mockGenerateWeeklyPromptReport.mockImplementationOnce(async () => {
       throw new Error("prompt failed");
     });
-    mockLocalizeWeeklyDelivery.mockImplementation(async (data: any) => ({
-      ...data,
-      projectHighlights: data.projectHighlights.map((project: any) => ({
-        ...project,
-        highlights: project.highlights.map((highlight: any) => ({
-          ...highlight,
-          summary: "中文周报摘要",
-        })),
-      })),
-    }));
 
     const ctx = { stageResults: new Map(), reportMode: "weekly" as const, timezone: TZ };
-    await execute(ctx, { localizeWeeklyDelivery: mockLocalizeWeeklyDelivery });
+    const result = await execute(ctx);
 
-    const delivery = testDb
-      .query<{ content: string }, []>(
-        `SELECT d.content
-         FROM report_deliveries d
-         JOIN reports r ON d.report_id = r.id
-         WHERE r.type = 'weekly'
-         LIMIT 1`
-      )
+    expect(result.success).toBe(false);
+    expect(result.errors.some((error) => error.includes("Weekly prompt report failed"))).toBe(true);
+
+    const weeklyCount = testDb
+      .query<{ n: number }, []>("SELECT COUNT(*) as n FROM reports WHERE type = 'weekly'")
       .get()!;
-    expect(delivery.content).toContain("中文周报摘要");
-    expect(delivery.content).not.toContain("Test summary");
-    expect(mockLocalizeWeeklyDelivery).toHaveBeenCalledTimes(1);
+    expect(weeklyCount.n).toBe(0);
   });
 
   it("creates reports row with empty digest when no analyses exist", async () => {
@@ -948,95 +970,5 @@ describe("report stage", () => {
     const row = testDb.query<{ completeness: string }, []>("SELECT completeness FROM reports WHERE type='daily'").get()!;
     const completeness = JSON.parse(row.completeness);
     expect(completeness.subscriptionNote).toBeUndefined();
-  });
-});
-
-describe("buildFinalCard", () => {
-  const routinePR = {
-    prNumber: 1,
-    title: "Routine fix",
-    summary: "s".repeat(50),
-    technicalDetail: null,
-    significance: "routine" as const,
-    directionSignal: null,
-    htmlUrl: "https://github.com/org/repo-a/pull/1",
-  };
-
-  const notablePR = {
-    prNumber: 2,
-    title: "Notable change",
-    summary: "s".repeat(50),
-    technicalDetail: null,
-    significance: "notable" as const,
-    directionSignal: "improving perf",
-    htmlUrl: "https://github.com/org/repo-a/pull/2",
-  };
-
-  const smallAnalyses = [
-    {
-      projectId: "org/repo-a",
-      prCount: 1,
-      directionalShiftCount: 0,
-      notableCount: 0,
-      topDirectionSignal: null,
-      prs: [routinePR],
-    },
-  ];
-
-  it("returns a single card when content fits under 20KB", () => {
-    const result = buildFinalCard("2026-06-01", smallAnalyses, undefined);
-    expect(result.errors).toHaveLength(0);
-    expect(Array.isArray(result.card)).toBe(false);
-    const parsed = JSON.parse(result.content);
-    expect(parsed.config).toBeDefined();
-  });
-
-  it("removes routine-only projects and adds omit note when card exceeds 20KB", () => {
-    // 30 notable-only projects with summaries plus many routine-only projects
-    // push the full card over 20KB. Routine-only projects are filtered by
-    // formatter Level 2, adding the omit note while keeping trimmed < 28KB.
-    const longSummary = "x".repeat(400);
-    const notableProjects = Array.from({ length: 30 }, (_, i) => ({
-      projectId: `org/notable-project-${i}`,
-      prCount: 1,
-      directionalShiftCount: 0,
-      notableCount: 1,
-      topDirectionSignal: null,
-      prs: [{ ...notablePR, prNumber: i + 1, summary: longSummary }],
-    }));
-    const routineOnlyProjects = Array.from({ length: 80 }, (_, i) => ({
-      projectId: `org/routine-only-${i}`,
-      prCount: 3,
-      directionalShiftCount: 0,
-      notableCount: 0,
-      topDirectionSignal: null,
-      prs: Array.from({ length: 3 }, (_, j) => ({
-        prNumber: j + 100,
-        title: `Routine PR ${i}-${j}`,
-        summary: "routine summary",
-        technicalDetail: null,
-        significance: "routine" as const,
-        directionSignal: null,
-        htmlUrl: `https://github.com/org/routine-only-${i}/pull/${j + 100}`,
-      })),
-    }));
-    const bigAnalyses = [...notableProjects, ...routineOnlyProjects];
-
-    const result = buildFinalCard("2026-06-01", bigAnalyses, undefined);
-    expect(result.errors).toHaveLength(0);
-    const card = JSON.parse(result.content);
-    const summaryEl = card.config
-      ? card.elements?.find((e: { tag: string }) => e.tag === "markdown")
-      : null;
-    if (summaryEl) {
-      expect(summaryEl.content).toContain("omitted");
-    }
-    // Content must be under 28KB (Level 2 limit)
-    expect(Buffer.byteLength(result.content, "utf-8")).toBeLessThanOrEqual(28 * 1024);
-  });
-
-  it("returns no errors for small analyses", () => {
-    const result = buildFinalCard("2026-06-01", smallAnalyses, undefined);
-    expect(result.errors).toHaveLength(0);
   });
 });

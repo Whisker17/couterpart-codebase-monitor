@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import type { StageResult } from "../src/pipeline/runner";
 import type { CollectDeps, CollectOptions } from "../src/pipeline/stages/collect";
 import type { DailyReportData, DailyDigest } from "../src/extensions/report-generator/daily";
-import type { FinalCardResult } from "../src/pipeline/stages/report";
+import type { DailyPromptReportResult } from "../src/extensions/report-generator/daily-prompt-report";
 import { getDayPeriod } from "../src/utils/time-window";
 import { runBackfill } from "./backfill";
 import type { BackfillDeps } from "./backfill";
@@ -74,14 +74,58 @@ function makeTestDeps(db: Database, overrides?: Partial<BackfillDeps>): Backfill
     return { analyses: [], grouped: [], periodStartUnix: startUnix, periodEndUnix: endUnix, digest };
   };
 
-  const defaultFinalCard = (): FinalCardResult => ({
-    card: {
-      config: { wide_screen_mode: true },
-      header: { title: { tag: "plain_text", content: "Test" }, template: "blue" },
-      elements: [],
+  const defaultPromptReport = async (
+    _db: Database,
+    timezone: string,
+    startUnix: number,
+    endUnix: number
+  ): Promise<DailyPromptReportResult> => ({
+    markdown: "## 总览\n\nBackfill prompt report.",
+    promptPath: "prompts/reports/daily/structured-table.md",
+    promptName: "structured-table",
+    usage: { inputTokens: 1, outputTokens: 2 },
+    input: {
+      period: {
+        startUnix,
+        endUnix,
+        date: DAY,
+        label: DAY,
+        timezone,
+      },
+      activitySummary: {
+        totalPrs: 1,
+        projectCount: 1,
+        directionalShiftCount: 0,
+        notableCount: 0,
+        routineCount: 1,
+      },
+      projects: [
+        {
+          projectId: "org/repo",
+          prCount: 1,
+          directionalShiftCount: 0,
+          notableCount: 0,
+          routineCount: 1,
+          topSignals: [],
+          prs: [
+            {
+              prNumber: 1,
+              title: "Complete PR",
+              htmlUrl: "https://github.com/org/repo/pull/1",
+              mergedAt: startUnix + 3600,
+              filesChanged: null,
+              additions: null,
+              deletions: null,
+              summary: "Backfill prompt summary",
+              technicalDetail: null,
+              directionSignal: null,
+              significance: "routine",
+              categories: [],
+            },
+          ],
+        },
+      ],
     },
-    content: "{}",
-    errors: [],
   });
 
   return {
@@ -103,7 +147,12 @@ function makeTestDeps(db: Database, overrides?: Partial<BackfillDeps>): Backfill
     collectDeps: {} as unknown as CollectDeps,
     getTrackedProjects: () => [{ org: "org", repo: "repo", url: "https://github.com/org/repo" }],
     buildDailyReportForPeriod: defaultReportData,
-    buildFinalCard: (_date, _grouped, _partialWarning) => defaultFinalCard(),
+    generateDailyPromptReportForPeriod: defaultPromptReport,
+    buildDailyPromptCard: (input) => ({
+      config: { wide_screen_mode: true },
+      header: { title: { tag: "plain_text", content: `Counterpart 日报 · ${input.date}` }, template: "blue" },
+      elements: [{ tag: "markdown", content: input.markdown }],
+    }),
     writeReportFile: () => "data/reports/test.json",
     ...overrides,
   };

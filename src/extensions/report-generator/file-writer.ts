@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
-import type { LarkCard } from "./templates/daily-card";
-import type { GroupedAnalyses } from "./templates/daily-card";
+import type { LarkCard } from "./templates/lark-card";
+import type { GroupedAnalyses } from "./report-data";
 
 const REPORTS_DIR = "data/reports";
 
