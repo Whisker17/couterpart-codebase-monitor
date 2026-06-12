@@ -3,6 +3,8 @@ set -euo pipefail
 
 git pull origin main
 
+mkdir -p data/mantle-repos data/impact-checks
+
 docker compose up -d --build
 
 echo "Waiting for container to become healthy..."
