@@ -438,7 +438,7 @@ describe("processQueue — expiry", () => {
     expect(row.status).toBe("pending");
   });
 
-  it("does not expire complete or failed rows", () => {
+  it("does not expire complete rows", () => {
     const oldMergedAt = NOW_SEC - 10 * 86400;
     const prId = seedPR(db, "ethereum/reth", oldMergedAt);
     const analysisId = seedAnalysis(db, prId, "ethereum/reth", "notable");
@@ -447,10 +447,25 @@ describe("processQueue — expiry", () => {
       .run(prId, analysisId);
 
     const cutoff = NOW_SEC - BASE_CONFIG.maxAgeDays * 86400;
-    db.query("UPDATE impact_checks SET status = 'expired' WHERE status = 'pending' AND pr_id IN (SELECT id FROM pull_requests WHERE merged_at < ? AND merged_at IS NOT NULL)").run(cutoff);
+    db.query("UPDATE impact_checks SET status = 'expired' WHERE status IN ('pending','failed') AND pr_id IN (SELECT id FROM pull_requests WHERE merged_at < ? AND merged_at IS NOT NULL)").run(cutoff);
 
     const row = db.query<{ status: string }, []>("SELECT status FROM impact_checks").get()!;
     expect(row.status).toBe("complete");
+  });
+
+  it("marks over-age failed rows as expired (regression: expiry covers failed status)", () => {
+    const oldMergedAt = NOW_SEC - 10 * 86400;
+    const prId = seedPR(db, "ethereum/reth", oldMergedAt);
+    const analysisId = seedAnalysis(db, prId, "ethereum/reth", "notable");
+
+    db.query("INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, config_hash, prompt_version, status, retry_count) VALUES (?, ?, 'mantle/reth', 'fork_of', 'h', 'v1', 'failed', 1)")
+      .run(prId, analysisId);
+
+    const cutoff = NOW_SEC - BASE_CONFIG.maxAgeDays * 86400;
+    db.query("UPDATE impact_checks SET status = 'expired' WHERE status IN ('pending','failed') AND pr_id IN (SELECT id FROM pull_requests WHERE merged_at < ? AND merged_at IS NOT NULL)").run(cutoff);
+
+    const row = db.query<{ status: string }, []>("SELECT status FROM impact_checks").get()!;
+    expect(row.status).toBe("expired");
   });
 });
 
@@ -487,6 +502,27 @@ describe("processQueue — retry revival", () => {
 
     const row = db.query<{ status: string }, []>("SELECT status FROM impact_checks").get()!;
     expect(row.status).toBe("failed");
+  });
+
+  it("regression: over-age failed row with retry_count < 3 is NOT revived after expiry sweep", () => {
+    // Sequence mirrors processQueue: expiry first, then retry revival.
+    // A failed row for an over-age PR must be expired by step 1 so step 2 never touches it.
+    const oldMergedAt = NOW_SEC - 10 * 86400;
+    const prId = seedPR(db, "ethereum/reth", oldMergedAt);
+    const analysisId = seedAnalysis(db, prId, "ethereum/reth", "notable");
+
+    db.query("INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, config_hash, prompt_version, status, retry_count) VALUES (?, ?, 'mantle/reth', 'fork_of', 'h', 'v1', 'failed', 1)")
+      .run(prId, analysisId);
+
+    // Step 1: expiry sweep (now covers failed rows too)
+    const cutoff = NOW_SEC - BASE_CONFIG.maxAgeDays * 86400;
+    db.query("UPDATE impact_checks SET status = 'expired' WHERE status IN ('pending','failed') AND pr_id IN (SELECT id FROM pull_requests WHERE merged_at < ? AND merged_at IS NOT NULL)").run(cutoff);
+
+    // Step 2: retry revival — should not touch the now-expired row
+    db.query("UPDATE impact_checks SET status = 'pending' WHERE status = 'failed' AND retry_count < 3").run();
+
+    const row = db.query<{ status: string }, []>("SELECT status FROM impact_checks").get()!;
+    expect(row.status).toBe("expired");
   });
 });
 

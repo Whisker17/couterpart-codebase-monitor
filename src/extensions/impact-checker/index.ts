@@ -142,10 +142,11 @@ export function processQueue(db: Database, config: ImpactCheckConfig): QueueStat
   const now = Math.floor(Date.now() / 1000);
   const cutoff = now - config.maxAgeDays * 86400;
 
-  // 1. Expire pending rows whose PR merge time exceeds maxAgeDays
+  // 1. Expire pending and failed rows whose PR merge time exceeds maxAgeDays.
+  // Failed rows must be expired here before retry revival so over-age PRs are not revived.
   db.query(`
     UPDATE impact_checks SET status = 'expired'
-    WHERE status = 'pending'
+    WHERE status IN ('pending', 'failed')
       AND pr_id IN (
         SELECT id FROM pull_requests WHERE merged_at < ? AND merged_at IS NOT NULL
       )

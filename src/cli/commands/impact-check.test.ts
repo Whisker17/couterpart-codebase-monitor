@@ -131,7 +131,7 @@ describe("requeueById — dry run", () => {
     expect(result.before).not.toBeNull();
     expect(result.before!.status).toBe("complete");
 
-    const row = db.query<{ status: string }, []>("SELECT status FROM impact_checks WHERE id = ?")
+    const row = db.query<{ status: string }, [number]>("SELECT status FROM impact_checks WHERE id = ?")
       .get(checkId)!;
     expect(row.status).toBe("complete");
   });
@@ -178,7 +178,7 @@ describe("requeueById — confirmed (--yes)", () => {
       last_error: string | null;
       retry_count: number;
       alert_attempt_count: number;
-    }, []>(`
+    }, [number]>(`
       SELECT status, affected, impact_type, evidence_kind, evidence, confidence, summary,
              recommended_action, checked_at, alert_dispatched_at, lark_message_id,
              alert_card_json, last_error, retry_count, alert_attempt_count
