@@ -2,8 +2,11 @@
   "mantleTargets": [
     {
       "projectId": "mantle/reth",
+      "repoUrl": "https://github.com/mantleio/reth",
+      "branch": "main",
       "tags": ["reth", "execution-client", "l2", "ethereum"],
-      "notes": "Mantle reth-based sequencer/execution client target"
+      "notes": "Mantle reth-based sequencer/execution client target",
+      "architectureNotes": "Mantle reth fork serves as the L2 execution client. L2 derivation depends on L1 block header structure and blob format. Key divergence points are gas metering (MNT token) and DA layer integration."
     }
   ],
   "counterpartRelationships": [
@@ -16,8 +19,14 @@
     {
       "source": "ethereum-optimism/op-geth",
       "targets": ["mantle/reth"],
-      "relationship": "manual",
-      "reason": "OP Stack execution layer changes may affect Mantle execution-client strategy"
+      "relationship": "fork_of",
+      "reason": "Mantle reth is a downstream fork of OP-Geth-influenced execution layer"
+    },
+    {
+      "source": "ethereum/go-ethereum",
+      "targets": ["mantle/reth"],
+      "relationship": "protocol_dependency",
+      "reason": "L1 consensus/block structure changes affect L2 derivation"
     }
   ]
 }

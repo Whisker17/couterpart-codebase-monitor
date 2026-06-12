@@ -122,6 +122,79 @@ describe("resolveTargetCandidates — manual priority over tag fallback", () => 
   });
 });
 
+describe("resolveTargetCandidates — typed relationship values (fork_of, protocol_dependency)", () => {
+  const CONFIG_WITH_TYPED_RELS: MantleConfig = {
+    mantleTargets: [
+      {
+        projectId: "mantle/reth",
+        tags: ["reth", "execution-client"],
+        notes: "Mantle reth target",
+        repoUrl: "https://github.com/mantleio/reth",
+        architectureNotes: "L2 execution client",
+      },
+    ],
+    counterpartRelationships: [
+      {
+        source: "ethereum-optimism/op-geth",
+        targets: ["mantle/reth"],
+        relationship: "fork_of",
+        reason: "Mantle reth is a downstream fork of OP-Geth-influenced execution layer",
+      },
+      {
+        source: "ethereum/go-ethereum",
+        targets: ["mantle/reth"],
+        relationship: "protocol_dependency",
+        reason: "L1 consensus/block structure changes affect L2 derivation",
+      },
+    ],
+  };
+
+  it("fork_of relationship returns non-empty candidate list", () => {
+    const result = resolveTargetCandidates("ethereum-optimism/op-geth", [], CONFIG_WITH_TYPED_RELS);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.projectId).toBe("mantle/reth");
+    expect(result[0]!.matchType).toBe("manual");
+    expect(result[0]!.matchReason).toContain("fork");
+  });
+
+  it("protocol_dependency relationship returns non-empty candidate list", () => {
+    const result = resolveTargetCandidates("ethereum/go-ethereum", [], CONFIG_WITH_TYPED_RELS);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.projectId).toBe("mantle/reth");
+    expect(result[0]!.matchType).toBe("manual");
+    expect(result[0]!.matchReason).toContain("L1");
+  });
+
+  it("depends_on relationship returns non-empty candidate list", () => {
+    const configWithDependsOn: MantleConfig = {
+      mantleTargets: CONFIG_WITH_TYPED_RELS.mantleTargets,
+      counterpartRelationships: [
+        {
+          source: "some/project",
+          targets: ["mantle/reth"],
+          relationship: "depends_on",
+          reason: "depends on for library APIs",
+        },
+      ],
+    };
+    const result = resolveTargetCandidates("some/project", [], configWithDependsOn);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.projectId).toBe("mantle/reth");
+    expect(result[0]!.matchType).toBe("manual");
+  });
+
+  it("typed relationship supersedes tag fallback for the same target — no duplicate entries", () => {
+    const result = resolveTargetCandidates(
+      "ethereum-optimism/op-geth",
+      ["reth", "execution-client"],
+      CONFIG_WITH_TYPED_RELS
+    );
+    const rethMatches = result.filter((r) => r.projectId === "mantle/reth");
+    expect(rethMatches).toHaveLength(1);
+    expect(rethMatches[0]!.matchType).toBe("manual");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // scoreCandidate — candidateType determination
 // ---------------------------------------------------------------------------
