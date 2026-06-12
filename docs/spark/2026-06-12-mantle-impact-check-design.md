@@ -1,7 +1,7 @@
 # Design: Mantle Codebase 级影响检查（Impact Checker）
 
 Date: 2026-06-12
-Status: APPROVED (rev3 — GPT review P0/P1 修复)
+Status: APPROVED (rev4 — GPT round-2 review 修复)
 Affects: pipeline 阶段结构、`analyses` schema、`config/mantle-config.json`、`config/settings.json`、`src/config/projects.ts`、`budget-tracker`、Dockerfile、weekly counterpart-check
 
 ## 背景与目标
@@ -53,12 +53,18 @@ GitHub Collector → Analyzer → Impact Checker → Report Generator → Lark D
 - **Dispatch 阶段作为重试兜底**：dispatch 增加一个扫描——`alert_card_json IS NOT NULL AND alert_dispatched_at IS NULL AND alert_attempt_count < 5` 的行重试发送。首发失败的告警最迟在同一次 pipeline 运行的 dispatch 阶段重试，仍失败则下次运行再试。
 - 现有 dispatch 对 `report_deliveries` 的扫描逻辑不变。
 
+**必须尊重 `--no-dispatch`（rev4）**：当前 `--no-dispatch` 的实现只是把 dispatch 从 stage 列表移除（`getRunStages()`），阶段内直发会绕过它，导致本地验证/回放时误发真告警。修正：`PipelineContext` 增加 `dispatchEnabled: boolean`（`--no-dispatch` 置 false），**Impact Checker 的首发与 dispatch 兜底扫描都必须检查该标志**。抑制状态下（`dispatchEnabled = false` 或 webhook 未配置）：跳过发送、不消耗 `alert_attempt_count`、`alert_dispatched_at` 保持 NULL——卡片留在表里，恢复正常 dispatch 的下一次运行自然补发。
+
+**投递语义：显式选择 at-least-once（rev4）**：发送成功与 `alert_dispatched_at` 写回是两步，进程在两步之间崩溃会导致下次重发——这无法靠事务消除（Lark webhook 不可回滚）。本设计**接受重复、不接受漏发**（告警漏发的代价远高于偶发重复），卡片 footer 固定携带稳定的 `check #id` 作为人工去重线索。不选 at-most-once（先写 DB 再发送）——那会把崩溃窗口变成静默漏发，与"高置信度告警必达"的定位冲突。
+
 ### 数据流（单次 pipeline 运行内）
 
 1. **Analyzer 预筛**：PR 分析输出 schema 增加 `downstream_impact_hint`（`none | possible | likely`）和 `downstream_impact_reason`（一句话理由）。搭现有 LLM 调用便车，增量成本仅几十个输出 token。
 2. **闸门判断**（纯代码，无 LLM）。源 repo 在 mantle-config 中存在至少一条到 mantleTarget 的关系、PR 合并时间在 `maxAgeDays` 内，**且**满足以下任一条件的 PR，为每个 (PR × target) 组合 upsert 一行 `impact_checks`（upsert 策略见队列语义）：
    - `downstream_impact_hint != 'none'`，**或**
    - `significance in ('notable', 'directional_shift')`（防预筛漏报兜底：显著 PR 即使 hint=none 也入队）
+
+   **分期口径（rev4 消除矛盾）**：`analyses` 的两个预筛列随 007 migration 在 Phase 1 一并建好（避免二次 migration），但 analyzer 的 prompt/schema **到 Phase 2 才开始填写**——Phase 1 期间所有行都是默认值 `'none'`，hint 条件结构上存在但永远不命中，闸门实际只由 significance 兜底条件驱动。这就是"Phase 1 临时闸门"的准确含义：不是另一套逻辑，而是同一闸门在 hint 全为 none 时的自然退化。回放校准脚本在 Phase 1 也只按 significance 分桶，Phase 2 后可加 hint 维度重跑。
 3. **Impact Checker 阶段**：
    - 先 clone 同步：`git fetch + reset` 更新 Mantle 目标 repo 的 shallow clone（`data/mantle-repos/`，gitignored），随后增量 codegraph 索引（如启用）
    - 按优先级排序处理 `pending` 行，逐个执行 agentic 取证检查，直到当日配额（`maxChecksPerDay`）或预算触线
@@ -85,7 +91,7 @@ GitHub Collector → Analyzer → Impact Checker → Report Generator → Lark D
   ```
 
   即：**非终态行跟随 latest analysis 与当前配置刷新并复活**；`complete` 行不动（已裁决的结论不因 re-analysis 静默改变——需要重查时人工 requeue）。
-- **config_hash**：`counterpartRelationships` 中该 source→target 关系条目 + target 的 `architectureNotes` 的稳定哈希，配置修正后旧的 pending/expired 行自动按新配置重查。
+- **config_hash（rev4 扩面）**：覆盖**所有影响 clone、prompt 或裁决的配置**的稳定哈希——`counterpartRelationships` 中该 source→target 关系条目（relationship/reason）+ target 的 `repoUrl`、`branch`、`architectureNotes`、`notes`、`tags`。任何一项修正后，旧的非终态行自动按新配置重查；prompt 模板本身的版本由独立的 `prompt_version` 列追踪，不进 config_hash。
 - **处理优先级**：`significance`（directional_shift > notable > routine）→ `downstream_impact_hint`（likely > possible > none）→ PR 合并时间倒序。
 - **配额**：每日最多处理 `maxChecksPerDay`（默认 5，上线校准后调整）条；配额按当日已写回裁决的行数计算。
 - **预算停机**：月度子上限（`monthlySubCap`）触线时，剩余 `pending` 行标 `skipped_budget`；总池（`monthlyCap`）触线同理。CLI `bun run cli impact-check requeue` 将 `skipped_budget` 行重置为 `pending`（预算恢复后人工触发；同时重置 `retry_count`）。
@@ -381,8 +387,8 @@ RUN mkdir -p data/mantle-repos data/impact-checks
 
 | Phase | 内容 | 说明 |
 |-------|------|------|
-| 1 | `fork_of` 检查器端到端：clone-manager + grep/read 工具 + **完整队列治理**（upsert/优先级/配额/过期/requeue CLI）+ 阶段内告警发送与重试 + budget-tracker 两表合算 + 配置层改造 + Dockerfile（git/rg/prompts）+ **回放校准脚本** | 最窄可上线版本，但队列/发送/预算语义完整——第一天起生产告警就有完整治理。闸门临时用 "significance ≥ notable + 有关系映射"，无 codegraph |
-| 2 | codegraph 集成（实测包名/安装/CLI 后写死版本）+ `codegraphEnabled` 开关 + analyzer 预筛字段（正式闸门） | 两项独立增强，验证后打开；codegraph 不可用永远可降级 grep-only |
+| 1 | `fork_of` 检查器端到端：clone-manager + grep/read 工具 + **完整队列治理**（upsert/优先级/配额/过期/requeue CLI）+ 阶段内告警发送与重试（含 `dispatchEnabled` 标志）+ budget-tracker 两表合算 + 配置层改造 + Dockerfile（git/rg/prompts）+ **回放校准脚本** | 最窄可上线版本，但队列/发送/预算语义完整——第一天起生产告警就有完整治理。无 codegraph |
+| 2 | codegraph 集成（实测包名/安装/CLI 后写死版本）+ `codegraphEnabled` 开关 + analyzer 预筛 prompt（正式闸门启用 hint 条件） | 两项独立增强，验证后打开；codegraph 不可用永远可降级 grep-only |
 | 3 | `depends_on` + `protocol_dependency` 策略 | 补全三类关系（含 manifest 置信度封顶规则） |
 | 4 | 周报 counterpart-check 升级为消费 `impact_checks` | 新增 `code_verified` 证据等级 |
 
@@ -392,6 +398,13 @@ RUN mkdir -p data/mantle-repos data/impact-checks
 
 - **方案 B（CRG 索引 + 符号映射作为判断者）**：fork 偏离处符号匹配最脆弱，覆盖不了依赖/协议两类关系，原 code-review-graph 运维成本高。codegraph 仅作为 agent 工具层被采纳。
 - **方案 C（无 clone，GitHub API 按需取码）**：GitHub code search 对 fork 索引不全、不支持灵活 grep、rate limit 紧，取证能力弱，与高置信度告警定位冲突。
+
+## Rev4 修订记录（GPT round-2 review 修复，2026-06-12）
+
+1. **[P1] `--no-dispatch` 绕过修复**：经核实 `getRunStages()` 只移除 dispatch 阶段，阶段内直发会绕过。新增 `PipelineContext.dispatchEnabled`，Impact Checker 首发与 dispatch 兜底都必须尊重；抑制态（标志为 false 或无 webhook）不消耗 `alert_attempt_count`、卡片留表待补发。
+2. **[P1] 投递语义显式化**：承认发送与 DB 写回之间的崩溃窗口不可事务化，显式选择 **at-least-once**（接受偶发重复、不接受静默漏发），卡片 footer 的 `check #id` 作为人工去重线索；明确否决 at-most-once 及其漏发风险。
+3. **[P2] Phase 1 与数据流矛盾消除**：预筛列随 007 migration 在 Phase 1 建好但 analyzer 到 Phase 2 才填写；Phase 1 闸门是同一逻辑在 hint 全为 `'none'` 时的自然退化，非另一套代码；回放脚本 Phase 1 仅按 significance 分桶。
+4. **[P2] `config_hash` 扩面**：从"关系条目 + architectureNotes"扩为覆盖所有影响 clone/prompt/裁决的配置（+ `repoUrl`、`branch`、`notes`、`tags`）；prompt 模板版本由 `prompt_version` 列独立追踪。
 
 ## Rev3 修订记录（GPT review P0/P1 修复，2026-06-12）
 
