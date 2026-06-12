@@ -1,17 +1,32 @@
 [
   {
     "url": "https://github.com/ethereum/go-ethereum",
-    "tags": ["blockchain", "l1"],
-    "notes": "Ethereum official Go implementation"
+    "tags": ["blockchain", "l1", "go"],
+    "notes": "Ethereum official Go implementation. L1 hardfork changes (EIPs, block header fields, blob APIs) propagate into mantle-xyz/op-geth (via fork chain) and mantle-xyz/mantle-v2 (via go.mod dependency replaced with their op-geth fork)."
   },
   {
     "url": "https://github.com/ethereum-optimism/optimism",
-    "tags": ["blockchain", "l2"],
-    "notes": "Optimism monorepo"
+    "tags": ["blockchain", "l2", "op-stack", "go"],
+    "notes": "Optimism monorepo (OP Stack). mantle-xyz/mantle-v2 is a fork of this repo. OP Stack protocol changes — derivation, sequencer, fault proof, interop — directly affect Mantle v2."
+  },
+  {
+    "url": "https://github.com/ethereum-optimism/op-geth",
+    "tags": ["blockchain", "l2", "execution-client", "go"],
+    "notes": "OP Stack execution client (fork of go-ethereum). mantle-xyz/op-geth is a direct fork of this repo. New hardfork activations and EVM changes in op-geth must be tracked and rebased."
   },
   {
     "url": "https://github.com/succinctlabs/op-succinct",
-    "tags": ["blockchain", "l2", "zk"],
-    "notes": "ZK proving for OP Stack rollups using SP1"
+    "tags": ["blockchain", "l2", "zk", "sp1", "rust"],
+    "notes": "ZK proving for OP Stack rollups using SP1. mantle-xyz/op-succinct is a direct fork. Upstream proof system changes or OP Stack ZK compatibility updates must be rebased."
+  },
+  {
+    "url": "https://github.com/paradigmxyz/reth",
+    "tags": ["blockchain", "l1", "l2", "execution-client", "rust"],
+    "notes": "Paradigm's Rust Ethereum execution client. mantle-xyz/reth is a direct fork. Upstream reth releases — engine API changes, EVM updates, block execution logic — must be tracked and rebased into mantle-xyz/reth."
+  },
+  {
+    "url": "https://github.com/op-rs/kona",
+    "tags": ["blockchain", "l2", "op-stack", "fault-proof", "derivation", "rust"],
+    "notes": "Rust OP Stack state transition and L2 derivation (no_std, FPVM/ZK compatible). mantle-xyz/kona is a direct fork. Upstream changes to derivation pipeline, preimage oracle, or fault proof interface must be tracked and rebased."
   }
 ]
