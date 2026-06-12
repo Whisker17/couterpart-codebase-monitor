@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS analyses (
 CREATE TABLE IF NOT EXISTS impact_checks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   estimated_cost_usd REAL,
-  analyzed_at INTEGER DEFAULT (unixepoch())
+  checked_at INTEGER DEFAULT (unixepoch())
 );
 `;
 
@@ -72,10 +72,10 @@ function insertImpactCheck(costUsd: number): void {
   const monthStart = new Date();
   monthStart.setUTCDate(1);
   monthStart.setUTCHours(0, 0, 0, 0);
-  const analyzedAt = Math.floor(monthStart.getTime() / 1000) + 86400; // 1 day into month
+  const checkedAt = Math.floor(monthStart.getTime() / 1000) + 86400; // 1 day into month
   testDb.run(
-    `INSERT INTO impact_checks (estimated_cost_usd, analyzed_at) VALUES (?, ?)`,
-    [costUsd, analyzedAt]
+    `INSERT INTO impact_checks (estimated_cost_usd, checked_at) VALUES (?, ?)`,
+    [costUsd, checkedAt]
   );
 }
 
@@ -181,7 +181,7 @@ describe("getBudgetStatus two-table sum", () => {
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15) / 1000
     );
     testDb.run(
-      `INSERT INTO impact_checks (estimated_cost_usd, analyzed_at) VALUES (?, ?)`,
+      `INSERT INTO impact_checks (estimated_cost_usd, checked_at) VALUES (?, ?)`,
       [90, prevMonthTs]
     );
     const status = getBudgetStatus();
@@ -236,7 +236,7 @@ describe("getImpactCheckBudgetStatus", () => {
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15) / 1000
     );
     testDb.run(
-      `INSERT INTO impact_checks (estimated_cost_usd, analyzed_at) VALUES (?, ?)`,
+      `INSERT INTO impact_checks (estimated_cost_usd, checked_at) VALUES (?, ?)`,
       [60, prevMonthTs]
     );
     const status = getImpactCheckBudgetStatus();

@@ -40,7 +40,7 @@ export function getBudgetStatus(): BudgetStatus {
   const impactRow = db
     .query<{ total_cost: number | null }, [number]>(
       `SELECT SUM(estimated_cost_usd) as total_cost
-       FROM impact_checks WHERE analyzed_at >= ?`
+       FROM impact_checks WHERE checked_at >= ?`
     )
     .get(monthStart);
 
@@ -69,7 +69,7 @@ export function getImpactCheckBudgetStatus(): ImpactCheckBudgetStatus {
   const row = db
     .query<{ total_cost: number | null }, [number]>(
       `SELECT SUM(estimated_cost_usd) as total_cost
-       FROM impact_checks WHERE analyzed_at >= ?`
+       FROM impact_checks WHERE checked_at >= ?`
     )
     .get(monthStart);
 
