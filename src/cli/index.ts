@@ -8,6 +8,7 @@ import { configShowCommand } from "./commands/config";
 import { budgetCommand } from "./commands/budget";
 import { exportAuditCommand } from "./commands/export";
 import { projectListCommand } from "./commands/project";
+import { impactCheckRequeueCommand } from "./commands/impact-check";
 
 interface CliCommand extends CommandDefinition {
   run: (rest: string[], parsed: ReturnType<typeof parseCliArgs>) => Promise<number>;
@@ -63,6 +64,11 @@ const COMMANDS: CliCommand[] = [
     path: ["project", "list"],
     description: "List tracked projects and lightweight collection health.",
     run: (_rest, parsed) => projectListCommand(parsed.flags, parsed.global),
+  },
+  {
+    path: ["impact-check", "requeue"],
+    description: "Requeue an impact check by id or bulk-reset skipped_budget rows. Dry-run by default; use --yes to write.",
+    run: (rest, parsed) => impactCheckRequeueCommand(rest, parsed.flags, parsed.global),
   },
 ];
 
