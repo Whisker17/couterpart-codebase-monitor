@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { closeDatabaseHandle } from "./db";
-import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006 } from "./schema";
+import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007 } from "./schema";
 import { syncSubscriptionProjects } from "../config/projects";
 import type { TrackedProject } from "../config/projects";
 
@@ -550,6 +550,277 @@ describe("syncSubscriptionProjects — transactionality", () => {
       .query<{ id: string }, []>("SELECT id FROM projects WHERE id = 'new/a'")
       .get();
     expect(newARow).toBeNull();
+  });
+});
+
+function buildFullTestDb(): Database {
+  const db = new Database(":memory:");
+  db.exec("PRAGMA foreign_keys=ON");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS migrations (
+      version TEXT PRIMARY KEY,
+      applied_at INTEGER DEFAULT (unixepoch())
+    )
+  `);
+  db.exec(MIGRATION_001);
+  db.exec(MIGRATION_002);
+  db.exec(MIGRATION_003);
+  db.exec(MIGRATION_004);
+  db.exec(MIGRATION_005);
+  db.exec(MIGRATION_006);
+  return db;
+}
+
+describe("MIGRATION_007 — impact_checks table + analyses pre-screen columns", () => {
+  let db: Database;
+
+  afterEach(() => {
+    db?.close();
+  });
+
+  it("adds downstream_impact_hint and downstream_impact_reason to analyses", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    const cols = db
+      .query<{ name: string }, []>("PRAGMA table_info(analyses)")
+      .all()
+      .map((r) => r.name);
+
+    expect(cols).toContain("downstream_impact_hint");
+    expect(cols).toContain("downstream_impact_reason");
+  });
+
+  it("downstream_impact_hint defaults to 'none' for new rows", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "p/r", "p", "r", "https://github.com/p/r"
+    );
+    db.query("INSERT INTO pull_requests (project_id, pr_number, title) VALUES (?, ?, ?)").run(
+      "p/r", 1, "test pr"
+    );
+    db.query(
+      "INSERT INTO analyses (pr_id, project_id, summary) VALUES (?, ?, ?)"
+    ).run(1, "p/r", "test summary");
+
+    const row = db
+      .query<{ downstream_impact_hint: string }, []>(
+        "SELECT downstream_impact_hint FROM analyses LIMIT 1"
+      )
+      .get()!;
+
+    expect(row.downstream_impact_hint).toBe("none");
+  });
+
+  it("rejects downstream_impact_hint values outside the allowed set", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "p/r", "p", "r", "https://github.com/p/r"
+    );
+    db.query("INSERT INTO pull_requests (project_id, pr_number, title) VALUES (?, ?, ?)").run(
+      "p/r", 1, "test pr"
+    );
+
+    expect(() => {
+      db.query(
+        "INSERT INTO analyses (pr_id, project_id, summary, downstream_impact_hint) VALUES (?, ?, ?, ?)"
+      ).run(1, "p/r", "test summary", "invalid_value");
+    }).toThrow();
+  });
+
+  it("creates the impact_checks table", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    const tables = db
+      .query<{ name: string }, []>(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='impact_checks'"
+      )
+      .all();
+
+    expect(tables).toHaveLength(1);
+  });
+
+  it("creates idx_impact_checks_status and idx_impact_checks_alert indexes", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    const indexes = db
+      .query<{ name: string }, []>(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='impact_checks'"
+      )
+      .all()
+      .map((r) => r.name);
+
+    expect(indexes).toContain("idx_impact_checks_status");
+    expect(indexes).toContain("idx_impact_checks_alert");
+  });
+
+  it("enforces UNIQUE(pr_id, target_project_id) constraint", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "p/r", "p", "r", "https://github.com/p/r"
+    );
+    db.query("INSERT INTO pull_requests (project_id, pr_number, title) VALUES (?, ?, ?)").run(
+      "p/r", 1, "test pr"
+    );
+    db.query("INSERT INTO analyses (pr_id, project_id, summary) VALUES (?, ?, ?)").run(
+      1, "p/r", "summary"
+    );
+
+    db.query(
+      "INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, prompt_version, config_hash) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(1, 1, "mantle/reth", "fork_of", "v1", "hash1");
+
+    expect(() => {
+      db.query(
+        "INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, prompt_version, config_hash) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(1, 1, "mantle/reth", "fork_of", "v1", "hash1");
+    }).toThrow();
+  });
+
+  it("rejects NULL prompt_version", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "p/r", "p", "r", "https://github.com/p/r"
+    );
+    db.query("INSERT INTO pull_requests (project_id, pr_number, title) VALUES (?, ?, ?)").run(
+      "p/r", 1, "test pr"
+    );
+    db.query("INSERT INTO analyses (pr_id, project_id, summary) VALUES (?, ?, ?)").run(
+      1, "p/r", "summary"
+    );
+
+    expect(() => {
+      db.query(
+        "INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, prompt_version, config_hash) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(1, 1, "mantle/reth", "fork_of", null, "hash1");
+    }).toThrow();
+  });
+
+  it("rejects NULL config_hash", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "p/r", "p", "r", "https://github.com/p/r"
+    );
+    db.query("INSERT INTO pull_requests (project_id, pr_number, title) VALUES (?, ?, ?)").run(
+      "p/r", 1, "test pr"
+    );
+    db.query("INSERT INTO analyses (pr_id, project_id, summary) VALUES (?, ?, ?)").run(
+      1, "p/r", "summary"
+    );
+
+    expect(() => {
+      db.query(
+        "INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, prompt_version, config_hash) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(1, 1, "mantle/reth", "fork_of", "v1", null);
+    }).toThrow();
+  });
+
+  it("rejects invalid relationship values", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "p/r", "p", "r", "https://github.com/p/r"
+    );
+    db.query("INSERT INTO pull_requests (project_id, pr_number, title) VALUES (?, ?, ?)").run(
+      "p/r", 1, "test pr"
+    );
+    db.query("INSERT INTO analyses (pr_id, project_id, summary) VALUES (?, ?, ?)").run(
+      1, "p/r", "summary"
+    );
+
+    expect(() => {
+      db.query(
+        "INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, prompt_version, config_hash) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(1, 1, "mantle/reth", "invalid_rel", "v1", "hash1");
+    }).toThrow();
+  });
+
+  it("rejects invalid status values", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "p/r", "p", "r", "https://github.com/p/r"
+    );
+    db.query("INSERT INTO pull_requests (project_id, pr_number, title) VALUES (?, ?, ?)").run(
+      "p/r", 1, "test pr"
+    );
+    db.query("INSERT INTO analyses (pr_id, project_id, summary) VALUES (?, ?, ?)").run(
+      1, "p/r", "summary"
+    );
+
+    expect(() => {
+      db.query(
+        "INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, status, prompt_version, config_hash) VALUES (?, ?, ?, ?, ?, ?, ?)"
+      ).run(1, 1, "mantle/reth", "fork_of", "bad_status", "v1", "hash1");
+    }).toThrow();
+  });
+
+  it("inserts a valid impact_checks row and reads it back", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+
+    db.query("INSERT INTO projects (id, org, repo, url) VALUES (?, ?, ?, ?)").run(
+      "p/r", "p", "r", "https://github.com/p/r"
+    );
+    db.query("INSERT INTO pull_requests (project_id, pr_number, title) VALUES (?, ?, ?)").run(
+      "p/r", 1, "test pr"
+    );
+    db.query("INSERT INTO analyses (pr_id, project_id, summary) VALUES (?, ?, ?)").run(
+      1, "p/r", "summary"
+    );
+
+    db.query(
+      "INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, prompt_version, config_hash) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(1, 1, "mantle/reth", "fork_of", "abc123", "cfghash");
+
+    const row = db
+      .query<{ status: string; retry_count: number; alert_attempt_count: number }, []>(
+        "SELECT status, retry_count, alert_attempt_count FROM impact_checks LIMIT 1"
+      )
+      .get()!;
+
+    expect(row.status).toBe("pending");
+    expect(row.retry_count).toBe(0);
+    expect(row.alert_attempt_count).toBe(0);
+  });
+
+  it("applies cleanly on top of migrations 001–006 (existing db simulation)", () => {
+    db = buildFullTestDb();
+
+    expect(() => db.exec(MIGRATION_007)).not.toThrow();
+
+    const cols = db
+      .query<{ name: string }, []>("PRAGMA table_info(analyses)")
+      .all()
+      .map((r) => r.name);
+    expect(cols).toContain("downstream_impact_hint");
+  });
+
+  it("records 007_impact_check in migrations table", () => {
+    db = buildFullTestDb();
+    db.exec(MIGRATION_007);
+    db.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("007_impact_check");
+
+    const versions = db
+      .query<{ version: string }, []>("SELECT version FROM migrations")
+      .all()
+      .map((r) => r.version);
+
+    expect(versions).toContain("007_impact_check");
   });
 });
 
