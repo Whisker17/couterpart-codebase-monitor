@@ -331,6 +331,11 @@ function applySchema(db: Database): void {
       estimated_cost_usd REAL,
       analyzed_at INTEGER DEFAULT (unixepoch())
     );
+    CREATE TABLE IF NOT EXISTS impact_checks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      estimated_cost_usd REAL,
+      checked_at INTEGER DEFAULT (unixepoch())
+    );
     CREATE TABLE IF NOT EXISTS reports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       type TEXT,
