@@ -1,7 +1,7 @@
 # Design: Mantle Codebase 级影响检查（Impact Checker）
 
 Date: 2026-06-12
-Status: APPROVED (rev4 — GPT round-2 review 修复)
+Status: APPROVED (rev5 — GPT round-3 口径修正)
 Affects: pipeline 阶段结构、`analyses` schema、`config/mantle-config.json`、`config/settings.json`、`src/config/projects.ts`、`budget-tracker`、Dockerfile、weekly counterpart-check
 
 ## 背景与目标
@@ -55,7 +55,7 @@ GitHub Collector → Analyzer → Impact Checker → Report Generator → Lark D
 
 **必须尊重 `--no-dispatch`（rev4）**：当前 `--no-dispatch` 的实现只是把 dispatch 从 stage 列表移除（`getRunStages()`），阶段内直发会绕过它，导致本地验证/回放时误发真告警。修正：`PipelineContext` 增加 `dispatchEnabled: boolean`（`--no-dispatch` 置 false），**Impact Checker 的首发与 dispatch 兜底扫描都必须检查该标志**。抑制状态下（`dispatchEnabled = false` 或 webhook 未配置）：跳过发送、不消耗 `alert_attempt_count`、`alert_dispatched_at` 保持 NULL——卡片留在表里，恢复正常 dispatch 的下一次运行自然补发。
 
-**投递语义：显式选择 at-least-once（rev4）**：发送成功与 `alert_dispatched_at` 写回是两步，进程在两步之间崩溃会导致下次重发——这无法靠事务消除（Lark webhook 不可回滚）。本设计**接受重复、不接受漏发**（告警漏发的代价远高于偶发重复），卡片 footer 固定携带稳定的 `check #id` 作为人工去重线索。不选 at-most-once（先写 DB 再发送）——那会把崩溃窗口变成静默漏发，与"高置信度告警必达"的定位冲突。
+**投递语义：at-least-once + 有上限重试 + operator 可见的 dead-letter（rev5 修正口径）**：发送成功与 `alert_dispatched_at` 写回是两步，进程在两步之间崩溃会导致下次重发——这无法靠事务消除（Lark webhook 不可回滚）。本设计**接受偶发重复**（卡片 footer 固定携带稳定的 `check #id` 作为人工去重线索），不选 at-most-once（先写 DB 再发送会把崩溃窗口变成静默漏发）。重试**有上限**：`alert_attempt_count >= 5` 后停止自动重试（无限重试在 webhook 配置错误时是永动机），该行进入 **dead-letter 态**——但 dead-letter 绝不静默：它在日报、`db status` CLI 和 `StageResult` 三处显式暴露（见可观测性），operator 用 redispatch CLI 重置后恢复投递。即："投递保证 = 重试预算内 at-least-once；预算耗尽转为人工可见、可恢复的 dead-letter，不存在无人知晓的未送达"。
 
 ### 数据流（单次 pipeline 运行内）
 
@@ -77,21 +77,23 @@ GitHub Collector → Analyzer → Impact Checker → Report Generator → Lark D
 - **Upsert 而非 insert-once（rev3 修正）**：`analyses` 表对同一 PR 允许多行（报告侧一律取 latest），re-analysis、关系类型修正、配置变更都会让已有 impact 行的 `analysis_id`/`relationship` 过时。闸门写入采用：
 
   ```sql
-  INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, config_hash, ...)
+  INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, config_hash, prompt_version, ...)
   VALUES (...)
   ON CONFLICT(pr_id, target_project_id) DO UPDATE SET
     analysis_id = excluded.analysis_id,
     relationship = excluded.relationship,
     config_hash = excluded.config_hash,
+    prompt_version = excluded.prompt_version,
     status = 'pending',
     retry_count = 0
   WHERE impact_checks.status IN ('pending','failed','skipped_budget','expired')
     AND (impact_checks.analysis_id != excluded.analysis_id
-         OR impact_checks.config_hash != excluded.config_hash);
+         OR impact_checks.config_hash != excluded.config_hash
+         OR impact_checks.prompt_version != excluded.prompt_version);
   ```
 
   即：**非终态行跟随 latest analysis 与当前配置刷新并复活**；`complete` 行不动（已裁决的结论不因 re-analysis 静默改变——需要重查时人工 requeue）。
-- **config_hash（rev4 扩面）**：覆盖**所有影响 clone、prompt 或裁决的配置**的稳定哈希——`counterpartRelationships` 中该 source→target 关系条目（relationship/reason）+ target 的 `repoUrl`、`branch`、`architectureNotes`、`notes`、`tags`。任何一项修正后，旧的非终态行自动按新配置重查；prompt 模板本身的版本由独立的 `prompt_version` 列追踪，不进 config_hash。
+- **config_hash（rev4 扩面）**：覆盖**所有影响 clone、prompt 或裁决的配置**的稳定哈希——`counterpartRelationships` 中该 source→target 关系条目（relationship/reason）+ target 的 `repoUrl`、`branch`、`architectureNotes`、`notes`、`tags`。任何一项修正后，旧的非终态行自动按新配置重查。prompt 模板版本由独立的 `prompt_version` 列追踪（不混入 config_hash，便于审计区分"配置变了"与"策略 prompt 变了"），但**同样参与 upsert 触发比较**（rev5）——prompt 修复取证策略或裁决约束后，非终态旧行自动复活重查；`complete` 行不受影响，重查仍走人工 requeue。
 - **处理优先级**：`significance`（directional_shift > notable > routine）→ `downstream_impact_hint`（likely > possible > none）→ PR 合并时间倒序。
 - **配额**：每日最多处理 `maxChecksPerDay`（默认 5，上线校准后调整）条；配额按当日已写回裁决的行数计算。
 - **预算停机**：月度子上限（`monthlySubCap`）触线时，剩余 `pending` 行标 `skipped_budget`；总池（`monthlyCap`）触线同理。CLI `bun run cli impact-check requeue` 将 `skipped_budget` 行重置为 `pending`（预算恢复后人工触发；同时重置 `retry_count`）。
@@ -258,8 +260,8 @@ CREATE TABLE impact_checks (
   recommended_action TEXT,
   -- 审计与可复现性
   target_commit TEXT,                     -- 检查时 Mantle clone 的 commit hash
-  prompt_version TEXT,                    -- 策略 prompt 文件的版本哈希
-  config_hash TEXT,                       -- 关系条目 + architectureNotes 的稳定哈希
+  prompt_version TEXT,                    -- 策略 prompt 文件的版本哈希(参与 upsert 触发比较)
+  config_hash TEXT,                       -- 影响 clone/prompt/裁决的全部配置的稳定哈希(关系条目 + repoUrl/branch/architectureNotes/notes/tags)
   input_tokens INTEGER, output_tokens INTEGER,
   model_id TEXT, estimated_cost_usd REAL,
   tool_steps INTEGER,
@@ -302,7 +304,7 @@ confidence: high · evidence: code_evidence · check #42 · 2026-06-12
 **发送跟踪不复用 `report_deliveries`**——该表的 `report_id NOT NULL` 外键与 `reports.type` 的 CHECK 约束（`daily|weekly|monthly`）都与告警卡不匹配，硬塞需要造合成 report 行。改为 `impact_checks` 表内自跟踪：
 
 - 通过发卡门槛的检查在裁决写回时同步渲染卡片存入 `alert_card_json`（卡片内容与裁决同事务持久化，崩溃后可恢复），随即在 Impact Checker 阶段内首发（见"告警发送时机"）。
-- 每次发送尝试 `alert_attempt_count += 1`；成功写 `alert_dispatched_at` 与 `lark_message_id`。失败留空，dispatch 阶段及后续 pipeline 运行重试，`alert_attempt_count >= 5` 后停止自动重试（防 webhook 长期故障下的无限重试）。
+- 每次发送尝试 `alert_attempt_count += 1`；成功写 `alert_dispatched_at` 与 `lark_message_id`。失败留空，dispatch 阶段及后续 pipeline 运行重试，`alert_attempt_count >= 5` 后停止自动重试并进入 **dead-letter 态**（防 webhook 长期故障下的无限重试）——dead-letter 行在日报/`db status`/`StageResult` 三处显式可见（见可观测性），CLI 重置后恢复投递，不存在静默未送达。
 - 现有 redispatch CLI 增加 `--impact-check <id>` 标志：将指定行的 `alert_dispatched_at` 置空、`alert_attempt_count` 归零，触发重发。
 - 单卡单告警，snippet 逐条截断 ~10 行、整卡超 20KB 时丢弃多余 evidence 条目只留前两条，体积远低于 30KB 限制。
 
@@ -367,15 +369,15 @@ RUN mkdir -p data/mantle-repos data/impact-checks
 | agent 超步数上限 / maxCostPerCheck | 强制进入 generateObject 裁决，通常 affected = uncertain，不发卡，入库 |
 | LLM 调用失败 | 复用 `llm-retry.ts`；耗尽后 `status='failed'`、`retry_count += 1`、`last_error` 记录；`retry_count < 3` 下次运行自动复活，达 3 次保持终态 |
 | 证据校验失败（幻觉防护） | confidence 降为 low，不发卡，审计轨迹标记 `evidence_verification_failed` |
-| 告警卡发送失败 | 阶段内首发失败 → dispatch 兜底重试 → 后续运行重试，`alert_attempt_count >= 5` 停止；CLI 可手动重发 |
+| 告警卡发送失败 | 阶段内首发失败 → dispatch 兜底重试 → 后续运行重试，`alert_attempt_count >= 5` 转 dead-letter（日报/`db status`/StageResult 三处可见）；CLI 重置恢复投递 |
 | codegraph CLI 缺失/版本不符 | 启动检测：grep-only 降级运行 + 日志告警；不影响其他阶段 |
 | pending 积压超龄 | `maxAgeDays` 过期机制防告警风暴（见队列语义） |
 
 ## 可观测性
 
-- `StageResult` 扩展：`impactChecksRun`、`impactAlertsSent`、`impactChecksSkipped`（按原因分桶：budget/quota/clone_failure）、`impactChecksExpired`。
-- 日报追加一行摘要："Mantle 影响检查：今日 N 检查 / M 告警 / K 待处理"（仅在有活动时显示）。
-- 现有 `db status` operator CLI 增加 `impact_checks` 各状态计数。
+- `StageResult` 扩展：`impactChecksRun`、`impactAlertsSent`、`impactChecksSkipped`（按原因分桶：budget/quota/clone_failure）、`impactChecksExpired`、`impactAlertsDeadLettered`（重试耗尽未送达数，rev5）。
+- 日报追加一行摘要："Mantle 影响检查：今日 N 检查 / M 告警 / K 待处理"（仅在有活动时显示）；存在 dead-letter 告警时**必须**追加 "🚨 N 条影响告警投递失败已停止重试，运行 `redispatch --impact-check` 恢复"——dead-letter 的可见性不依赖 operator 主动查询。
+- 现有 `db status` operator CLI 增加 `impact_checks` 各状态计数，含 dead-letter 告警计数（`alert_card_json IS NOT NULL AND alert_dispatched_at IS NULL AND alert_attempt_count >= 5`）。
 
 ## 测试策略
 
@@ -398,6 +400,12 @@ RUN mkdir -p data/mantle-repos data/impact-checks
 
 - **方案 B（CRG 索引 + 符号映射作为判断者）**：fork 偏离处符号匹配最脆弱，覆盖不了依赖/协议两类关系，原 code-review-graph 运维成本高。codegraph 仅作为 agent 工具层被采纳。
 - **方案 C（无 clone，GitHub API 按需取码）**：GitHub code search 对 fork 索引不全、不支持灵活 grep、rate limit 紧，取证能力弱，与高置信度告警定位冲突。
+
+## Rev5 修订记录（GPT round-3 口径修正，2026-06-12）
+
+1. **[P1] "不接受漏发"与重试上限的冲突消除**：投递语义改口为 "重试预算内 at-least-once + operator 可见的 dead-letter"。保留 `alert_attempt_count >= 5` 上限（无限重试在 webhook 配置错误时是永动机），但 dead-letter 在日报（强制追加恢复指引行）、`db status` CLI、`StageResult.impactAlertsDeadLettered` 三处显式暴露，redispatch CLI 重置恢复——不存在无人知晓的未送达。
+2. **[P2] `prompt_version` 纳入 upsert 触发**：写入与比较条件均加入 `prompt_version`，prompt 修复取证策略后非终态行自动复活重查；`complete` 行仍走人工 requeue。保持其独立于 `config_hash`（审计上区分"配置变了"与"策略 prompt 变了"）。
+3. **[瑕疵] schema 注释同步**：`config_hash` 列注释更新为 rev4 扩面后的定义。
 
 ## Rev4 修订记录（GPT round-2 review 修复，2026-06-12）
 
