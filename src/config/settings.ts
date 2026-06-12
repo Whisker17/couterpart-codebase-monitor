@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 
-interface ImpactCheckConfig {
+export interface ImpactCheckConfig {
   enabled: boolean;
   maxChecksPerDay: number;
   maxStepsPerCheck: number;
