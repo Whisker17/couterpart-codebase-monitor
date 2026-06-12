@@ -53,7 +53,7 @@ export interface Analysis {
   output_tokens: number | null;
   estimated_cost_usd: number | null;
   analyzed_at: number;
-  downstream_impact_hint: "none" | "possible" | "likely";
+  downstream_impact_hint: "none" | "possible" | "likely" | null;
   downstream_impact_reason: string | null;
 }
 
