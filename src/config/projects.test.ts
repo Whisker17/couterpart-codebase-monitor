@@ -12,6 +12,13 @@ import {
   normalizeGitHubUrl,
   parseGitHubOrgRepo,
   parseAndValidateProjects,
+  getMantleConfig,
+  reloadMantleConfig,
+  validateMantleConfig,
+  _resetMantleConfigCache,
+  _setMantleConfigPath,
+  type MantleConfig,
+  type CounterpartRelationship,
 } from "./projects.ts";
 
 describe("getTrackedProjects", () => {
@@ -542,5 +549,251 @@ describe("resolveProjectSnapshot", () => {
 
     await expect(resolveProjectSnapshot(db)).rejects.toThrow("no prior tracked-project snapshot");
     errorSpy.mockRestore();
+  });
+});
+
+// ---- CounterpartRelationship type ----
+
+describe("CounterpartRelationship — relationship type", () => {
+  it("accepts fork_of as a valid relationship value", () => {
+    const rel: CounterpartRelationship = {
+      source: "org/repo",
+      targets: ["mantle/reth"],
+      relationship: "fork_of",
+      reason: "fork",
+    };
+    expect(rel.relationship).toBe("fork_of");
+  });
+
+  it("accepts depends_on as a valid relationship value", () => {
+    const rel: CounterpartRelationship = {
+      source: "org/repo",
+      targets: ["mantle/reth"],
+      relationship: "depends_on",
+      reason: "dep",
+    };
+    expect(rel.relationship).toBe("depends_on");
+  });
+
+  it("accepts protocol_dependency as a valid relationship value", () => {
+    const rel: CounterpartRelationship = {
+      source: "org/repo",
+      targets: ["mantle/reth"],
+      relationship: "protocol_dependency",
+      reason: "proto",
+    };
+    expect(rel.relationship).toBe("protocol_dependency");
+  });
+
+  it("accepts manual as a valid relationship value (backward compat)", () => {
+    const rel: CounterpartRelationship = {
+      source: "org/repo",
+      targets: ["mantle/reth"],
+      relationship: "manual",
+      reason: "manual",
+    };
+    expect(rel.relationship).toBe("manual");
+  });
+});
+
+// ---- reloadMantleConfig ----
+
+describe("reloadMantleConfig", () => {
+  const baseMantleConfig: MantleConfig = {
+    mantleTargets: [
+      {
+        projectId: "mantle/reth",
+        repoUrl: "https://github.com/mantleio/reth",
+        branch: "main",
+        tags: ["reth"],
+        notes: "test target",
+        architectureNotes: "Some architecture notes",
+      },
+    ],
+    counterpartRelationships: [
+      {
+        source: "org/repo",
+        targets: ["mantle/reth"],
+        relationship: "fork_of",
+        reason: "downstream fork",
+      },
+    ],
+  };
+
+  let tmpPath: string;
+
+  beforeEach(() => {
+    tmpPath = join(tmpdir(), `mantle-config-reload-test-${Date.now()}.json`);
+    writeFileSync(tmpPath, JSON.stringify(baseMantleConfig));
+    _setMantleConfigPath(tmpPath);
+    _resetMantleConfigCache();
+  });
+
+  afterEach(() => {
+    _resetMantleConfigCache();
+    _setMantleConfigPath(null);
+    try { unlinkSync(tmpPath); } catch {}
+  });
+
+  it("returns fresh data when file changes", () => {
+    reloadMantleConfig();
+    expect(getMantleConfig().mantleTargets[0]!.notes).toBe("test target");
+
+    const updated: MantleConfig = {
+      ...baseMantleConfig,
+      mantleTargets: [{ ...baseMantleConfig.mantleTargets[0]!, notes: "updated notes" }],
+    };
+    writeFileSync(tmpPath, JSON.stringify(updated));
+
+    const { config, changed } = reloadMantleConfig();
+    expect(changed).toBe(true);
+    expect(config.mantleTargets[0]!.notes).toBe("updated notes");
+    expect(getMantleConfig().mantleTargets[0]!.notes).toBe("updated notes");
+  });
+
+  it("warm reload with invalid JSON keeps cached config and logs a warning", () => {
+    reloadMantleConfig();
+    writeFileSync(tmpPath, "{ invalid json }");
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    const { changed } = reloadMantleConfig();
+    expect(changed).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[config-reload]"));
+    warnSpy.mockRestore();
+  });
+
+  it("cold start with invalid JSON throws", () => {
+    writeFileSync(tmpPath, "not json at all");
+    expect(() => reloadMantleConfig()).toThrow("[config-reload]");
+  });
+
+  it("deduplicates same source→target pair keeping highest strength relationship", () => {
+    const withDuplicates: MantleConfig = {
+      mantleTargets: baseMantleConfig.mantleTargets,
+      counterpartRelationships: [
+        { source: "org/a", targets: ["mantle/reth"], relationship: "manual", reason: "low" },
+        { source: "org/a", targets: ["mantle/reth"], relationship: "fork_of", reason: "high" },
+        { source: "org/a", targets: ["mantle/reth"], relationship: "depends_on", reason: "mid" },
+      ],
+    };
+    writeFileSync(tmpPath, JSON.stringify(withDuplicates));
+
+    const { config } = reloadMantleConfig();
+    const rels = config.counterpartRelationships.filter((r) => r.source === "org/a");
+    expect(rels).toHaveLength(1);
+    expect(rels[0]!.relationship).toBe("fork_of");
+  });
+});
+
+// ---- validateMantleConfig ----
+
+describe("validateMantleConfig", () => {
+  const validTarget = {
+    projectId: "mantle/reth",
+    repoUrl: "https://github.com/mantleio/reth",
+    branch: "main",
+    tags: [],
+    architectureNotes: "Detailed notes about architecture",
+  };
+
+  const trackedProjects = new Set(["org/source-repo", "other/tracked"]);
+
+  it("throws hard error when enabled=true and referenced target has no repoUrl", () => {
+    const config: MantleConfig = {
+      mantleTargets: [{ projectId: "mantle/reth", tags: [] }],
+      counterpartRelationships: [
+        { source: "org/source-repo", targets: ["mantle/reth"], relationship: "fork_of", reason: "fork" },
+      ],
+    };
+    expect(() => validateMantleConfig(config, trackedProjects, true)).toThrow(
+      /impactCheck.enabled=true.*repoUrl/
+    );
+  });
+
+  it("throws hard error when enabled=true and referenced target has non-github.com repoUrl", () => {
+    const config: MantleConfig = {
+      mantleTargets: [{ projectId: "mantle/reth", tags: [], repoUrl: "https://gitlab.com/mantle/reth" }],
+      counterpartRelationships: [
+        { source: "org/source-repo", targets: ["mantle/reth"], relationship: "fork_of", reason: "fork" },
+      ],
+    };
+    expect(() => validateMantleConfig(config, trackedProjects, true)).toThrow(
+      /impactCheck.enabled=true.*repoUrl/
+    );
+  });
+
+  it("does not throw when enabled=false even if repoUrl is missing", () => {
+    const config: MantleConfig = {
+      mantleTargets: [{ projectId: "mantle/reth", tags: [] }],
+      counterpartRelationships: [
+        { source: "org/source-repo", targets: ["mantle/reth"], relationship: "fork_of", reason: "fork" },
+      ],
+    };
+    expect(() => validateMantleConfig(config, trackedProjects, false)).not.toThrow();
+  });
+
+  it("warns when source is not in tracked projects", () => {
+    const config: MantleConfig = {
+      mantleTargets: [validTarget],
+      counterpartRelationships: [
+        { source: "untracked/repo", targets: ["mantle/reth"], relationship: "fork_of", reason: "x" },
+      ],
+    };
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    validateMantleConfig(config, trackedProjects, false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("not in tracked projects"));
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn when source is tracked", () => {
+    const config: MantleConfig = {
+      mantleTargets: [validTarget],
+      counterpartRelationships: [
+        { source: "org/source-repo", targets: ["mantle/reth"], relationship: "fork_of", reason: "x" },
+      ],
+    };
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    validateMantleConfig(config, trackedProjects, false);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it("warns when protocol_dependency target has empty architectureNotes", () => {
+    const config: MantleConfig = {
+      mantleTargets: [{ projectId: "mantle/reth", tags: [], repoUrl: "https://github.com/mantleio/reth", architectureNotes: "" }],
+      counterpartRelationships: [
+        { source: "org/source-repo", targets: ["mantle/reth"], relationship: "protocol_dependency", reason: "x" },
+      ],
+    };
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    validateMantleConfig(config, trackedProjects, false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("architectureNotes"));
+    warnSpy.mockRestore();
+  });
+
+  it("warns when protocol_dependency target has absent architectureNotes", () => {
+    const config: MantleConfig = {
+      mantleTargets: [{ projectId: "mantle/reth", tags: [], repoUrl: "https://github.com/mantleio/reth" }],
+      counterpartRelationships: [
+        { source: "org/source-repo", targets: ["mantle/reth"], relationship: "protocol_dependency", reason: "x" },
+      ],
+    };
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    validateMantleConfig(config, trackedProjects, false);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("architectureNotes"));
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn for protocol_dependency with architectureNotes populated", () => {
+    const config: MantleConfig = {
+      mantleTargets: [validTarget],
+      counterpartRelationships: [
+        { source: "org/source-repo", targets: ["mantle/reth"], relationship: "protocol_dependency", reason: "x" },
+      ],
+    };
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    validateMantleConfig(config, trackedProjects, false);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

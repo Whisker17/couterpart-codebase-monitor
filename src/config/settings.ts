@@ -1,6 +1,18 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 
+interface ImpactCheckConfig {
+  enabled: boolean;
+  maxChecksPerDay: number;
+  maxStepsPerCheck: number;
+  maxCostPerCheck: number;
+  monthlySubCap: number;
+  maxAgeDays: number;
+  clonesDir: string;
+  maxCloneDiskGB: number;
+  codegraphEnabled: boolean;
+}
+
 interface SettingsConfig {
   llm: {
     model: string;
@@ -27,6 +39,7 @@ interface SettingsConfig {
     warningThreshold: number;
     cutoffThreshold: number;
   };
+  impactCheck?: ImpactCheckConfig;
 }
 
 export interface Settings {
@@ -55,6 +68,7 @@ export interface Settings {
     warningThreshold: number;
     cutoffThreshold: number;
   };
+  impactCheck?: ImpactCheckConfig;
 }
 
 export interface SafeConfigSnapshot {
@@ -65,6 +79,7 @@ export interface SafeConfigSnapshot {
   };
   diffTokenBudget: number;
   maxManifestEntries: number;
+  impactCheck?: ImpactCheckConfig;
 }
 
 let _settings: Settings | null = null;
@@ -95,6 +110,26 @@ function validateSafeFields(cfg: SettingsConfig): void {
   if (typeof cfg.llm.maxManifestEntries !== "number") throw new Error("llm.maxManifestEntries must be a number");
 }
 
+const DEFAULT_IMPACT_CHECK: ImpactCheckConfig = {
+  enabled: false,
+  maxChecksPerDay: 5,
+  maxStepsPerCheck: 12,
+  maxCostPerCheck: 1.0,
+  monthlySubCap: 50,
+  maxAgeDays: 7,
+  clonesDir: "data/mantle-repos",
+  maxCloneDiskGB: 10,
+  codegraphEnabled: false,
+};
+
+function resolveImpactCheck(cfg: SettingsConfig): ImpactCheckConfig {
+  if (!cfg.impactCheck) {
+    console.info("[config] impactCheck section absent — impact checking disabled");
+    return { ...DEFAULT_IMPACT_CHECK };
+  }
+  return cfg.impactCheck;
+}
+
 function buildSettingsFromConfig(cfg: SettingsConfig): Settings {
   return {
     llm: {
@@ -113,6 +148,7 @@ function buildSettingsFromConfig(cfg: SettingsConfig): Settings {
     },
     schedule: cfg.schedule,
     budget: cfg.budget,
+    impactCheck: resolveImpactCheck(cfg),
   };
 }
 
@@ -121,6 +157,7 @@ function snapshotFromSettings(s: Settings): SafeConfigSnapshot {
     budget: { ...s.budget },
     diffTokenBudget: s.llm.diffTokenBudget,
     maxManifestEntries: s.llm.maxManifestEntries,
+    impactCheck: s.impactCheck ? { ...s.impactCheck } : undefined,
   };
 }
 
@@ -157,6 +194,7 @@ export function reloadSafeConfig(): {
     _settings.budget = cfg.budget;
     _settings.llm.diffTokenBudget = cfg.llm.diffTokenBudget;
     _settings.llm.maxManifestEntries = cfg.llm.maxManifestEntries;
+    _settings.impactCheck = resolveImpactCheck(cfg);
   }
 
   const next = snapshotFromSettings(_settings);

@@ -20,8 +20,19 @@
     "timezone": "Asia/Shanghai"
   },
   "budget": {
-    "monthlyCap": 80,
+    "monthlyCap": 150,
     "warningThreshold": 0.8,
     "cutoffThreshold": 1.0
+  },
+  "impactCheck": {
+    "enabled": false,
+    "maxChecksPerDay": 5,
+    "maxStepsPerCheck": 12,
+    "maxCostPerCheck": 1.0,
+    "monthlySubCap": 50,
+    "maxAgeDays": 7,
+    "clonesDir": "data/mantle-repos",
+    "maxCloneDiskGB": 10,
+    "codegraphEnabled": false
   }
 }
