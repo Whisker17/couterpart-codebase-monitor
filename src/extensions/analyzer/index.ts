@@ -1,7 +1,7 @@
 import type { Agent, AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import { getDb } from "../../storage/db";
-import { getSettings } from "../../config/settings";
+import { getBudgetStatus } from "../../utils/budget-tracker";
 import { reviewPR } from "./llm-reviewer";
 import { buildAnalysisContext } from "../../pipeline/stages/analyze";
 
@@ -49,18 +49,10 @@ const analyzePRTool: AgentTool = {
     }
 
     // Budget check before calling LLM
-    const settings = getSettings();
-    const now = new Date();
-    const monthStartUnix = Math.floor(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000);
-    const budgetRow = db
-      .query<{ total_cost: number | null }, [number]>(
-        `SELECT SUM(estimated_cost_usd) as total_cost FROM analyses WHERE analyzed_at >= ?`
-      )
-      .get(monthStartUnix);
-    const monthlySpend = budgetRow?.total_cost ?? 0;
-    if (monthlySpend >= settings.budget.monthlyCap) {
+    const budget = getBudgetStatus();
+    if (budget.action === "pause") {
       return {
-        content: [{ type: "text" as const, text: `Monthly budget cap ($${settings.budget.monthlyCap}) reached. Analysis skipped.` }],
+        content: [{ type: "text" as const, text: `Monthly budget cap ($${budget.budgetCapUSD}) reached. Analysis skipped.` }],
         details: { error: "budget_exhausted" },
       };
     }

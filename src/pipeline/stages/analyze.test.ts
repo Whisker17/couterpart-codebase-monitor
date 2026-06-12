@@ -102,6 +102,11 @@ CREATE TABLE IF NOT EXISTS analysis_inputs (
   truncated_diff_path TEXT,
   created_at INTEGER DEFAULT (unixepoch())
 );
+CREATE TABLE IF NOT EXISTS impact_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  estimated_cost_usd REAL,
+  checked_at INTEGER DEFAULT (unixepoch())
+);
 `;
 
 // Import after mocks
