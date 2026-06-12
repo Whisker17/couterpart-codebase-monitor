@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, afterEach, beforeEach } from "bun:test";
+import { describe, it, expect, mock, spyOn, afterEach, beforeEach } from "bun:test";
 import { join } from "node:path";
 import { rm, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -340,12 +340,9 @@ describe("runPipeline — config reload cold start failures", () => {
 
   let settingsTmp: string;
   let projectsTmp: string;
-  let originalProjectsSubscriptionUrl: string | undefined;
 
   beforeEach(() => {
     const os = require("node:os");
-    originalProjectsSubscriptionUrl = process.env["PROJECTS_SUBSCRIPTION_URL"];
-    delete process.env["PROJECTS_SUBSCRIPTION_URL"];
     settingsTmp = join(os.tmpdir(), `runner-settings-${Date.now()}.json`);
     projectsTmp = join(os.tmpdir(), `runner-projects-${Date.now()}.json`);
     writeFileSync(settingsTmp, JSON.stringify(validSettings));
@@ -373,8 +370,6 @@ describe("runPipeline — config reload cold start failures", () => {
     delete process.env["LLM_BASE_URL"];
     delete process.env["LLM_API_KEY"];
     delete process.env["GITHUB_TOKEN"];
-    if (originalProjectsSubscriptionUrl === undefined) delete process.env["PROJECTS_SUBSCRIPTION_URL"];
-    else process.env["PROJECTS_SUBSCRIPTION_URL"] = originalProjectsSubscriptionUrl;
   });
 
   it("settings cold start failure throws before any stage executes", async () => {
@@ -391,8 +386,9 @@ describe("runPipeline — config reload cold start failures", () => {
     expect(executed).toBe(false);
   });
 
-  it("projects cold start failure throws before any stage executes", async () => {
+  it("projects cold start failure is not fatal — stages still run so collect can use the SQLite fallback", async () => {
     writeFileSync(projectsTmp, "bad json");
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     let executed = false;
     const stage: PipelineStage = {
       name: "test",
@@ -401,28 +397,10 @@ describe("runPipeline — config reload cold start failures", () => {
         return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
       },
     };
-    await expect(runPipeline([stage])).rejects.toThrow("[config-reload]");
-    expect(executed).toBe(false);
+    await runPipeline([stage]);
+    expect(executed).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[config-reload]"));
+    warnSpy.mockRestore();
   });
 
-  it("subscription mode: pipeline reaches collect stage when projects.json is absent", async () => {
-    unlinkSync(projectsTmp);
-    const origUrl = process.env["PROJECTS_SUBSCRIPTION_URL"];
-    process.env["PROJECTS_SUBSCRIPTION_URL"] = "https://subscription.example.com/projects.json";
-    let stageReached = false;
-    const stage: PipelineStage = {
-      name: "collect",
-      execute: async () => {
-        stageReached = true;
-        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
-      },
-    };
-    try {
-      await runPipeline([stage]);
-      expect(stageReached).toBe(true);
-    } finally {
-      if (origUrl === undefined) delete process.env["PROJECTS_SUBSCRIPTION_URL"];
-      else process.env["PROJECTS_SUBSCRIPTION_URL"] = origUrl;
-    }
-  });
 });

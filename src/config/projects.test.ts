@@ -2,15 +2,16 @@ import { describe, it, expect, spyOn, beforeEach, afterEach } from "bun:test";
 import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { Database } from "bun:sqlite";
 import {
   getTrackedProjects,
   reloadTrackedProjects,
+  resolveProjectSnapshot,
   _resetProjectsCache,
   _setProjectsConfigPath,
   normalizeGitHubUrl,
   parseGitHubOrgRepo,
   parseAndValidateProjects,
-  projects,
 } from "./projects.ts";
 
 describe("getTrackedProjects", () => {
@@ -45,7 +46,7 @@ describe("getTrackedProjects", () => {
     const { getTrackedProjects } = await import("./projects.ts");
     const ps = getTrackedProjects();
     const keys = ps.map((p) => `${p.org}/${p.repo}`);
-    expect(keys).toContain("base/base");
+    expect(keys).toContain("ethereum/go-ethereum");
     expect(keys).toContain("ethereum-optimism/optimism");
   });
 
@@ -362,10 +363,184 @@ describe("parseAndValidateProjects — validation errors", () => {
   });
 });
 
-// ---- projects config object ----
+// ---- resolveProjectSnapshot — local subscription file ----
 
-describe("projects.fetchTimeoutMs", () => {
-  it("defaults to 10000", () => {
-    expect(projects.fetchTimeoutMs).toBe(10000);
+describe("resolveProjectSnapshot", () => {
+  let db: Database;
+  let tmpPath: string;
+
+  const fileV1 = [
+    { url: "https://github.com/base/base", tags: ["l2"] },
+    { url: "https://github.com/foo/bar", notes: "counterpart" },
+  ];
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.run(`CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      org TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      url TEXT NOT NULL,
+      source TEXT DEFAULT 'local',
+      active INTEGER DEFAULT 1,
+      inactive_reason TEXT,
+      subscription_synced_at INTEGER,
+      tags TEXT,
+      notes TEXT
+    )`);
+    tmpPath = join(tmpdir(), `projects-resolve-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(tmpPath, JSON.stringify(fileV1));
+    _setProjectsConfigPath(tmpPath);
+    _resetProjectsCache();
+  });
+
+  afterEach(() => {
+    db.close();
+    _resetProjectsCache();
+    _setProjectsConfigPath(null);
+    try {
+      unlinkSync(tmpPath);
+    } catch {}
+  });
+
+  it("first run syncs file content into SQLite and returns a syncResult", async () => {
+    const snapshot = await resolveProjectSnapshot(db);
+
+    expect(snapshot.syncResult).toBeDefined();
+    expect(snapshot.syncResult!.activated.sort()).toEqual(["base/base", "foo/bar"]);
+    expect(snapshot.projects.map((p) => `${p.org}/${p.repo}`).sort()).toEqual(["base/base", "foo/bar"]);
+
+    const row = db
+      .query<{ source: string; active: number }, []>("SELECT source, active FROM projects WHERE id = 'base/base'")
+      .get();
+    expect(row!.source).toBe("subscription");
+    expect(row!.active).toBe(1);
+  });
+
+  it("unchanged file still reconciles SQLite: reactivates an externally deactivated project", async () => {
+    await resolveProjectSnapshot(db);
+
+    // Simulate collect marking a project inactive after a transient repo_not_found
+    db.run("UPDATE projects SET active = 0, inactive_reason = 'repo_not_found' WHERE id = 'base/base'");
+
+    const second = await resolveProjectSnapshot(db);
+
+    expect(second.syncResult).toBeDefined();
+    expect(second.syncResult!.activated).toEqual(["base/base"]);
+    expect(second.projects.map((p) => `${p.org}/${p.repo}`).sort()).toEqual(["base/base", "foo/bar"]);
+
+    const row = db
+      .query<{ active: number; inactive_reason: string | null }, []>(
+        "SELECT active, inactive_reason FROM projects WHERE id = 'base/base'"
+      )
+      .get();
+    expect(row!.active).toBe(1);
+    expect(row!.inactive_reason).toBeNull();
+  });
+
+  it("syncs a fresh DB handle even when the file was already synced into another DB", async () => {
+    await resolveProjectSnapshot(db);
+
+    const secondDb = new Database(":memory:");
+    secondDb.run(`CREATE TABLE projects (
+      id TEXT PRIMARY KEY,
+      org TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      url TEXT NOT NULL,
+      source TEXT DEFAULT 'local',
+      active INTEGER DEFAULT 1,
+      inactive_reason TEXT,
+      subscription_synced_at INTEGER,
+      tags TEXT,
+      notes TEXT
+    )`);
+
+    const snapshot = await resolveProjectSnapshot(secondDb);
+    secondDb.close();
+
+    expect(snapshot.syncResult).toBeDefined();
+    expect(snapshot.projects.map((p) => `${p.org}/${p.repo}`).sort()).toEqual(["base/base", "foo/bar"]);
+  });
+
+  it("deactivates stale source='local' rows absent from the file", async () => {
+    db.run(
+      `INSERT INTO projects (id, org, repo, url, source, active) VALUES ('old/legacy', 'old', 'legacy', 'https://github.com/old/legacy', 'local', 1)`
+    );
+
+    const snapshot = await resolveProjectSnapshot(db);
+
+    expect(snapshot.syncResult!.deactivated).toEqual(["old/legacy"]);
+    expect(snapshot.projects.map((p) => `${p.org}/${p.repo}`).sort()).toEqual(["base/base", "foo/bar"]);
+
+    const row = db
+      .query<{ active: number; inactive_reason: string | null }, []>(
+        "SELECT active, inactive_reason FROM projects WHERE id = 'old/legacy'"
+      )
+      .get();
+    expect(row!.active).toBe(0);
+    expect(row!.inactive_reason).toBe("subscription_removed");
+  });
+
+  it("edited file re-syncs: adds new projects and deactivates removed ones", async () => {
+    await resolveProjectSnapshot(db);
+
+    const fileV2 = [
+      { url: "https://github.com/base/base", tags: ["l2"] },
+      { url: "https://github.com/new/proj" },
+    ];
+    writeFileSync(tmpPath, JSON.stringify(fileV2));
+
+    const snapshot = await resolveProjectSnapshot(db);
+
+    expect(snapshot.syncResult).toBeDefined();
+    expect(snapshot.syncResult!.activated).toEqual(["new/proj"]);
+    expect(snapshot.syncResult!.deactivated).toEqual(["foo/bar"]);
+    expect(snapshot.projects.map((p) => `${p.org}/${p.repo}`).sort()).toEqual(["base/base", "new/proj"]);
+
+    const removed = db
+      .query<{ active: number; inactive_reason: string | null }, []>(
+        "SELECT active, inactive_reason FROM projects WHERE id = 'foo/bar'"
+      )
+      .get();
+    expect(removed!.active).toBe(0);
+    expect(removed!.inactive_reason).toBe("subscription_removed");
+  });
+
+  it("invalid file falls back to the last successful SQLite snapshot", async () => {
+    await resolveProjectSnapshot(db);
+
+    writeFileSync(tmpPath, "{ not valid json");
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    const snapshot = await resolveProjectSnapshot(db);
+
+    expect(snapshot.syncResult).toBeUndefined();
+    expect(snapshot.projects.map((p) => `${p.org}/${p.repo}`).sort()).toEqual(["base/base", "foo/bar"]);
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("[subscription]"));
+    errorSpy.mockRestore();
+  });
+
+  it("invalid file falls back to pre-migration source='local' rows on an upgraded DB", async () => {
+    // Upgraded DB: only active rows are pre-migration source='local', no successful
+    // file sync has happened yet
+    db.run(
+      `INSERT INTO projects (id, org, repo, url, source, active) VALUES ('old/legacy', 'old', 'legacy', 'https://github.com/old/legacy', 'local', 1)`
+    );
+    writeFileSync(tmpPath, "{ not valid json");
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    const snapshot = await resolveProjectSnapshot(db);
+
+    expect(snapshot.syncResult).toBeUndefined();
+    expect(snapshot.projects.map((p) => `${p.org}/${p.repo}`)).toEqual(["old/legacy"]);
+    errorSpy.mockRestore();
+  });
+
+  it("missing file with no prior snapshot throws", async () => {
+    unlinkSync(tmpPath);
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(resolveProjectSnapshot(db)).rejects.toThrow("no prior tracked-project snapshot");
+    errorSpy.mockRestore();
   });
 });

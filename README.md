@@ -56,38 +56,24 @@ The default settings live in `config/settings.json`:
 - `schedule.monthlyCron`: monthly report schedule.
 - `budget.monthlyCap`: hard monthly analysis cost cap.
 
-Tracked projects live in `config/projects.json`. Each project needs:
+Tracked projects live in `config/projects.json` (see [Project Subscription File](#project-subscription-file)). Each project needs:
 
 ```json
 {
-  "org": "vercel",
-  "repo": "next.js",
   "url": "https://github.com/vercel/next.js",
   "tags": ["frontend", "framework", "react"]
 }
 ```
 
-## External Project Subscription
+## Project Subscription File
 
-Set `PROJECTS_SUBSCRIPTION_URL` in `.env` to load tracked projects from an external JSON file instead of the local `config/projects.json`. When set, the remote list takes precedence and `config/projects.json` is not read.
+Tracked projects are maintained in `config/projects.json`, inside the repository. The file is re-read and synced into SQLite at the start of every pipeline run, so adding or removing a project takes effect on the next run without restarting the service. The sync also reconciles drift: a project that was deactivated by a transient failure (for example `repo_not_found`) is reactivated on the next run as long as it is still listed in the file.
 
-```env
-PROJECTS_SUBSCRIPTION_URL=https://raw.githubusercontent.com/your-org/your-repo/main/projects.json
-```
-
-**Raw URL requirement**: the value must be a raw file URL that returns plain JSON — not a GitHub `blob` page URL. Use the `https://raw.githubusercontent.com/…` form:
-
-```
-# Correct — raw content URL
-https://raw.githubusercontent.com/your-org/your-repo/main/projects.json
-
-# Wrong — GitHub blob page URL (returns HTML, not JSON)
-https://github.com/your-org/your-repo/blob/main/projects.json
-```
+Projects removed from the file are deactivated in SQLite (`inactive_reason = 'subscription_removed'`); their historical PRs and analyses are retained. If the file is missing or invalid, the pipeline falls back to the last successful snapshot stored in SQLite and logs an error.
 
 ### Subscription JSON format
 
-The external file must be a JSON array of project objects. Each entry requires `url`; `tags` and `notes` are optional:
+The file must be a JSON array of project objects. Each entry requires `url`; `tags` and `notes` are optional:
 
 ```json
 [
@@ -108,22 +94,7 @@ Fields:
 - `tags` (optional) — array of strings; used to build LLM project context.
 - `notes` (optional) — free-form string; surfaced in LLM prompts.
 
-### Local JSON fallback
-
-When `PROJECTS_SUBSCRIPTION_URL` is not set, the pipeline falls back to `config/projects.json`. The local format uses explicit `org` and `repo` fields:
-
-```json
-{
-  "org": "vercel",
-  "repo": "next.js",
-  "url": "https://github.com/vercel/next.js",
-  "tags": ["frontend", "framework", "react"]
-}
-```
-
-### Known behavior: switching from subscription to local
-
-Removing `PROJECTS_SUBSCRIPTION_URL` does not automatically deactivate projects that were previously loaded from the external subscription. Those rows remain active in SQLite until an operator explicitly deactivates them or a migration path is defined in a follow-up.
+Explicit `org` and `repo` fields are accepted for backward compatibility, but must match the URL-derived identity.
 
 ## Local E2E Run
 

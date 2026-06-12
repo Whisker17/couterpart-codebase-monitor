@@ -210,10 +210,15 @@ export async function runPipeline(
   const { snapshot, prevSnapshot } = reloadSafeConfig();
   let projects: TrackedProject[] = [];
   let prevProjects: TrackedProject[] | null = null;
-  if (!process.env.PROJECTS_SUBSCRIPTION_URL) {
+  try {
     const reload = reloadTrackedProjects();
     projects = reload.projects;
     prevProjects = reload.prevProjects;
+  } catch (err) {
+    // Not fatal: this reload only feeds config-diff logging. The collect stage
+    // resolves projects itself and falls back to the last SQLite snapshot when
+    // the projects file is missing or invalid.
+    console.warn(`[config-reload] projects file unavailable at pipeline start: ${err}`);
   }
   logConfigReloadDiff(prevSnapshot, snapshot, prevProjects, projects);
 

@@ -420,37 +420,40 @@ describe("syncSubscriptionProjects — deactivate subscription rows absent from 
   });
 });
 
-describe("syncSubscriptionProjects — local rows unaffected", () => {
+describe("syncSubscriptionProjects — stale local rows", () => {
   let db: Database;
 
   afterEach(() => {
     db?.close();
   });
 
-  it("does not deactivate source=local rows even when absent from subscription", () => {
+  // Local mode no longer exists: rows left with source='local' (old local mode or
+  // migration default) are deactivated when absent from the projects file, so they
+  // cannot linger as active in CLI/status/report-count queries.
+  it("deactivates source=local rows absent from the projects file", () => {
     db = buildTestDbWithAll();
 
-    // Insert a local row
+    // Insert a stale local row
     db.query(
       `INSERT INTO projects (id, org, repo, url, source, active) VALUES (?, ?, ?, ?, 'local', 1)`
     ).run("local/proj", "local", "proj", "https://github.com/local/proj");
 
-    // Sync subscription with completely different projects
+    // Sync with completely different projects
     const incoming: TrackedProject[] = [
       { org: "base", repo: "base", url: "https://github.com/base/base", tags: [] },
     ];
 
     const result = syncSubscriptionProjects(incoming, db);
 
-    expect(result.deactivated).not.toContain("local/proj");
+    expect(result.deactivated).toContain("local/proj");
 
     const localRow = db
-      .query<{ active: number; source: string }, []>(
-        "SELECT active, source FROM projects WHERE id = 'local/proj'"
+      .query<{ active: number; inactive_reason: string | null }, []>(
+        "SELECT active, inactive_reason FROM projects WHERE id = 'local/proj'"
       )
       .get()!;
-    expect(localRow.active).toBe(1);
-    expect(localRow.source).toBe("local");
+    expect(localRow.active).toBe(0);
+    expect(localRow.inactive_reason).toBe("subscription_removed");
   });
 });
 

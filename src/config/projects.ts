@@ -41,8 +41,10 @@ export interface ProjectSnapshot {
   syncResult?: SyncResult;
 }
 
-// Module-level cache is restricted to local-only (getTrackedProjects / reloadTrackedProjects).
-// resolveProjectSnapshot never caches so remote data is not held across runs.
+// Module-level cache for the legacy loaders (getTrackedProjects / reloadTrackedProjects).
+// resolveProjectSnapshot never caches: it re-reads and re-syncs the projects file every
+// run so the DB is reconciled even when the file is unchanged (e.g. a project marked
+// inactive by a transient repo_not_found is reactivated on the next run).
 let _projects: TrackedProject[] | null = null;
 let _mantleConfig: MantleConfig | null = null;
 let _projectsConfigPath: string | null = null;
@@ -166,52 +168,6 @@ export function parseAndValidateProjects(data: unknown): TrackedProject[] {
   return result;
 }
 
-// ---- Legacy local-JSON validator (strict — used by getTrackedProjects / reloadTrackedProjects) ----
-
-function validateLocalProjects(data: unknown): TrackedProject[] {
-  if (!Array.isArray(data)) {
-    throw new Error("projects.json must be an array");
-  }
-  for (const entry of data) {
-    if (!entry || typeof entry.org !== "string" || entry.org.length === 0) {
-      throw new Error("Each project must have a non-empty org");
-    }
-    if (typeof entry.repo !== "string" || entry.repo.length === 0) {
-      throw new Error("Each project must have a non-empty repo");
-    }
-    if (typeof entry.url !== "string" || !entry.url.startsWith("https://github.com/")) {
-      throw new Error("Each project url must start with https://github.com/");
-    }
-  }
-  return data as TrackedProject[];
-}
-
-// ---- HTTP subscription fetcher ----
-
-export const projects = {
-  fetchTimeoutMs: 10000,
-};
-
-export async function fetchSubscriptionText(timeoutMs = projects.fetchTimeoutMs): Promise<string> {
-  const url = process.env.PROJECTS_SUBSCRIPTION_URL;
-  if (!url) {
-    throw new Error("PROJECTS_SUBSCRIPTION_URL is not set");
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) {
-      throw new Error(`Subscription fetch failed: ${res.status} ${res.statusText}`);
-    }
-    return await res.text();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 // ---- SQLite subscription sync helper ----
 
 interface ProjectRow {
@@ -273,17 +229,19 @@ export function syncSubscriptionProjects(validatedProjects: TrackedProject[], db
       }
     }
 
-    // Deactivate subscription rows absent from incoming set
-    const subscriptionRows = db
+    // Deactivate rows absent from the incoming set. Covers source='local' too:
+    // rows created by the removed local mode (or defaulted by migration) would
+    // otherwise stay active forever once dropped from the projects file.
+    const trackedRows = db
       .query<{ id: string; active: number }, []>(
-        "SELECT id, active FROM projects WHERE source = 'subscription'"
+        "SELECT id, active FROM projects WHERE source IN ('subscription', 'local')"
       )
       .all();
 
-    for (const row of subscriptionRows) {
+    for (const row of trackedRows) {
       if (!incomingIds.has(row.id) && row.active === 1) {
         db.query(
-          "UPDATE projects SET active = 0, inactive_reason = 'subscription_removed' WHERE id = ? AND source = 'subscription'"
+          "UPDATE projects SET active = 0, inactive_reason = 'subscription_removed' WHERE id = ? AND source IN ('subscription', 'local')"
         ).run(row.id);
         deactivated.push(row.id);
       }
@@ -297,90 +255,55 @@ export function syncSubscriptionProjects(validatedProjects: TrackedProject[], db
 
 // ---- Project resolver ----
 
+// Includes source='local' so an upgraded DB that only has pre-migration local rows
+// still yields a usable fallback snapshot before the first successful file sync.
+// After a sync this is equivalent to subscription-only: file-listed rows are converted
+// to source='subscription' and stale local rows are deactivated.
+function readActiveTrackedProjects(db: Database): TrackedProject[] {
+  const activeRows = db
+    .query<
+      { id: string; org: string; repo: string; url: string; tags: string | null; notes: string | null },
+      []
+    >(
+      "SELECT id, org, repo, url, tags, notes FROM projects WHERE source IN ('subscription', 'local') AND active = 1"
+    )
+    .all();
+
+  return activeRows.map((r) => ({
+    org: r.org,
+    repo: r.repo,
+    url: r.url,
+    tags: r.tags ? (JSON.parse(r.tags) as string[]) : [],
+    notes: r.notes ?? undefined,
+  }));
+}
+
+// Reads the subscription file (config/projects.json) on every call so edits are picked
+// up without a restart, and always runs the DB sync so SQLite is reconciled back to the
+// file-defined set even when the file content is unchanged.
 export async function resolveProjectSnapshot(db: Database): Promise<ProjectSnapshot> {
-  const subscriptionUrl = process.env.PROJECTS_SUBSCRIPTION_URL;
+  let validatedProjects: TrackedProject[];
 
-  if (subscriptionUrl) {
-    let validatedProjects: TrackedProject[];
+  try {
+    const rawText = readFileSync(getProjectsConfigPath(), "utf-8");
+    validatedProjects = parseAndValidateProjects(JSON.parse(rawText));
+  } catch (err) {
+    console.error(`[subscription] Projects file read or validation failed: ${err}`);
 
-    try {
-      const rawText = await fetchSubscriptionText();
-      const data = JSON.parse(rawText);
-      validatedProjects = parseAndValidateProjects(data);
-    } catch (err) {
-      console.error(`[subscription] Fetch or validation failed: ${err}`);
-
-      const activeRows = db
-        .query<
-          { id: string; org: string; repo: string; url: string; tags: string | null; notes: string | null },
-          []
-        >("SELECT id, org, repo, url, tags, notes FROM projects WHERE source = 'subscription' AND active = 1")
-        .all();
-
-      if (activeRows.length === 0) {
-        throw new Error(
-          `[subscription] Fetch or validation failed and no prior subscription snapshot exists in SQLite. ` +
-            `Fix the subscription URL or seed the database before retrying. Original error: ${err}`
-        );
-      }
-
-      const fallback: TrackedProject[] = activeRows.map((r) => ({
-        org: r.org,
-        repo: r.repo,
-        url: r.url,
-        tags: r.tags ? (JSON.parse(r.tags) as string[]) : [],
-        notes: r.notes ?? undefined,
-      }));
-
-      return { projects: fallback };
+    const fallback = readActiveTrackedProjects(db);
+    if (fallback.length === 0) {
+      throw new Error(
+        `[subscription] Projects file read or validation failed and no prior tracked-project snapshot exists in SQLite. ` +
+          `Fix ${getProjectsConfigPath()} or seed the database before retrying. Original error: ${err}`
+      );
     }
 
-    const syncResult = syncSubscriptionProjects(validatedProjects, db);
-
-    const activeRows = db
-      .query<
-        { id: string; org: string; repo: string; url: string; tags: string | null; notes: string | null },
-        []
-      >("SELECT id, org, repo, url, tags, notes FROM projects WHERE source = 'subscription' AND active = 1")
-      .all();
-
-    const resolvedProjects: TrackedProject[] = activeRows.map((r) => ({
-      org: r.org,
-      repo: r.repo,
-      url: r.url,
-      tags: r.tags ? (JSON.parse(r.tags) as string[]) : [],
-      notes: r.notes ?? undefined,
-    }));
-
-    return { projects: resolvedProjects, syncResult };
+    return { projects: fallback };
   }
 
-  // Local JSON mode — not cached so subsequent runs pick up file changes
-  const raw = readFileSync(getProjectsConfigPath(), "utf-8");
-  const data = JSON.parse(raw);
-  const localProjects = parseAndValidateProjects(data);
+  const syncResult = syncSubscriptionProjects(validatedProjects, db);
 
-  for (const project of localProjects) {
-    const projectId = `${project.org}/${project.repo}`;
-    const existing = db
-      .query<{ id: string }, [string]>("SELECT id FROM projects WHERE id = ?")
-      .get(projectId);
-
-    const tagsJson = JSON.stringify(project.tags ?? []);
-    const notesVal = project.notes ?? null;
-
-    if (existing) {
-      db.query(
-        `UPDATE projects SET active = 1, source = 'local', tags = ?, notes = ?, url = ?, org = ?, repo = ? WHERE id = ?`
-      ).run(tagsJson, notesVal, project.url, project.org, project.repo, projectId);
-    } else {
-      db.query(
-        `INSERT INTO projects (id, org, repo, url, source, active, tags, notes) VALUES (?, ?, ?, ?, 'local', 1, ?, ?)`
-      ).run(projectId, project.org, project.repo, project.url, tagsJson, notesVal);
-    }
-  }
-
-  return { projects: localProjects };
+  return { projects: readActiveTrackedProjects(db), syncResult };
 }
 
 // ---- Legacy API (backward compat — local-only, uses module-level cache) ----
@@ -389,7 +312,7 @@ export function getTrackedProjects(): TrackedProject[] {
   if (_projects) return _projects;
   const raw = readFileSync(getProjectsConfigPath(), "utf-8");
   const data = JSON.parse(raw);
-  _projects = validateLocalProjects(data);
+  _projects = parseAndValidateProjects(data);
   return _projects;
 }
 
@@ -412,7 +335,7 @@ export function reloadTrackedProjects(): {
   try {
     const raw = readFileSync(getProjectsConfigPath(), "utf-8");
     const data = JSON.parse(raw);
-    next = validateLocalProjects(data);
+    next = parseAndValidateProjects(data);
   } catch (e) {
     if (prev) {
       console.warn(`[config-reload] Failed to reload projects.json, using cached projects: ${e}`);
