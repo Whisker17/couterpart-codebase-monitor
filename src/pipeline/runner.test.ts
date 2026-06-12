@@ -11,7 +11,7 @@ import {
 } from "./runner";
 import type { PipelineContext, PipelineStage, StageResult } from "./runner";
 import { _resetSettingsCache, _setSettingsConfigPath } from "../config/settings";
-import { _resetProjectsCache, _setProjectsConfigPath } from "../config/projects";
+import { _resetProjectsCache, _setProjectsConfigPath, _resetMantleConfigCache, _setMantleConfigPath } from "../config/projects";
 
 function makeStage(name: string, override?: Partial<StageResult> | (() => never)): PipelineStage {
   return {
@@ -337,20 +337,33 @@ describe("runPipeline — config reload cold start failures", () => {
     budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
   };
   const validProjects = [{ org: "base", repo: "base", url: "https://github.com/base/base" }];
+  const validMantleConfig = {
+    mantleTargets: [
+      { projectId: "mantle/reth", repoUrl: "https://github.com/mantleio/reth", tags: [], architectureNotes: "notes" },
+    ],
+    counterpartRelationships: [
+      { source: "base/base", targets: ["mantle/reth"], relationship: "fork_of", reason: "fork" },
+    ],
+  };
 
   let settingsTmp: string;
   let projectsTmp: string;
+  let mantleTmp: string;
 
   beforeEach(() => {
     const os = require("node:os");
     settingsTmp = join(os.tmpdir(), `runner-settings-${Date.now()}.json`);
     projectsTmp = join(os.tmpdir(), `runner-projects-${Date.now()}.json`);
+    mantleTmp = join(os.tmpdir(), `runner-mantle-${Date.now()}.json`);
     writeFileSync(settingsTmp, JSON.stringify(validSettings));
     writeFileSync(projectsTmp, JSON.stringify(validProjects));
+    writeFileSync(mantleTmp, JSON.stringify(validMantleConfig));
     _setSettingsConfigPath(settingsTmp);
     _setProjectsConfigPath(projectsTmp);
+    _setMantleConfigPath(mantleTmp);
     _resetSettingsCache();
     _resetProjectsCache();
+    _resetMantleConfigCache();
     process.env["LLM_BASE_URL"] = "https://example.com/v1";
     process.env["LLM_API_KEY"] = "sk-test";
     process.env["GITHUB_TOKEN"] = "ghp_test";
@@ -359,14 +372,13 @@ describe("runPipeline — config reload cold start failures", () => {
   afterEach(() => {
     _resetSettingsCache();
     _resetProjectsCache();
+    _resetMantleConfigCache();
     _setSettingsConfigPath(null);
     _setProjectsConfigPath(null);
-    try {
-      unlinkSync(settingsTmp);
-    } catch {}
-    try {
-      unlinkSync(projectsTmp);
-    } catch {}
+    _setMantleConfigPath(null);
+    try { unlinkSync(settingsTmp); } catch {}
+    try { unlinkSync(projectsTmp); } catch {}
+    try { unlinkSync(mantleTmp); } catch {}
     delete process.env["LLM_BASE_URL"];
     delete process.env["LLM_API_KEY"];
     delete process.env["GITHUB_TOKEN"];
@@ -402,5 +414,132 @@ describe("runPipeline — config reload cold start failures", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("[config-reload]"));
     warnSpy.mockRestore();
   });
+});
 
+describe("runPipeline — validateMantleConfig gate", () => {
+  const baseSettings = {
+    llm: {
+      model: "test-model",
+      baseUrlEnvVar: "LLM_BASE_URL",
+      apiKeyEnvVar: "LLM_API_KEY",
+      maxTokensPerCall: 4096,
+      diffTokenBudget: 8000,
+      maxManifestEntries: 100,
+    },
+    lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
+    github: { tokenEnvVar: "GITHUB_TOKEN" },
+    schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", monthlyCron: "0 10 1 * *", timezone: "UTC" },
+    budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
+  };
+  const validProjects = [{ org: "base", repo: "base", url: "https://github.com/base/base" }];
+
+  let settingsTmp: string;
+  let projectsTmp: string;
+  let mantleTmp: string;
+
+  beforeEach(() => {
+    const os = require("node:os");
+    settingsTmp = join(os.tmpdir(), `runner-validate-settings-${Date.now()}.json`);
+    projectsTmp = join(os.tmpdir(), `runner-validate-projects-${Date.now()}.json`);
+    mantleTmp = join(os.tmpdir(), `runner-validate-mantle-${Date.now()}.json`);
+    writeFileSync(projectsTmp, JSON.stringify(validProjects));
+    _setSettingsConfigPath(settingsTmp);
+    _setProjectsConfigPath(projectsTmp);
+    _setMantleConfigPath(mantleTmp);
+    _resetSettingsCache();
+    _resetProjectsCache();
+    _resetMantleConfigCache();
+    process.env["LLM_BASE_URL"] = "https://example.com/v1";
+    process.env["LLM_API_KEY"] = "sk-test";
+    process.env["GITHUB_TOKEN"] = "ghp_test";
+  });
+
+  afterEach(() => {
+    _resetSettingsCache();
+    _resetProjectsCache();
+    _resetMantleConfigCache();
+    _setSettingsConfigPath(null);
+    _setProjectsConfigPath(null);
+    _setMantleConfigPath(null);
+    try { unlinkSync(settingsTmp); } catch {}
+    try { unlinkSync(projectsTmp); } catch {}
+    try { unlinkSync(mantleTmp); } catch {}
+    delete process.env["LLM_BASE_URL"];
+    delete process.env["LLM_API_KEY"];
+    delete process.env["GITHUB_TOKEN"];
+  });
+
+  it("throws before any stage executes when impactCheck.enabled=true and referenced target is missing repoUrl", async () => {
+    writeFileSync(settingsTmp, JSON.stringify({
+      ...baseSettings,
+      impactCheck: { enabled: true, maxChecksPerDay: 5, maxStepsPerCheck: 12, maxCostPerCheck: 1.0, monthlySubCap: 50, maxAgeDays: 7, clonesDir: "data", maxCloneDiskGB: 10, codegraphEnabled: false },
+    }));
+    writeFileSync(mantleTmp, JSON.stringify({
+      mantleTargets: [{ projectId: "mantle/reth", tags: [] }],
+      counterpartRelationships: [
+        { source: "base/base", targets: ["mantle/reth"], relationship: "fork_of", reason: "fork" },
+      ],
+    }));
+
+    let executed = false;
+    const stage: PipelineStage = {
+      name: "test",
+      execute: async () => {
+        executed = true;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+    await expect(runPipeline([stage])).rejects.toThrow(/impactCheck.enabled=true.*repoUrl/);
+    expect(executed).toBe(false);
+  });
+
+  it("throws before any stage executes when impactCheck.enabled=true and referenced target has non-github.com repoUrl", async () => {
+    writeFileSync(settingsTmp, JSON.stringify({
+      ...baseSettings,
+      impactCheck: { enabled: true, maxChecksPerDay: 5, maxStepsPerCheck: 12, maxCostPerCheck: 1.0, monthlySubCap: 50, maxAgeDays: 7, clonesDir: "data", maxCloneDiskGB: 10, codegraphEnabled: false },
+    }));
+    writeFileSync(mantleTmp, JSON.stringify({
+      mantleTargets: [{ projectId: "mantle/reth", tags: [], repoUrl: "https://gitlab.com/mantle/reth" }],
+      counterpartRelationships: [
+        { source: "base/base", targets: ["mantle/reth"], relationship: "fork_of", reason: "fork" },
+      ],
+    }));
+
+    let executed = false;
+    const stage: PipelineStage = {
+      name: "test",
+      execute: async () => {
+        executed = true;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+    await expect(runPipeline([stage])).rejects.toThrow(/impactCheck.enabled=true.*repoUrl/);
+    expect(executed).toBe(false);
+  });
+
+  it("does not throw when impactCheck.enabled=false even if repoUrl is missing", async () => {
+    writeFileSync(settingsTmp, JSON.stringify({
+      ...baseSettings,
+      impactCheck: { enabled: false, maxChecksPerDay: 5, maxStepsPerCheck: 12, maxCostPerCheck: 1.0, monthlySubCap: 50, maxAgeDays: 7, clonesDir: "data", maxCloneDiskGB: 10, codegraphEnabled: false },
+    }));
+    writeFileSync(mantleTmp, JSON.stringify({
+      mantleTargets: [{ projectId: "mantle/reth", tags: [] }],
+      counterpartRelationships: [
+        { source: "base/base", targets: ["mantle/reth"], relationship: "fork_of", reason: "fork" },
+      ],
+    }));
+
+    let executed = false;
+    const stage: PipelineStage = {
+      name: "test",
+      execute: async () => {
+        executed = true;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    await runPipeline([stage]);
+    warnSpy.mockRestore();
+    expect(executed).toBe(true);
+  });
 });
