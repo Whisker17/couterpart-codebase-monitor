@@ -11,6 +11,7 @@ import { _resetProjectsCache, _setProjectsConfigPath, _resetMantleConfigCache, _
 import type { PipelineContext } from "../runner";
 import type { CloneSyncState, syncTarget } from "../../extensions/impact-checker/clone-manager";
 import type { ImpactCheckVerdict, runImpactCheck } from "../../extensions/impact-checker/checker";
+import type { GateInput, upsertImpactChecks } from "../../extensions/impact-checker/index";
 
 const BASE_SETTINGS = {
   llm: {
@@ -183,6 +184,22 @@ function applySchema(db: Database): void {
   `);
 }
 
+function insertAnalysisOnly(db: Database): { prId: number; analysisId: number } {
+  db.exec(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/source-repo', 'org', 'source-repo', 'https://github.com/org/source-repo')`);
+  const now = Math.floor(Date.now() / 1000);
+  db.query(`
+    INSERT INTO pull_requests (project_id, pr_number, title, body, merged_at, diff_status)
+    VALUES ('org/source-repo', 10, 'Gate PR', 'Gate body', ?, 'missing')
+  `).run(now - 3600);
+  const pr = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+  db.query(`
+    INSERT INTO analyses (pr_id, project_id, summary, technical_detail, downstream_impact_hint, significance)
+    VALUES (?, 'org/source-repo', 'Gate summary', 'Gate details', 'likely', 'notable')
+  `).run(pr.id);
+  const analysis = db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+  return { prId: pr.id, analysisId: analysis.id };
+}
+
 function insertTestData(db: Database): { prId: number; analysisId: number; checkId: number } {
   db.exec(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/source-repo', 'org', 'source-repo', 'https://github.com/org/source-repo')`);
 
@@ -338,6 +355,36 @@ describe("impact-check stage — agentic flow", () => {
     db.close();
   });
 
+  it("calls upsertImpactChecksFn with gateInputs built from unchecked analyses", async () => {
+    const { prId, analysisId } = insertAnalysisOnly(db);
+
+    let capturedInputs: GateInput[] | undefined;
+    const mockUpsert = (_dbArg: Database, inputs: GateInput[], ...rest: unknown[]) => {
+      capturedInputs = inputs;
+      return 0;
+    };
+
+    const deps: ImpactCheckStageDeps = {
+      getSettingsFn: (() => ({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG })) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: mockUpsert as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: (() => Promise.resolve()) as unknown as typeof syncTarget,
+    };
+
+    await execute(makeCtx(), deps);
+
+    expect(capturedInputs).toBeDefined();
+    const inputs = capturedInputs!;
+    expect(inputs.length).toBe(1);
+    const first = inputs[0]!;
+    expect(first.analysisId).toBe(analysisId);
+    expect(first.prId).toBe(prId);
+    expect(first.projectId).toBe("org/source-repo");
+    expect(first.significance).toBe("notable");
+    expect(first.downstreamImpactHint).toBe("likely");
+  });
+
   it("calls syncTarget once per unique target, not once per pending row", async () => {
     // Insert two pending rows for the same target
     insertTestData(db);
@@ -373,6 +420,7 @@ describe("impact-check stage — agentic flow", () => {
     const deps: ImpactCheckStageDeps = {
       getSettingsFn: (() => ({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG })) as unknown as typeof getSettings,
       getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
       processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
       syncTargetFn: mockSyncTarget as typeof syncTarget,
       runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
@@ -396,6 +444,7 @@ describe("impact-check stage — agentic flow", () => {
     const deps: ImpactCheckStageDeps = {
       getSettingsFn: (() => ({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG })) as unknown as typeof getSettings,
       getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
       processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
       syncTargetFn: mockSyncTarget as typeof syncTarget,
       runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
@@ -431,6 +480,7 @@ describe("impact-check stage — agentic flow", () => {
     const deps: ImpactCheckStageDeps = {
       getSettingsFn: (() => ({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG })) as unknown as typeof getSettings,
       getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
       processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
       syncTargetFn: mockSyncTarget as typeof syncTarget,
       runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
@@ -443,14 +493,15 @@ describe("impact-check stage — agentic flow", () => {
     expect(result.itemsProcessed).toBe(0);
 
     const row = db
-      .query<{ status: string; retry_count: number; last_error: string }, [number]>(
-        "SELECT status, retry_count, last_error FROM impact_checks WHERE id = ?"
+      .query<{ status: string; retry_count: number; last_error: string; checked_at: number | null }, [number]>(
+        "SELECT status, retry_count, last_error, checked_at FROM impact_checks WHERE id = ?"
       )
       .get(checkId);
 
     expect(row?.status).toBe("failed");
     expect(row?.retry_count).toBe(1);
     expect(row?.last_error).toBe("LLM API unreachable");
+    expect(row?.checked_at).not.toBeNull();
   });
 
   it("returns success=true with itemsProcessed=0 when pending queue is empty", async () => {
@@ -465,6 +516,7 @@ describe("impact-check stage — agentic flow", () => {
     const deps: ImpactCheckStageDeps = {
       getSettingsFn: (() => ({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG })) as unknown as typeof getSettings,
       getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
       processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
       syncTargetFn: mockSyncTarget as typeof syncTarget,
     };

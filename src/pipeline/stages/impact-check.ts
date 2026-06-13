@@ -5,14 +5,23 @@ import { getDb } from "../../storage/db";
 import { getSettings } from "../../config/settings";
 import { reloadMantleConfig } from "../../config/projects";
 import type { CounterpartRelationship, MantleConfig, MantleTarget } from "../../config/projects";
-import { processQueue, getPendingQueue } from "../../extensions/impact-checker/index";
-import type { PendingRow } from "../../extensions/impact-checker/index";
+import { processQueue, getPendingQueue, upsertImpactChecks } from "../../extensions/impact-checker/index";
+import type { PendingRow, GateInput } from "../../extensions/impact-checker/index";
 import { syncTarget } from "../../extensions/impact-checker/clone-manager";
 import type { CloneSyncState, CloneManagerOptions } from "../../extensions/impact-checker/clone-manager";
 import { runImpactCheck } from "../../extensions/impact-checker/checker";
 import type { CheckerInput, ImpactCheckVerdict } from "../../extensions/impact-checker/checker";
 
 type ImpactRelationship = "fork_of" | "depends_on" | "protocol_dependency";
+
+interface GateInputRow {
+  id: number;
+  pr_id: number;
+  project_id: string;
+  merged_at: number | null;
+  significance: string | null;
+  downstream_impact_hint: string | null;
+}
 
 interface PRAnalysisRow {
   title: string;
@@ -26,6 +35,7 @@ interface PRAnalysisRow {
 export interface ImpactCheckStageDeps {
   getSettingsFn?: typeof getSettings;
   getDbFn?: () => Database;
+  upsertImpactChecksFn?: typeof upsertImpactChecks;
   processQueueFn?: typeof processQueue;
   syncTargetFn?: typeof syncTarget;
   runImpactCheckFn?: typeof runImpactCheck;
@@ -131,7 +141,8 @@ function writeVerdictError(db: Database, rowId: number, error: string): void {
     UPDATE impact_checks SET
       status = 'failed',
       retry_count = retry_count + 1,
-      last_error = ?
+      last_error = ?,
+      checked_at = unixepoch()
     WHERE id = ?
   `).run(error, rowId);
 }
@@ -149,27 +160,51 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
     const { config: mantleConfig } = reloadMantleConfig();
     const impactCheckConfig = settings.impactCheck;
 
+    const upsertImpactChecksFn = deps?.upsertImpactChecksFn ?? upsertImpactChecks;
     const processQueueFn = deps?.processQueueFn ?? processQueue;
     const syncTargetFn = deps?.syncTargetFn ?? syncTarget;
     const runImpactCheckFn = deps?.runImpactCheckFn ?? runImpactCheck;
 
-    // 1. Queue governance: expire stale rows, revive failed rows, budget shutdown
+    // 1. Enqueue new analyses as pending impact_checks rows
+    const gateInputRows = db.query<GateInputRow, []>(`
+      SELECT a.id, a.pr_id, pr.project_id, pr.merged_at,
+             a.significance, a.downstream_impact_hint
+      FROM analyses a
+      JOIN pull_requests pr ON a.pr_id = pr.id
+      WHERE a.id NOT IN (
+        SELECT analysis_id FROM impact_checks
+        WHERE status NOT IN ('expired')
+      )
+    `).all();
+
+    const gateInputs: GateInput[] = gateInputRows.map((r) => ({
+      prId: r.pr_id,
+      analysisId: r.id,
+      projectId: r.project_id,
+      mergedAt: r.merged_at,
+      significance: r.significance as GateInput["significance"],
+      downstreamImpactHint: r.downstream_impact_hint as GateInput["downstreamImpactHint"],
+    }));
+
+    upsertImpactChecksFn(db, gateInputs, mantleConfig, impactCheckConfig);
+
+    // 2. Queue governance: expire stale rows, revive failed rows, budget shutdown
     processQueueFn(db, impactCheckConfig);
 
-    // 2. Get pending queue ordered by priority
+    // 3. Get pending queue ordered by priority
     const pendingRows = getPendingQueue(db, impactCheckConfig);
     if (pendingRows.length === 0) {
       return { success: true, itemsProcessed: 0, errors: [], durationMs: Date.now() - stageStart };
     }
 
-    // 3. Clone sync — once per unique target_project_id
+    // 4. Clone sync — once per unique target_project_id
     const cloneOpts: CloneManagerOptions = {
       clonesDir: impactCheckConfig.clonesDir,
       maxCloneDiskGB: impactCheckConfig.maxCloneDiskGB,
     };
     const cloneStates = await syncUniqueTargets(pendingRows, mantleConfig, cloneOpts, syncTargetFn);
 
-    // 4. Process pending rows serially
+    // 5. Process pending rows serially
     let itemsProcessed = 0;
 
     for (const row of pendingRows) {
