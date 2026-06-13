@@ -203,4 +203,36 @@ describe("grep_repo tool", () => {
     const result = await (grep_repo.execute as Function)({ pattern: "test" }, {} as any);
     expect(result.error).toContain("grep_repo failed");
   });
+
+  it("passes allowlisted flags to rg", async () => {
+    const capturedArgs: string[][] = [];
+    _setRgRunner(async (args) => {
+      capturedArgs.push(args);
+      return { stdout: "match", stderr: "", exitCode: 0, timedOut: false };
+    });
+    const { grep_repo } = makeAgentTools(CLONE_DIR);
+    const result = await (grep_repo.execute as Function)(
+      { pattern: "test", flags: ["-i", "-w"] },
+      {} as any
+    );
+    expect(result.error).toBeUndefined();
+    expect(capturedArgs[0]).toContain("-i");
+    expect(capturedArgs[0]).toContain("-w");
+  });
+
+  it("rejects disallowed flags (e.g. --pre) without calling rg", async () => {
+    let rgCalled = false;
+    _setRgRunner(async () => {
+      rgCalled = true;
+      return { stdout: "", stderr: "", exitCode: 0, timedOut: false };
+    });
+    const { grep_repo } = makeAgentTools(CLONE_DIR);
+    const result = await (grep_repo.execute as Function)(
+      { pattern: "test", flags: ["--pre", "/usr/bin/evil"] },
+      {} as any
+    );
+    expect(result.error).toContain("Flag not allowed");
+    expect(result.error).toContain("--pre");
+    expect(rgCalled).toBe(false);
+  });
 });

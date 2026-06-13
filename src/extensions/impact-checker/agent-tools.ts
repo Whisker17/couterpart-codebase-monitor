@@ -1,6 +1,6 @@
 import { realpathSync, existsSync, readFileSync } from "fs";
 import { resolve, isAbsolute } from "path";
-import { tool } from "ai";
+import { tool, zodSchema } from "ai";
 import { z } from "zod";
 
 const GREP_TIMEOUT_MS = 30_000;
@@ -8,6 +8,14 @@ const MAX_GREP_MATCHES = 50;
 const MAX_READ_LINES = 250;
 const MAX_OUTPUT_BYTES = 8 * 1024; // 8KB
 const MAX_OUTPUT_LINES = 200;
+
+// Strict allowlist: only inert search-modifier flags may be forwarded to rg.
+// rg --pre <cmd> and similar preprocessor flags are excluded to prevent RCE.
+const ALLOWED_GREP_FLAGS = new Set([
+  "-i", "--ignore-case",
+  "-w", "--word-regexp",
+  "-l", "--files-with-matches",
+]);
 
 // Exported for testing
 export type RgRunner = (
@@ -144,22 +152,44 @@ function capOutput(text: string): string {
   return joined;
 }
 
+const grepParamSchema = z.object({
+  pattern: z.string().describe("Regex or literal pattern to search for"),
+  path: z
+    .string()
+    .optional()
+    .describe("Optional subdirectory or file path within the repo (relative)"),
+  flags: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Optional search modifiers. Allowed values: -i / --ignore-case, -w / --word-regexp, -l / --files-with-matches"
+    ),
+});
+
+const readParamSchema = z.object({
+  path: z.string().describe("Relative path to the file within the repository"),
+  start_line: z
+    .number()
+    .optional()
+    .describe("Start line number (1-indexed, inclusive). Defaults to 1."),
+  end_line: z
+    .number()
+    .optional()
+    .describe(
+      `End line number (1-indexed, inclusive). Defaults to start_line + ${MAX_READ_LINES - 1}.`
+    ),
+});
+
 export function makeAgentTools(cloneDir: string) {
   const grepRepo = tool({
     description:
       "Search the fork repository using ripgrep. Returns matching lines with file paths and line numbers. Limited to 50 matches.",
-    parameters: z.object({
-      pattern: z.string().describe("Regex or literal pattern to search for"),
-      path: z
-        .string()
-        .optional()
-        .describe("Optional subdirectory or file path within the repo (relative)"),
-      extra_args: z
-        .array(z.string())
-        .optional()
-        .describe("Additional rg arguments (e.g. ['--type', 'ts'])"),
-    }),
-    execute: async ({ pattern, path, extra_args }) => {
+    inputSchema: zodSchema(grepParamSchema),
+    execute: async ({
+      pattern,
+      path,
+      flags,
+    }: z.infer<typeof grepParamSchema>) => {
       // Build argv array — no shell interpolation
       const args: string[] = [
         "--line-number",
@@ -170,9 +200,17 @@ export function makeAgentTools(cloneDir: string) {
         String(MAX_GREP_MATCHES),
       ];
 
-      if (extra_args) {
-        for (const arg of extra_args) {
-          args.push(arg);
+      // Validate flags against allowlist before appending to subprocess args.
+      // This prevents arbitrary flag injection (e.g. --pre <cmd>) that could
+      // execute attacker-controlled code for each matched file.
+      if (flags && flags.length > 0) {
+        for (const flag of flags) {
+          if (!ALLOWED_GREP_FLAGS.has(flag)) {
+            return {
+              error: `Flag not allowed: '${flag}'. Allowed flags: ${[...ALLOWED_GREP_FLAGS].join(", ")}`,
+            };
+          }
+          args.push(flag);
         }
       }
 
@@ -218,20 +256,12 @@ export function makeAgentTools(cloneDir: string) {
   const readFile = tool({
     description:
       "Read a file from the fork repository with optional line range. Returns file content with line numbers.",
-    parameters: z.object({
-      path: z.string().describe("Relative path to the file within the repository"),
-      start_line: z
-        .number()
-        .optional()
-        .describe("Start line number (1-indexed, inclusive). Defaults to 1."),
-      end_line: z
-        .number()
-        .optional()
-        .describe(
-          `End line number (1-indexed, inclusive). Defaults to start_line + ${MAX_READ_LINES - 1}.`
-        ),
-    }),
-    execute: async ({ path, start_line, end_line }) => {
+    inputSchema: zodSchema(readParamSchema),
+    execute: async ({
+      path,
+      start_line,
+      end_line,
+    }: z.infer<typeof readParamSchema>) => {
       const fenced = fencePathToCloneDir(path, cloneDir);
       if (fenced === null) {
         return {
@@ -280,5 +310,3 @@ export function makeAgentTools(cloneDir: string) {
 
   return { grep_repo: grepRepo, read_file: readFile };
 }
-
-

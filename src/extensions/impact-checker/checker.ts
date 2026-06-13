@@ -1,4 +1,4 @@
-import { generateText, generateObject, stopWhen, stepCountIs } from "ai";
+import { generateText, generateObject, stepCountIs } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { readFileSync, mkdirSync, existsSync, appendFileSync } from "fs";
@@ -7,7 +7,7 @@ import { getSettings } from "../../config/settings";
 import type { MantleTarget, CounterpartRelationship } from "../../config/projects";
 import { withLLMRetry } from "../analyzer/llm-retry";
 import { truncateDiff } from "../analyzer/diff-truncator";
-import { makeAgentTools } from "./agent-tools";
+import { makeAgentTools, fencePathToCloneDir } from "./agent-tools";
 import { getCheckInstructions } from "./strategies";
 
 const PROMPT_VERSION = "v1.0-fork-forensic";
@@ -16,6 +16,17 @@ const AUDIT_DIR = "data/impact-checks";
 // Cost estimates matching llm-reviewer.ts (claude-sonnet-4-6)
 const INPUT_COST_PER_TOKEN = 3 / 1_000_000;
 const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000;
+
+// Sentinel error thrown from onStepFinish to abort the agentic loop when the
+// per-check cost cap is reached. Caught in the outer try/catch and treated as
+// a graceful early-exit rather than an unexpected failure.
+class CostLimitExceededError extends Error {
+  readonly isCostLimit = true;
+  constructor() {
+    super("maxCostPerCheck exceeded — aborting agentic loop");
+    this.name = "CostLimitExceededError";
+  }
+}
 
 function resolveAnthropicBaseUrl(rawUrl: string): string | undefined {
   if (!rawUrl) return undefined;
@@ -166,15 +177,22 @@ function verifyEvidence(
   for (const ev of verdict.evidence) {
     if (!ev.file) continue;
 
-    const filePath = join(cloneDir, ev.file);
-    if (!existsSync(filePath)) {
+    // Fence evidence paths to the clone directory to prevent the LLM from
+    // citing files outside the repo (e.g. "../escape.ts" or symlinked paths).
+    const fenced = fencePathToCloneDir(ev.file, cloneDir);
+    if (fenced === null) {
+      failures.push(`Evidence path rejected (outside clone): ${ev.file}`);
+      continue;
+    }
+
+    if (!existsSync(fenced)) {
       failures.push(`File does not exist in clone: ${ev.file}`);
       continue;
     }
 
     if (ev.snippet && ev.snippet.trim()) {
       try {
-        const content = readFileSync(filePath, "utf-8");
+        const content = readFileSync(fenced, "utf-8");
         const snippetLines = ev.snippet
           .trim()
           .split("\n")
@@ -272,11 +290,8 @@ export async function runImpactCheck(
       prompt:
         "Begin your forensic investigation. Use grep_repo to locate relevant code, then read_file to confirm findings. Provide a thorough analysis.",
       maxRetries: 0,
-      stopWhen: [
-        stepCountIs(maxSteps),
-        // Cost-based stop: checked per-step via onStepFinish
-      ],
-      onStepFinish: (step) => {
+      stopWhen: [stepCountIs(maxSteps)],
+      onStepFinish: async (step) => {
         const stepInputTokens = step.usage?.inputTokens ?? 0;
         const stepOutputTokens = step.usage?.outputTokens ?? 0;
         const stepCost = estimateStepCost(stepInputTokens, stepOutputTokens);
@@ -291,11 +306,11 @@ export async function runImpactCheck(
           stepNumber: step.stepNumber,
           toolCalls: step.toolCalls?.map((tc) => ({
             toolName: (tc as { toolName: string }).toolName,
-            args: (tc as { args: unknown }).args,
+            input: (tc as unknown as { input: unknown }).input,
           })),
           toolResults: step.toolResults?.map((tr) => ({
             toolName: (tr as { toolName: string }).toolName,
-            result: (tr as { result: unknown }).result,
+            output: (tr as unknown as { output: unknown }).output,
           })),
           inputTokens: stepInputTokens,
           outputTokens: stepOutputTokens,
@@ -305,10 +320,12 @@ export async function runImpactCheck(
         stepTrace.push(stepEntry);
         writeAuditEntry(auditPath, stepEntry);
 
+        // Throw sentinel to immediately abort the agentic loop. The outer
+        // try/catch recognises CostLimitExceededError and branches to
+        // generateObject with forced uncertain verdict.
         if (accumulatedCost >= maxCostPerCheck) {
           truncatedByCost = true;
-          // Note: ai SDK v6 doesn't support aborting from onStepFinish directly.
-          // The cost cap produces uncertain verdict at generateObject phase below.
+          throw new CostLimitExceededError();
         }
       },
     });
@@ -323,12 +340,16 @@ export async function runImpactCheck(
     totalOutputTokens = textResult.usage?.outputTokens ?? totalOutputTokens;
     accumulatedCost = estimateStepCost(totalInputTokens, totalOutputTokens);
   } catch (err) {
-    writeAuditEntry(auditPath, {
-      type: "step_loop_error",
-      error: err instanceof Error ? err.message : String(err),
-    });
-    // Fall through to generateObject with uncertain verdict
-    truncatedByCost = true;
+    if (err instanceof CostLimitExceededError) {
+      // Expected graceful exit — truncatedByCost already set, fall through to generateObject
+    } else {
+      writeAuditEntry(auditPath, {
+        type: "step_loop_error",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Treat unexpected errors as cost-truncated to produce uncertain verdict
+      truncatedByCost = true;
+    }
   }
 
   const forcedUncertain = truncatedByCost || truncatedByStepCount;

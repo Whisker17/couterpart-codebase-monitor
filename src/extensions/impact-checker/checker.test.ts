@@ -235,6 +235,30 @@ describe("runImpactCheck — evidence verification", () => {
     expect(verdict.confidence).toBe("low");
     expect(verdict.evidenceVerificationFailed).toBe(true);
   });
+
+  it("sets confidence to low when evidence file path escapes clone dir", async () => {
+    const { runImpactCheck } = await import("./checker");
+    const escapingPathVerdict = {
+      ...GOOD_VERDICT,
+      evidence: [
+        {
+          file: "../../etc/passwd",
+          lines: "1",
+          snippet: "root",
+          note: "path traversal evidence",
+        },
+      ],
+    };
+
+    const verdict = await runImpactCheck(makeInput(), {
+      settings: FAKE_SETTINGS as any,
+      generateTextFn: makeFakeGenerateText() as any,
+      generateObjectFn: makeFakeGenerateObject(escapingPathVerdict) as any,
+    });
+
+    expect(verdict.confidence).toBe("low");
+    expect(verdict.evidenceVerificationFailed).toBe(true);
+  });
 });
 
 // ─── Diff unavailable → cap confidence at medium ──────────────────────────────
@@ -266,7 +290,7 @@ describe("runImpactCheck — diff unavailable confidence cap", () => {
 // ─── maxCostPerCheck triggers uncertain verdict ──────────────────────────────
 
 describe("runImpactCheck — maxCostPerCheck enforcement", () => {
-  it("produces uncertain verdict when cost limit is very low", async () => {
+  it("produces uncertain verdict and terminates loop early when cost limit is exceeded", async () => {
     const { runImpactCheck } = await import("./checker");
 
     const uncertainVerdict = {
@@ -279,15 +303,42 @@ describe("runImpactCheck — maxCostPerCheck enforcement", () => {
       recommendedAction: "Manual review.",
     };
 
-    // Use per-call settings injection with a near-zero cost cap
+    // Use a multi-step mock to verify the loop actually exits after the first
+    // step instead of running all MAX_POSSIBLE_STEPS.
+    let stepsCompletedAfterOnStepFinish = 0;
+    const MAX_POSSIBLE_STEPS = 5;
+    const multiStepGenerateText = mock(async (_opts: any) => {
+      for (let i = 0; i < MAX_POSSIBLE_STEPS; i++) {
+        const step = {
+          stepNumber: i,
+          toolCalls: [],
+          toolResults: [],
+          usage: { inputTokens: 100, outputTokens: 50 },
+        };
+        if (_opts.onStepFinish) {
+          // With LOW_COST_SETTINGS (cap = 0.000001), first step cost
+          // (0.00105) already exceeds cap — sentinel throw aborts here.
+          await _opts.onStepFinish(step);
+        }
+        stepsCompletedAfterOnStepFinish++;
+      }
+      return {
+        text: "",
+        steps: [],
+        usage: { inputTokens: 0, outputTokens: 0 },
+      };
+    });
+
     const verdict = await runImpactCheck(makeInput(), {
       settings: LOW_COST_SETTINGS as any,
-      generateTextFn: makeFakeGenerateText(1) as any,
+      generateTextFn: multiStepGenerateText as any,
       generateObjectFn: makeFakeGenerateObject(uncertainVerdict) as any,
     });
 
-    expect(verdict.affected).toBe("uncertain");
+    // Loop threw after step 0's onStepFinish — counter was never incremented
+    expect(stepsCompletedAfterOnStepFinish).toBe(0);
     expect(verdict.truncatedByCost).toBe(true);
+    expect(verdict.affected).toBe("uncertain");
   });
 });
 
