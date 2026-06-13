@@ -11,6 +11,9 @@ import { syncTarget } from "../../extensions/impact-checker/clone-manager";
 import type { CloneSyncState, CloneManagerOptions } from "../../extensions/impact-checker/clone-manager";
 import { runImpactCheck } from "../../extensions/impact-checker/checker";
 import type { CheckerInput, ImpactCheckVerdict } from "../../extensions/impact-checker/checker";
+import { renderAlertCard } from "../../extensions/impact-checker/alert-card";
+import { sendCard } from "../../extensions/lark-dispatcher/webhook";
+import type { LarkWebhookResponse } from "../../extensions/lark-dispatcher/webhook";
 
 type ImpactRelationship = "fork_of" | "depends_on" | "protocol_dependency";
 
@@ -30,6 +33,8 @@ interface PRAnalysisRow {
   diff_path: string | null;
   summary: string;
   technical_detail: string | null;
+  pr_number: number;
+  project_id: string;
 }
 
 export interface ImpactCheckStageDeps {
@@ -39,6 +44,7 @@ export interface ImpactCheckStageDeps {
   processQueueFn?: typeof processQueue;
   syncTargetFn?: typeof syncTarget;
   runImpactCheckFn?: typeof runImpactCheck;
+  sendCardFn?: (webhookUrl: string, card: object) => Promise<LarkWebhookResponse>;
 }
 
 function findMantleTarget(mantleConfig: MantleConfig, projectId: string): MantleTarget | undefined {
@@ -102,7 +108,8 @@ function writeVerdictSuccess(
   db: Database,
   rowId: number,
   verdict: ImpactCheckVerdict,
-  commitHash: string
+  commitHash: string,
+  alertCardJson: string | null
 ): void {
   db.query(`
     UPDATE impact_checks SET
@@ -118,6 +125,7 @@ function writeVerdictSuccess(
       input_tokens = ?,
       estimated_cost_usd = ?,
       tool_steps = ?,
+      alert_card_json = ?,
       checked_at = unixepoch()
     WHERE id = ?
   `).run(
@@ -132,6 +140,7 @@ function writeVerdictSuccess(
     verdict.tokensUsed,
     verdict.cost,
     verdict.toolSteps,
+    alertCardJson,
     rowId
   );
 }
@@ -164,6 +173,7 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
     const processQueueFn = deps?.processQueueFn ?? processQueue;
     const syncTargetFn = deps?.syncTargetFn ?? syncTarget;
     const runImpactCheckFn = deps?.runImpactCheckFn ?? runImpactCheck;
+    const sendCardFn = deps?.sendCardFn ?? sendCard;
 
     // 1. Enqueue new analyses as pending impact_checks rows
     const gateInputRows = db.query<GateInputRow, []>(`
@@ -231,7 +241,8 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
       const prAnalysis = db
         .query<PRAnalysisRow, [number, number]>(
           `SELECT pr.title, pr.body, pr.diff_status, pr.diff_path,
-                  a.summary, a.technical_detail
+                  a.summary, a.technical_detail,
+                  pr.pr_number, pr.project_id
            FROM pull_requests pr
            JOIN analyses a ON a.pr_id = pr.id AND a.id = ?
            WHERE pr.id = ?`
@@ -268,11 +279,65 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
 
       try {
         const verdict = await runImpactCheckFn(checkerInput);
-        writeVerdictSuccess(db, row.id, verdict, cloneState.commitHash);
+
+        const alertCardJson = renderAlertCard({
+          checkId: row.id,
+          verdict,
+          prNumber: prAnalysis.pr_number,
+          prTitle: prAnalysis.title,
+          sourceProjectId: prAnalysis.project_id,
+          targetProjectId: row.target_project_id,
+          targetCommit: cloneState.commitHash,
+          checkedAt: new Date().toISOString().slice(0, 10),
+        });
+
+        // Write verdict + alert_card_json atomically in one UPDATE
+        writeVerdictSuccess(db, row.id, verdict, cloneState.commitHash, alertCardJson);
         itemsProcessed++;
         console.log(
           `[ImpactCheck] Completed check ${row.id}: affected=${verdict.affected} confidence=${verdict.confidence}`
         );
+
+        // In-stage first send (only when card was rendered)
+        if (alertCardJson !== null) {
+          const dispatchEnabled = ctx.dispatchEnabled !== false;
+          const webhookUrl = settings.lark?.webhookUrl;
+
+          if (!dispatchEnabled || !webhookUrl) {
+            console.log(`[ImpactCheck] Alert card stored for check ${row.id} (dispatch suppressed)`);
+          } else {
+            const card = JSON.parse(alertCardJson) as object;
+            try {
+              const sendResult = await sendCardFn(webhookUrl, card);
+              if (sendResult.code === 0) {
+                db.query(`
+                  UPDATE impact_checks SET
+                    alert_dispatched_at = unixepoch(),
+                    lark_message_id = ?,
+                    alert_attempt_count = alert_attempt_count + 1
+                  WHERE id = ?
+                `).run(sendResult.data?.message_id ?? null, row.id);
+                console.log(
+                  `[ImpactCheck] Alert card sent for check ${row.id} (msg_id=${sendResult.data?.message_id ?? "n/a"})`
+                );
+              } else {
+                db.query(
+                  "UPDATE impact_checks SET alert_attempt_count = alert_attempt_count + 1 WHERE id = ?"
+                ).run(row.id);
+                console.warn(
+                  `[ImpactCheck] Alert card send failed for check ${row.id}: code=${sendResult.code} msg=${sendResult.msg}`
+                );
+              }
+            } catch (err) {
+              db.query(
+                "UPDATE impact_checks SET alert_attempt_count = alert_attempt_count + 1 WHERE id = ?"
+              ).run(row.id);
+              console.warn(
+                `[ImpactCheck] Alert card send threw for check ${row.id}: ${err instanceof Error ? err.message : String(err)}`
+              );
+            }
+          }
+        }
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         console.error(`[ImpactCheck] Check ${row.id} failed: ${error}`);
