@@ -131,6 +131,57 @@ describe("runPipeline", () => {
     await runPipeline([checkStage], { reportMode: "weekly" });
     expect(seenMode).toBe("weekly");
   });
+
+  it("ctx.dispatchEnabled defaults to true when not provided", async () => {
+    let seenDispatchEnabled: boolean | undefined;
+
+    const checkStage: PipelineStage = {
+      name: "check",
+      execute: async (ctx: PipelineContext) => {
+        seenDispatchEnabled = ctx.dispatchEnabled;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+
+    await runPipeline([checkStage]);
+    expect(seenDispatchEnabled).toBe(true);
+  });
+
+  it("ctx.dispatchEnabled is false when dispatchEnabled=false is passed", async () => {
+    let seenDispatchEnabled: boolean | undefined;
+
+    const checkStage: PipelineStage = {
+      name: "check",
+      execute: async (ctx: PipelineContext) => {
+        seenDispatchEnabled = ctx.dispatchEnabled;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+
+    await runPipeline([checkStage], { dispatchEnabled: false });
+    expect(seenDispatchEnabled).toBe(false);
+  });
+
+  it("continues executing subsequent stages when one returns success=false", async () => {
+    let reportRan = false;
+    const failingStage: PipelineStage = {
+      name: "impact-check",
+      execute: async () => ({ success: false, itemsProcessed: 0, errors: ["stage error"], durationMs: 0 }),
+    };
+    const reportStage: PipelineStage = {
+      name: "report",
+      execute: async () => {
+        reportRan = true;
+        return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+      },
+    };
+
+    const results = await runPipeline([failingStage, reportStage]);
+
+    expect(results.get("impact-check")?.success).toBe(false);
+    expect(reportRan).toBe(true);
+    expect(results.get("report")?.success).toBe(true);
+  });
 });
 
 describe("writeHealthAndMaybeAlert", () => {

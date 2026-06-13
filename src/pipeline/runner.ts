@@ -25,6 +25,7 @@ export interface PipelineContext {
   timezone?: string;
   monthlyMonth?: string;
   skipDailyReport?: boolean;
+  dispatchEnabled: boolean;
 }
 
 export interface PipelineStage {
@@ -205,6 +206,7 @@ export async function runPipeline(
     monthlyMonth?: string;
     skipDailyReport?: boolean;
     healthCheckOptions?: HealthCheckOptions;
+    dispatchEnabled?: boolean;
   }
 ): Promise<Map<string, StageResult>> {
   const { snapshot, prevSnapshot } = reloadSafeConfig();
@@ -232,6 +234,7 @@ export async function runPipeline(
     timezone: options?.timezone ?? "UTC",
     monthlyMonth: options?.monthlyMonth,
     skipDailyReport: options?.skipDailyReport,
+    dispatchEnabled: options?.dispatchEnabled ?? true,
   };
 
   for (const stage of stages) {
