@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, mkdirSync, unlinkSync, readdirSync } from "fs";
+import { readFileSync, renameSync, mkdirSync, unlinkSync, readdirSync, statSync } from "fs";
 import { randomUUID } from "crypto";
 import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import { getDb } from "../../storage/db";
@@ -13,6 +13,7 @@ import { sendCard } from "../../extensions/lark-dispatcher/webhook";
 
 const TMP_DIR = "data/analysis-inputs/tmp";
 const FINAL_DIR = "data/analysis-inputs";
+const IMPACT_CHECKS_DIR = "data/impact-checks";
 
 function buildBudgetAlertCard(estimatedCost: number, budgetCap: number): object {
   return {
@@ -104,6 +105,29 @@ function cleanupStaleTmpFiles(): void {
   }
 }
 
+function cleanupStaleImpactCheckFiles(maxAgeDays: number): void {
+  try {
+    const files = readdirSync(IMPACT_CHECKS_DIR).filter((f) => f.endsWith(".jsonl"));
+    const cutoffMs = maxAgeDays * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    let removed = 0;
+    for (const f of files) {
+      try {
+        const stat = statSync(`${IMPACT_CHECKS_DIR}/${f}`);
+        if (now - stat.mtimeMs > cutoffMs) {
+          unlinkSync(`${IMPACT_CHECKS_DIR}/${f}`);
+          removed++;
+        }
+      } catch { /* ignore individual file errors */ }
+    }
+    if (removed > 0) {
+      console.info(`[Analyze] Cleaned up ${removed} expired impact-check JSONL file(s) (older than ${maxAgeDays} days)`);
+    }
+  } catch {
+    // IMPACT_CHECKS_DIR may not exist yet — that's fine
+  }
+}
+
 export async function execute(_ctx: PipelineContext, options: AnalyzeOptions = {}): Promise<StageResult> {
   const db = getDb();
   const settings = getSettings();
@@ -114,7 +138,9 @@ export async function execute(_ctx: PipelineContext, options: AnalyzeOptions = {
 
   mkdirSync(TMP_DIR, { recursive: true });
   mkdirSync(FINAL_DIR, { recursive: true });
+  mkdirSync(IMPACT_CHECKS_DIR, { recursive: true });
   cleanupStaleTmpFiles();
+  cleanupStaleImpactCheckFiles(settings.impactCheck?.maxAgeDays ?? 30);
 
   let pendingPRs: PRRow[];
   if (options.dateRange) {
