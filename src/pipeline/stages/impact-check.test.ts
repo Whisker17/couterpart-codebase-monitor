@@ -529,6 +529,252 @@ describe("impact-check stage — agentic flow", () => {
   });
 });
 
+describe("impact-check stage — alert card dispatch", () => {
+  let settingsTmp: string;
+  let mantleTmp: string;
+  let projectsTmp: string;
+  let db: Database;
+
+  beforeEach(() => {
+    settingsTmp = join(tmpdir(), `ic-alert-settings-${Date.now()}.json`);
+    mantleTmp = join(tmpdir(), `ic-alert-mantle-${Date.now()}.json`);
+    projectsTmp = join(tmpdir(), `ic-alert-projects-${Date.now()}.json`);
+
+    writeFileSync(settingsTmp, JSON.stringify({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG }));
+    writeFileSync(mantleTmp, JSON.stringify(MANTLE_CONFIG_WITH_TARGET));
+    writeFileSync(projectsTmp, JSON.stringify([]));
+
+    _setSettingsConfigPath(settingsTmp);
+    _setMantleConfigPath(mantleTmp);
+    _setProjectsConfigPath(projectsTmp);
+    _resetSettingsCache();
+    _resetMantleConfigCache();
+    _resetProjectsCache();
+
+    process.env["LLM_BASE_URL"] = "https://example.com/v1";
+    process.env["LLM_API_KEY"] = "sk-test";
+    process.env["GITHUB_TOKEN"] = "ghp_test";
+
+    db = new Database(":memory:");
+    applySchema(db);
+  });
+
+  afterEach(() => {
+    _resetSettingsCache();
+    _resetProjectsCache();
+    _resetMantleConfigCache();
+    _setSettingsConfigPath(null);
+    _setProjectsConfigPath(null);
+    _setMantleConfigPath(null);
+    try { unlinkSync(settingsTmp); } catch {}
+    try { unlinkSync(mantleTmp); } catch {}
+    try { unlinkSync(projectsTmp); } catch {}
+    delete process.env["LLM_BASE_URL"];
+    delete process.env["LLM_API_KEY"];
+    delete process.env["GITHUB_TOKEN"];
+    db.close();
+  });
+
+  function makeDispatchSettings(webhookUrl?: string) {
+    return {
+      ...BASE_SETTINGS,
+      impactCheck: IMPACT_CHECK_CONFIG,
+      lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL", ...(webhookUrl ? { webhookUrl } : {}) },
+    };
+  }
+
+  it("writes alert_card_json and alert_dispatched_at on first send success", async () => {
+    const { checkId } = insertTestData(db);
+
+    const mockSyncTarget = async (_target: unknown, _opts: unknown): Promise<CloneSyncState> =>
+      makeAvailableCloneState("org/target-repo");
+    const mockRunImpactCheck = async (_input: unknown): Promise<ImpactCheckVerdict> => makeVerdictResult();
+    const mockSendCard = async (_url: string, _card: object) => ({
+      code: 0,
+      msg: "success",
+      data: { message_id: "alert-msg-001" },
+    });
+
+    const deps: ImpactCheckStageDeps = {
+      getSettingsFn: (() => makeDispatchSettings("https://open.larksuite.com/test")) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: mockSyncTarget as typeof syncTarget,
+      runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
+      sendCardFn: mockSendCard,
+    };
+
+    const result = await execute({ stageResults: new Map(), reportMode: "daily", dispatchEnabled: true }, deps);
+
+    expect(result.success).toBe(true);
+    expect(result.itemsProcessed).toBe(1);
+
+    const row = db.query<{
+      alert_card_json: string | null;
+      alert_dispatched_at: number | null;
+      alert_attempt_count: number;
+      lark_message_id: string | null;
+    }, [number]>(
+      "SELECT alert_card_json, alert_dispatched_at, alert_attempt_count, lark_message_id FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_card_json).not.toBeNull();
+    expect(row.alert_dispatched_at).not.toBeNull();
+    expect(row.alert_attempt_count).toBe(1);
+    expect(row.lark_message_id).toBe("alert-msg-001");
+  });
+
+  it("increments alert_attempt_count only on first send failure (alert_dispatched_at stays null)", async () => {
+    const { checkId } = insertTestData(db);
+
+    const mockSyncTarget = async (_target: unknown, _opts: unknown): Promise<CloneSyncState> =>
+      makeAvailableCloneState("org/target-repo");
+    const mockRunImpactCheck = async (_input: unknown): Promise<ImpactCheckVerdict> => makeVerdictResult();
+    const mockSendCard = async (_url: string, _card: object) => ({
+      code: 500,
+      msg: "webhook error",
+    });
+
+    const deps: ImpactCheckStageDeps = {
+      getSettingsFn: (() => makeDispatchSettings("https://open.larksuite.com/test")) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: mockSyncTarget as typeof syncTarget,
+      runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
+      sendCardFn: mockSendCard,
+    };
+
+    await execute({ stageResults: new Map(), reportMode: "daily", dispatchEnabled: true }, deps);
+
+    const row = db.query<{
+      alert_card_json: string | null;
+      alert_dispatched_at: number | null;
+      alert_attempt_count: number;
+    }, [number]>(
+      "SELECT alert_card_json, alert_dispatched_at, alert_attempt_count FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_card_json).not.toBeNull();
+    expect(row.alert_dispatched_at).toBeNull();
+    expect(row.alert_attempt_count).toBe(1);
+  });
+
+  it("does not send and does not increment attempt_count when dispatchEnabled=false", async () => {
+    const { checkId } = insertTestData(db);
+
+    let sendCalled = false;
+    const mockSyncTarget = async (_target: unknown, _opts: unknown): Promise<CloneSyncState> =>
+      makeAvailableCloneState("org/target-repo");
+    const mockRunImpactCheck = async (_input: unknown): Promise<ImpactCheckVerdict> => makeVerdictResult();
+    const mockSendCard = async (_url: string, _card: object) => {
+      sendCalled = true;
+      return { code: 0, msg: "success", data: { message_id: "msg" } };
+    };
+
+    const deps: ImpactCheckStageDeps = {
+      getSettingsFn: (() => makeDispatchSettings("https://open.larksuite.com/test")) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: mockSyncTarget as typeof syncTarget,
+      runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
+      sendCardFn: mockSendCard,
+    };
+
+    await execute({ stageResults: new Map(), reportMode: "daily", dispatchEnabled: false }, deps);
+
+    expect(sendCalled).toBe(false);
+
+    const row = db.query<{
+      alert_card_json: string | null;
+      alert_dispatched_at: number | null;
+      alert_attempt_count: number;
+    }, [number]>(
+      "SELECT alert_card_json, alert_dispatched_at, alert_attempt_count FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_card_json).not.toBeNull();
+    expect(row.alert_dispatched_at).toBeNull();
+    expect(row.alert_attempt_count).toBe(0);
+  });
+
+  it("does not send and does not increment when webhook is not configured", async () => {
+    const { checkId } = insertTestData(db);
+
+    let sendCalled = false;
+    const mockSyncTarget = async (_target: unknown, _opts: unknown): Promise<CloneSyncState> =>
+      makeAvailableCloneState("org/target-repo");
+    const mockRunImpactCheck = async (_input: unknown): Promise<ImpactCheckVerdict> => makeVerdictResult();
+    const mockSendCard = async (_url: string, _card: object) => {
+      sendCalled = true;
+      return { code: 0, msg: "success", data: { message_id: "msg" } };
+    };
+
+    const deps: ImpactCheckStageDeps = {
+      // No webhookUrl in lark settings
+      getSettingsFn: (() => makeDispatchSettings()) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: mockSyncTarget as typeof syncTarget,
+      runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
+      sendCardFn: mockSendCard,
+    };
+
+    await execute({ stageResults: new Map(), reportMode: "daily", dispatchEnabled: true }, deps);
+
+    expect(sendCalled).toBe(false);
+
+    const row = db.query<{
+      alert_card_json: string | null;
+      alert_attempt_count: number;
+    }, [number]>(
+      "SELECT alert_card_json, alert_attempt_count FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_card_json).not.toBeNull();
+    expect(row.alert_attempt_count).toBe(0);
+  });
+
+  it("does not render alert card for non-qualifying verdicts (affected!=yes)", async () => {
+    const { checkId } = insertTestData(db);
+
+    let sendCalled = false;
+    const mockSyncTarget = async (_target: unknown, _opts: unknown): Promise<CloneSyncState> =>
+      makeAvailableCloneState("org/target-repo");
+    const mockRunImpactCheck = async (_input: unknown): Promise<ImpactCheckVerdict> => ({
+      ...makeVerdictResult(),
+      affected: "no",
+    });
+    const mockSendCard = async (_url: string, _card: object) => {
+      sendCalled = true;
+      return { code: 0, msg: "success", data: { message_id: "msg" } };
+    };
+
+    const deps: ImpactCheckStageDeps = {
+      getSettingsFn: (() => makeDispatchSettings("https://open.larksuite.com/test")) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: mockSyncTarget as typeof syncTarget,
+      runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
+      sendCardFn: mockSendCard,
+    };
+
+    await execute({ stageResults: new Map(), reportMode: "daily", dispatchEnabled: true }, deps);
+
+    expect(sendCalled).toBe(false);
+
+    const row = db.query<{ alert_card_json: string | null }, [number]>(
+      "SELECT alert_card_json FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_card_json).toBeNull();
+  });
+});
+
 describe("stage order — impact-check is between analyze and report", () => {
   it("getRunStages includes impact-check between analyze and report (no-dispatch)", () => {
     const names = getRunStages(true).map((s) => s.name);
