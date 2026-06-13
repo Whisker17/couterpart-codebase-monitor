@@ -201,10 +201,36 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
     // 2. Queue governance: expire stale rows, revive failed rows, budget shutdown
     processQueueFn(db, impactCheckConfig);
 
+    // Snapshot post-governance counts for StageResult fields
+    const budgetSkippedCount = db.query<{ cnt: number }, []>(
+      "SELECT COUNT(*) as cnt FROM impact_checks WHERE status = 'skipped_budget'"
+    ).get()!.cnt;
+    const expiredCount = db.query<{ cnt: number }, []>(
+      "SELECT COUNT(*) as cnt FROM impact_checks WHERE status = 'expired'"
+    ).get()!.cnt;
+    const deadLetteredCount = db.query<{ cnt: number }, []>(
+      "SELECT COUNT(*) as cnt FROM impact_checks WHERE alert_card_json IS NOT NULL AND alert_dispatched_at IS NULL AND alert_attempt_count >= 5"
+    ).get()!.cnt;
+    const totalPendingCount = db.query<{ cnt: number }, []>(
+      "SELECT COUNT(*) as cnt FROM impact_checks WHERE status = 'pending'"
+    ).get()!.cnt;
+
     // 3. Get pending queue ordered by priority
     const pendingRows = getPendingQueue(db, impactCheckConfig);
+    const quotaSkipped = Math.max(0, totalPendingCount - pendingRows.length);
+
     if (pendingRows.length === 0) {
-      return { success: true, itemsProcessed: 0, errors: [], durationMs: Date.now() - stageStart };
+      return {
+        success: true,
+        itemsProcessed: 0,
+        errors: [],
+        durationMs: Date.now() - stageStart,
+        impactChecksRun: 0,
+        impactAlertsSent: 0,
+        impactChecksSkipped: { budget: budgetSkippedCount, quota: quotaSkipped, clone_failure: 0 },
+        impactChecksExpired: expiredCount,
+        impactAlertsDeadLettered: deadLetteredCount,
+      };
     }
 
     // 4. Clone sync — once per unique target_project_id
@@ -216,10 +242,12 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
 
     // 5. Process pending rows serially
     let itemsProcessed = 0;
+    let cloneFailureSkipped = 0;
 
     for (const row of pendingRows) {
       const cloneState = cloneStates.get(row.target_project_id);
       if (!cloneState?.available) {
+        cloneFailureSkipped++;
         console.warn(`[ImpactCheck] Clone not available for ${row.target_project_id} — skipping row ${row.id}`);
         continue;
       }
@@ -345,7 +373,30 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
       }
     }
 
-    return { success: true, itemsProcessed, errors: [], durationMs: Date.now() - stageStart };
+    const todayStart = Math.floor(
+      Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()) / 1000
+    );
+    const checksRun = db.query<{ cnt: number }, [number]>(
+      "SELECT COUNT(*) as cnt FROM impact_checks WHERE checked_at IS NOT NULL AND checked_at >= ?"
+    ).get(todayStart)!.cnt;
+    const alertsSent = db.query<{ cnt: number }, [number]>(
+      "SELECT COUNT(*) as cnt FROM impact_checks WHERE alert_dispatched_at IS NOT NULL AND checked_at >= ?"
+    ).get(todayStart)!.cnt;
+    const finalDeadLettered = db.query<{ cnt: number }, []>(
+      "SELECT COUNT(*) as cnt FROM impact_checks WHERE alert_card_json IS NOT NULL AND alert_dispatched_at IS NULL AND alert_attempt_count >= 5"
+    ).get()!.cnt;
+
+    return {
+      success: true,
+      itemsProcessed,
+      errors: [],
+      durationMs: Date.now() - stageStart,
+      impactChecksRun: checksRun,
+      impactAlertsSent: alertsSent,
+      impactChecksSkipped: { budget: budgetSkippedCount, quota: quotaSkipped, clone_failure: cloneFailureSkipped },
+      impactChecksExpired: expiredCount,
+      impactAlertsDeadLettered: finalDeadLettered,
+    };
   } catch (err) {
     const durationMs = Date.now() - stageStart;
     const error = err instanceof Error ? err.message : String(err);

@@ -15,6 +15,11 @@ export interface StageResult {
   budgetSkippedCount?: number;
   syncResult?: SyncResult;
   resolvedProjectCount?: number;
+  impactChecksRun?: number;
+  impactAlertsSent?: number;
+  impactChecksSkipped?: { budget: number; quota: number; clone_failure: number };
+  impactChecksExpired?: number;
+  impactAlertsDeadLettered?: number;
 }
 
 export type ReportMode = "daily" | "weekly" | "monthly" | "all";

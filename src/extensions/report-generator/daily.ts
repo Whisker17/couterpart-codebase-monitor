@@ -176,3 +176,50 @@ export function buildDailyReport(timezone: string, now?: Date): DailyReportData 
   const { startUnix, endUnix } = getYesterdayPeriod(timezone, now);
   return buildDailyReportForPeriod(startUnix, endUnix);
 }
+
+export interface ImpactCheckStats {
+  checksRun: number;
+  alertsSent: number;
+  deadLettered: number;
+  budgetSkipped: number;
+}
+
+export function buildImpactCheckSummaryLine(stats: ImpactCheckStats): string | undefined {
+  const { checksRun, alertsSent, deadLettered } = stats;
+  if (checksRun === 0 && alertsSent === 0 && deadLettered === 0) return undefined;
+  return `Mantle 影响检查：今日 ${checksRun} 检查 / ${alertsSent} 告警 / ${deadLettered} 待处理`;
+}
+
+export function buildImpactCheckDeadLetterLine(deadLettered: number): string | undefined {
+  if (deadLettered === 0) return undefined;
+  return `🚨 ${deadLettered} 条影响告警投递失败已停止重试，运行 \`redispatch --impact-check\` 恢复`;
+}
+
+export function buildImpactCheckBudgetLine(budgetSkipped: number): string | undefined {
+  if (budgetSkipped === 0) return undefined;
+  return `⚠ ${budgetSkipped} 个影响检查因预算暂停`;
+}
+
+export function buildImpactOpsCard(deadLetterCount: number, recentCheckIds: number[]): object {
+  const idList = recentCheckIds.length > 0 ? recentCheckIds.join(", ") : "无";
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: "plain_text", content: "🚨 Mantle 影响告警 — Dead Letter 恢复提醒" },
+      template: "red",
+    },
+    elements: [
+      {
+        tag: "markdown",
+        content: [
+          `**${deadLetterCount} 条影响告警投递失败已停止重试**`,
+          ``,
+          `近期 Check ID：${idList}`,
+          ``,
+          "运行以下命令恢复：",
+          "`redispatch --impact-check`",
+        ].join("\n"),
+      },
+    ],
+  };
+}

@@ -215,6 +215,32 @@ export async function dbStatusCommand(
     )
     .get();
 
+  const impactCheckCounts = (() => {
+    try {
+      return db
+        .query<{ status: string; count: number }, []>(
+          `SELECT status, COUNT(*) as count
+           FROM impact_checks
+           GROUP BY status
+           ORDER BY status`
+        )
+        .all();
+    } catch {
+      return [];
+    }
+  })();
+  const impactAlertDeadLettered = (() => {
+    try {
+      return db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) as count FROM impact_checks WHERE alert_card_json IS NOT NULL AND alert_dispatched_at IS NULL AND alert_attempt_count >= 5"
+        )
+        .get()?.count ?? 0;
+    } catch {
+      return 0;
+    }
+  })();
+
   const payload = {
     timezone,
     health,
@@ -243,6 +269,8 @@ export async function dbStatusCommand(
     recentReports,
     deliveries,
     cost,
+    impactCheckCounts,
+    impactAlertDeadLettered,
   };
 
   if (global.json) {
@@ -286,6 +314,13 @@ export async function dbStatusCommand(
     printRows(deliveries as unknown as Array<Record<string, unknown>>);
     console.log("\nCost:");
     printRows([cost ?? {}] as Array<Record<string, unknown>>);
+    console.log("\nImpact checks:");
+    if (impactCheckCounts.length > 0) {
+      printRows(impactCheckCounts as unknown as Array<Record<string, unknown>>);
+    } else {
+      console.log("  (no impact_checks table or no rows)");
+    }
+    console.log(`\nDead-letter alert count: ${impactAlertDeadLettered}`);
   }
   return 0;
 }

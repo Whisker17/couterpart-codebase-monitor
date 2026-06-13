@@ -15,6 +15,7 @@ export interface DailyPromptCardInput {
   notableCount: number;
   routineCount: number;
   notices?: string[];
+  rawNotices?: string[];
   projects?: DailyPromptCardProject[];
 }
 
@@ -69,6 +70,10 @@ function visibleMetricLine(input: DailyPromptCardInput): string {
   for (const notice of input.notices ?? []) {
     const normalized = notice.trim();
     if (normalized) lines.push(`⚠ ${normalized}`);
+  }
+  for (const notice of input.rawNotices ?? []) {
+    const normalized = notice.trim();
+    if (normalized) lines.push(normalized);
   }
   return lines.join("\n");
 }
