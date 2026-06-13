@@ -25,7 +25,7 @@ export interface PipelineContext {
   timezone?: string;
   monthlyMonth?: string;
   skipDailyReport?: boolean;
-  dispatchEnabled: boolean;
+  dispatchEnabled?: boolean;
 }
 
 export interface PipelineStage {
