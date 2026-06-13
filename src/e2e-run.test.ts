@@ -16,10 +16,11 @@ function result(success: boolean): StageResult {
 }
 
 describe("e2e-run", () => {
-  it("runs collect, analyze, report, and dispatch in order", () => {
+  it("runs collect, analyze, impact-check, report, and dispatch in order", () => {
     expect(getE2EStages().map((stage) => stage.name)).toEqual([
       "collect",
       "analyze",
+      "impact-check",
       "report",
       "dispatch",
     ]);
@@ -123,31 +124,43 @@ describe("parseOptions", () => {
 });
 
 describe("getRunStages", () => {
-  it("returns 4 stages when dispatch is enabled", () => {
+  it("returns 5 stages when dispatch is enabled", () => {
     expect(getRunStages(false).map((s) => s.name)).toEqual([
       "collect",
       "analyze",
+      "impact-check",
       "report",
       "dispatch",
     ]);
   });
 
-  it("returns 3 stages without dispatch when noDispatch is true", () => {
-    expect(getRunStages(true).map((s) => s.name)).toEqual(["collect", "analyze", "report"]);
+  it("returns 4 stages without dispatch when noDispatch is true", () => {
+    expect(getRunStages(true).map((s) => s.name)).toEqual([
+      "collect",
+      "analyze",
+      "impact-check",
+      "report",
+    ]);
   });
 });
 
 describe("--mode all maps to all pipeline mode", () => {
-  it("all mode with --no-dispatch selects 3 stages", () => {
+  it("all mode with --no-dispatch selects 4 stages", () => {
     const { noDispatch } = parseOptions(["--mode", "all", "--no-dispatch"]);
-    expect(getRunStages(noDispatch).map((s) => s.name)).toEqual(["collect", "analyze", "report"]);
+    expect(getRunStages(noDispatch).map((s) => s.name)).toEqual([
+      "collect",
+      "analyze",
+      "impact-check",
+      "report",
+    ]);
   });
 
-  it("all mode without --no-dispatch selects 4 stages", () => {
+  it("all mode without --no-dispatch selects 5 stages", () => {
     const { noDispatch } = parseOptions(["--mode", "all"]);
     expect(getRunStages(noDispatch).map((s) => s.name)).toEqual([
       "collect",
       "analyze",
+      "impact-check",
       "report",
       "dispatch",
     ]);

@@ -15,6 +15,7 @@ import { getDb, closeDb } from "./storage/db";
 import { runPipeline, type PipelineStage, type StageResult, type ReportMode } from "./pipeline/runner";
 import { stage as collect } from "./pipeline/stages/collect";
 import { stage as analyze } from "./pipeline/stages/analyze";
+import { stage as impactCheck } from "./pipeline/stages/impact-check";
 import { stage as report } from "./pipeline/stages/report";
 import { stage as dispatch } from "./pipeline/stages/dispatch";
 import { getMonthPeriod, getPreviousMonthString, getYesterdayPeriod, getWeekPeriod } from "./utils/time-window";
@@ -73,13 +74,13 @@ export function parseOptions(argv: string[]): E2EOptions {
 }
 
 export function getRunStages(noDispatch: boolean): PipelineStage[] {
-  const stages: PipelineStage[] = [collect, analyze, report];
+  const stages: PipelineStage[] = [collect, analyze, impactCheck, report];
   if (!noDispatch) stages.push(dispatch);
   return stages;
 }
 
 export function getE2EStages(): PipelineStage[] {
-  return [collect, analyze, report, dispatch];
+  return [collect, analyze, impactCheck, report, dispatch];
 }
 
 export function getExitCode(results: Map<string, StageResult>): 0 | 1 {
@@ -318,7 +319,7 @@ export async function runE2E(argv: string[] = process.argv.slice(2)): Promise<nu
   const timezone = timezoneOverride ?? getSettings().schedule.timezone;
 
   const start = Date.now();
-  const results = await runPipeline(stages, { reportMode, timezone, monthlyMonth: month });
+  const results = await runPipeline(stages, { reportMode, timezone, monthlyMonth: month, dispatchEnabled: !noDispatch });
   const totalMs = Date.now() - start;
 
   console.log(`\n[E2E] Pipeline complete in ${(totalMs / 1000).toFixed(1)}s`);
