@@ -2,7 +2,13 @@ import type { Database } from "bun:sqlite";
 import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import type { SyncResult } from "../../config/projects";
 import { getDb } from "../../storage/db";
-import { buildDailyReport } from "../../extensions/report-generator/daily";
+import {
+  buildDailyReport,
+  buildImpactCheckSummaryLine,
+  buildImpactCheckDeadLetterLine,
+  buildImpactCheckBudgetLine,
+  buildImpactOpsCard,
+} from "../../extensions/report-generator/daily";
 import { buildWeeklyPromptCard } from "../../extensions/report-generator/templates/weekly-prompt-card";
 import { generateWeeklyPromptReport } from "../../extensions/report-generator/weekly-prompt-report";
 import { buildMonthlyPromptCard } from "../../extensions/report-generator/templates/monthly-prompt-card";
@@ -89,6 +95,68 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
   const reportData = maybeReportData!;
   const deliverableGrouped = reportData.grouped.filter((g) => g.prs.length > 0);
   if (deliverableGrouped.length === 0) {
+    const deadLetterCount = (() => {
+      try {
+        return db.query<{ cnt: number }, []>(
+          "SELECT COUNT(*) as cnt FROM impact_checks WHERE alert_card_json IS NOT NULL AND alert_dispatched_at IS NULL AND alert_attempt_count >= 5"
+        ).get()!.cnt;
+      } catch {
+        return 0;
+      }
+    })();
+
+    if (deadLetterCount > 0) {
+      console.log(`[Report] Daily: no deliverable PRs but ${deadLetterCount} dead-letter impact alert(s) — generating ops card`);
+      const recentIds = (() => {
+        try {
+          return db.query<{ id: number }, []>(
+            "SELECT id FROM impact_checks WHERE alert_card_json IS NOT NULL AND alert_dispatched_at IS NULL AND alert_attempt_count >= 5 ORDER BY created_at DESC LIMIT 5"
+          ).all().map((r) => r.id);
+        } catch {
+          return [];
+        }
+      })();
+      const opsCard = buildImpactOpsCard(deadLetterCount, recentIds);
+      const opsCardJson = JSON.stringify(opsCard);
+      try {
+        db.run(
+          `INSERT INTO reports (type, period_start, period_end, project_ids, content, completeness, digest_json)
+           VALUES ('daily', ?, ?, '[]', ?, ?, ?)
+           ON CONFLICT(type, period_start, period_end)
+           DO UPDATE SET content = excluded.content,
+                         project_ids = excluded.project_ids,
+                         completeness = excluded.completeness,
+                         digest_json = excluded.digest_json`,
+          [reportData.periodStartUnix, reportData.periodEndUnix, opsCardJson, JSON.stringify(completeness), JSON.stringify(reportData.digest)]
+        );
+        const opsReportRow = db
+          .query<{ id: number }, [string, number, number]>(
+            "SELECT id FROM reports WHERE type = ? AND period_start = ? AND period_end = ?"
+          )
+          .get("daily", reportData.periodStartUnix, reportData.periodEndUnix);
+        if (opsReportRow) {
+          db.run(
+            `INSERT INTO report_deliveries (report_id, card_index, content) VALUES (?, 0, ?)
+             ON CONFLICT(report_id, card_index)
+             DO UPDATE SET content = excluded.content
+             WHERE report_deliveries.status != 'sent'`,
+            [opsReportRow.id, opsCardJson]
+          );
+          db.run(
+            "DELETE FROM report_deliveries WHERE report_id = ? AND card_index >= 1 AND status != 'sent'",
+            [opsReportRow.id]
+          );
+        }
+      } catch (err) {
+        console.error(`[Report] Ops card upsert failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const extraErrors = await generateExtraReportForMode(ctx, db, completeness, timezone);
+      if (extraErrors.length > 0) {
+        return { success: false, itemsProcessed: 0, errors: extraErrors, durationMs: 0 };
+      }
+      return { success: true, itemsProcessed: 0, errors: [], durationMs: 0 };
+    }
+
     console.log("[Report] Daily: no deliverable PRs for this period, skipping report and delivery");
     try {
       db.run(
@@ -147,6 +215,18 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
   }
 
   const notices = [combinedNote, reportData.budgetLine].filter((line): line is string => Boolean(line));
+
+  const impactCheckResult = ctx.stageResults.get("impact-check");
+  const impactSummaryLine = buildImpactCheckSummaryLine({
+    checksRun: impactCheckResult?.impactChecksRun ?? 0,
+    alertsSent: impactCheckResult?.impactAlertsSent ?? 0,
+    deadLettered: impactCheckResult?.impactAlertsDeadLettered ?? 0,
+    budgetSkipped: impactCheckResult?.impactChecksSkipped?.budget ?? 0,
+  });
+  const impactDeadLetterLine = buildImpactCheckDeadLetterLine(impactCheckResult?.impactAlertsDeadLettered ?? 0);
+  const impactBudgetLine = buildImpactCheckBudgetLine(impactCheckResult?.impactChecksSkipped?.budget ?? 0);
+  const rawNotices = [impactSummaryLine, impactDeadLetterLine, impactBudgetLine].filter((l): l is string => Boolean(l));
+
   const finalCard = buildDailyPromptCard({
     date: promptReport.input.period.date,
     markdown: promptReport.markdown,
@@ -157,6 +237,7 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
     routineCount: promptReport.input.activitySummary.routineCount,
     projects: promptReport.input.projects,
     notices,
+    rawNotices,
   });
   const cards = [finalCard];
   const cardContent = JSON.stringify(finalCard);

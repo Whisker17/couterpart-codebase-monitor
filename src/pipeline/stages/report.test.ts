@@ -333,8 +333,35 @@ function applySchema(db: Database): void {
     );
     CREATE TABLE IF NOT EXISTS impact_checks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pr_id INTEGER,
+      analysis_id INTEGER,
+      target_project_id TEXT,
+      relationship TEXT,
+      status TEXT DEFAULT 'pending',
+      affected TEXT,
+      impact_type TEXT,
+      evidence_kind TEXT,
+      evidence TEXT,
+      confidence TEXT,
+      summary TEXT,
+      recommended_action TEXT,
+      target_commit TEXT,
+      prompt_version TEXT DEFAULT 'v1',
+      config_hash TEXT DEFAULT '',
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      model_id TEXT,
       estimated_cost_usd REAL,
-      checked_at INTEGER DEFAULT (unixepoch())
+      tool_steps INTEGER,
+      retry_count INTEGER DEFAULT 0,
+      last_error TEXT,
+      alert_card_json TEXT,
+      alert_attempt_count INTEGER DEFAULT 0,
+      alert_dispatched_at INTEGER,
+      lark_message_id TEXT,
+      checked_at INTEGER,
+      created_at INTEGER DEFAULT (unixepoch()),
+      UNIQUE(pr_id, target_project_id)
     );
     CREATE TABLE IF NOT EXISTS reports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1286,5 +1313,95 @@ describe("report stage", () => {
     const card = JSON.parse(row.content);
     const summaryEl = card.elements.find((e: { tag: string }) => e.tag === "markdown");
     expect(summaryEl.content).not.toContain("天缺失");
+  });
+
+  it("no-PR-day with dead-letter alerts generates and queues ops card delivery", async () => {
+    // Insert dead-letter impact alert (no PRs)
+    testDb.run(
+      `INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, status, alert_card_json, alert_attempt_count, alert_dispatched_at)
+       VALUES (1, 1, 'target/repo', 'fork_of', 'complete', '{"header": {}}', 5, NULL)`
+    );
+
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.itemsProcessed).toBe(0);
+
+    // Should have a reports row with non-null content (ops card)
+    const reportRow = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
+    expect(reportRow).toBeDefined();
+    const card = JSON.parse(reportRow.content);
+    expect(card.header.title.content).toContain("Dead Letter");
+    expect(JSON.stringify(card)).toContain("redispatch");
+
+    // Should have a report_deliveries row queued
+    const deliveryCount = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM report_deliveries").get()!;
+    expect(deliveryCount.n).toBe(1);
+    const delivery = testDb.query<{ status: string }, []>("SELECT status FROM report_deliveries LIMIT 1").get()!;
+    expect(delivery.status).toBe("pending");
+  });
+
+  it("no-PR-day ops card includes dead-letter count and recent check IDs", async () => {
+    testDb.run(
+      `INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, status, alert_card_json, alert_attempt_count, alert_dispatched_at)
+       VALUES (1, 1, 'target/repo', 'fork_of', 'complete', '{"header": {}}', 5, NULL)`
+    );
+    testDb.run(
+      `INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, status, alert_card_json, alert_attempt_count, alert_dispatched_at)
+       VALUES (2, 2, 'target/repo2', 'fork_of', 'complete', '{"header": {}}', 6, NULL)`
+    );
+
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    await execute(ctx);
+
+    const reportRow = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
+    const cardContent = reportRow.content;
+    expect(cardContent).toContain("2 条影响告警投递失败");
+    // Should have check IDs in content
+    const card = JSON.parse(cardContent);
+    const markdown = card.elements.find((e: { tag: string }) => e.tag === "markdown");
+    expect(markdown.content).toContain("Check ID");
+  });
+
+  it("no-PR-day without dead-letter alerts still skips (no delivery)", async () => {
+    // No PRs, no dead-letter alerts
+    const ctx = { stageResults: new Map(), reportMode: "daily" as const, timezone: TZ };
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(true);
+    const deliveryCount = testDb.query<{ n: number }, []>("SELECT COUNT(*) as n FROM report_deliveries").get()!;
+    expect(deliveryCount.n).toBe(0);
+    // Reports row is upserted but with null content
+    const reportRow = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
+    expect(reportRow.content).toBe("null");
+  });
+
+  it("StageResult impact fields from impact-check stage appear in daily card rawNotices", async () => {
+    insertTestData(testDb);
+    const impactResult = {
+      success: true,
+      itemsProcessed: 2,
+      errors: [],
+      durationMs: 100,
+      impactChecksRun: 3,
+      impactAlertsSent: 1,
+      impactChecksSkipped: { budget: 2, quota: 0, clone_failure: 0 },
+      impactChecksExpired: 0,
+      impactAlertsDeadLettered: 1,
+    };
+    const ctx = {
+      stageResults: new Map([["impact-check", impactResult]]) as any,
+      reportMode: "daily" as const,
+      timezone: TZ,
+    };
+    await execute(ctx);
+
+    const row = testDb.query<{ content: string }, []>("SELECT content FROM reports WHERE type='daily'").get()!;
+    const card = JSON.parse(row.content);
+    const summaryEl = card.elements.find((e: { tag: string }) => e.tag === "markdown");
+    expect(summaryEl.content).toContain("Mantle 影响检查：今日 3 检查");
+    expect(summaryEl.content).toContain("🚨 1 条影响告警投递失败");
+    expect(summaryEl.content).toContain("⚠ 2 个影响检查因预算暂停");
   });
 });

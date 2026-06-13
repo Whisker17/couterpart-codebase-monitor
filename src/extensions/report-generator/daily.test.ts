@@ -88,7 +88,14 @@ mock.module("../../storage/db", () => ({
   getDb: () => testDb,
 }));
 
-const { buildDailyReport, buildDailyReportForPeriod } = await import("./daily");
+const {
+  buildDailyReport,
+  buildDailyReportForPeriod,
+  buildImpactCheckSummaryLine,
+  buildImpactCheckDeadLetterLine,
+  buildImpactCheckBudgetLine,
+  buildImpactOpsCard,
+} = await import("./daily");
 
 function createSchema(db: Database): void {
   db.exec(`
@@ -285,5 +292,71 @@ describe("buildDailyReportForPeriod equivalence", () => {
     expect(result.periodStartUnix).toBe(PERIOD_START);
     expect(result.periodEndUnix).toBe(PERIOD_END);
     expect(result.digest.projects).toHaveLength(0);
+  });
+});
+
+describe("impact check line builders", () => {
+  it("buildImpactCheckSummaryLine returns undefined when all counts are zero", () => {
+    expect(buildImpactCheckSummaryLine({ checksRun: 0, alertsSent: 0, deadLettered: 0, budgetSkipped: 0 })).toBeUndefined();
+  });
+
+  it("buildImpactCheckSummaryLine returns line when checksRun > 0", () => {
+    const line = buildImpactCheckSummaryLine({ checksRun: 5, alertsSent: 2, deadLettered: 1, budgetSkipped: 0 });
+    expect(line).toBeDefined();
+    expect(line).toContain("Mantle 影响检查");
+    expect(line).toContain("5 检查");
+    expect(line).toContain("2 告警");
+    expect(line).toContain("1 待处理");
+  });
+
+  it("buildImpactCheckSummaryLine returns line when only deadLettered > 0", () => {
+    const line = buildImpactCheckSummaryLine({ checksRun: 0, alertsSent: 0, deadLettered: 3, budgetSkipped: 0 });
+    expect(line).toBeDefined();
+    expect(line).toContain("0 检查");
+    expect(line).toContain("3 待处理");
+  });
+
+  it("buildImpactCheckDeadLetterLine returns undefined when count is 0", () => {
+    expect(buildImpactCheckDeadLetterLine(0)).toBeUndefined();
+  });
+
+  it("buildImpactCheckDeadLetterLine returns line with 🚨 emoji and recovery command", () => {
+    const line = buildImpactCheckDeadLetterLine(3);
+    expect(line).toBeDefined();
+    expect(line).toContain("🚨");
+    expect(line).toContain("3 条");
+    expect(line).toContain("redispatch --impact-check");
+  });
+
+  it("buildImpactCheckBudgetLine returns undefined when count is 0", () => {
+    expect(buildImpactCheckBudgetLine(0)).toBeUndefined();
+  });
+
+  it("buildImpactCheckBudgetLine returns line with count", () => {
+    const line = buildImpactCheckBudgetLine(4);
+    expect(line).toBeDefined();
+    expect(line).toContain("4 个影响检查因预算暂停");
+  });
+});
+
+describe("buildImpactOpsCard", () => {
+  it("returns a Lark card with header and markdown element", () => {
+    const card = buildImpactOpsCard(2, [101, 102]) as any;
+    expect(card.config).toBeDefined();
+    expect(card.header.title.content).toContain("Dead Letter");
+    expect(card.header.template).toBe("red");
+    expect(Array.isArray(card.elements)).toBe(true);
+    const mdEl = card.elements.find((e: { tag: string }) => e.tag === "markdown");
+    expect(mdEl).toBeDefined();
+    expect(mdEl.content).toContain("2 条影响告警投递失败");
+    expect(mdEl.content).toContain("101");
+    expect(mdEl.content).toContain("102");
+    expect(mdEl.content).toContain("redispatch --impact-check");
+  });
+
+  it("shows 无 when no recent check IDs provided", () => {
+    const card = buildImpactOpsCard(1, []) as any;
+    const mdEl = card.elements.find((e: { tag: string }) => e.tag === "markdown");
+    expect(mdEl.content).toContain("无");
   });
 });
