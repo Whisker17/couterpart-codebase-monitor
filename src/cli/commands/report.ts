@@ -648,11 +648,131 @@ export async function markDeliveryCommand(
   return 0;
 }
 
+export interface ImpactCheckRedispatchRow {
+  id: number;
+  pr_id: number;
+  target_project_id: string;
+  affected: string | null;
+  confidence: string | null;
+  alert_card_json: string | null;
+  alert_dispatched_at: number | null;
+  alert_attempt_count: number;
+  lark_message_id: string | null;
+  checked_at: number | null;
+  status: string;
+}
+
+export function findImpactCheckRedispatchRow(
+  db: Database,
+  id: number
+): ImpactCheckRedispatchRow | null {
+  return (
+    db
+      .query<ImpactCheckRedispatchRow, [number]>(
+        `SELECT id, pr_id, target_project_id, affected, confidence, alert_card_json,
+                alert_dispatched_at, alert_attempt_count, lark_message_id, checked_at, status
+         FROM impact_checks WHERE id = ?`
+      )
+      .get(id) ?? null
+  );
+}
+
+async function redispatchImpactCheckById(
+  idRaw: string,
+  flags: Record<string, FlagValue>,
+  _global: GlobalFlags
+): Promise<number> {
+  const id = parseInt(idRaw, 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    console.error(
+      `[report redispatch] --impact-check must be a positive integer (got: ${idRaw})`
+    );
+    return 1;
+  }
+
+  const webhookUrl = getSettings().lark.webhookUrl;
+  if (!webhookUrl) {
+    console.error("[report redispatch] LARK_WEBHOOK_URL is not set — cannot redispatch.");
+    return 1;
+  }
+
+  const db = getDb();
+  const yes = flagBool(flags, "yes");
+  const row = findImpactCheckRedispatchRow(db, id);
+
+  if (!row) {
+    console.error(`[report redispatch] No impact_check found with id=${id}`);
+    return 1;
+  }
+
+  if (!row.alert_card_json) {
+    console.error(
+      `[report redispatch] impact_check #${id} has no alert_card_json — nothing to redispatch`
+    );
+    return 1;
+  }
+
+  console.log(`[report redispatch] impact-check #${id} — ${row.target_project_id}`);
+  console.log(
+    `[report redispatch] affected=${row.affected ?? "null"} confidence=${row.confidence ?? "null"} status=${row.status}`
+  );
+  console.log(
+    `[report redispatch] alert_dispatched_at=${row.alert_dispatched_at ?? "null"} attempt_count=${row.alert_attempt_count} lark_msg=${row.lark_message_id ?? "null"}`
+  );
+
+  if (!yes) {
+    console.log(
+      "[report redispatch] Dry run. Re-run with --yes to reset dispatch state and send."
+    );
+    return 0;
+  }
+
+  // Reset dispatch state, then attempt send
+  db.run(
+    "UPDATE impact_checks SET alert_dispatched_at = NULL, alert_attempt_count = 0 WHERE id = ?",
+    [id]
+  );
+
+  let card: object;
+  try {
+    const parsed = JSON.parse(row.alert_card_json) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("alert_card_json is not an object");
+    }
+    card = parsed;
+  } catch (err) {
+    console.error(
+      `[report redispatch] Failed to parse alert_card_json: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return 1;
+  }
+
+  const result = await sendCard(webhookUrl, card);
+  if (result.code === 0) {
+    db.run(
+      "UPDATE impact_checks SET alert_dispatched_at = ?, lark_message_id = ?, alert_attempt_count = 1 WHERE id = ?",
+      [Math.floor(Date.now() / 1000), result.data?.message_id ?? null, id]
+    );
+    console.log(
+      `[report redispatch] Sent to Lark (message_id=${result.data?.message_id ?? "n/a"})`
+    );
+    return 0;
+  }
+
+  console.error(`[report redispatch] Lark error: code=${result.code} msg=${result.msg}`);
+  return 1;
+}
+
 export async function redispatchCommand(
   args: string[],
   flags: Record<string, FlagValue>,
   global: GlobalFlags = { json: false, verbose: false }
 ): Promise<number> {
+  const impactCheckIdRaw = flagString(flags, "impact-check");
+  if (impactCheckIdRaw !== undefined) {
+    return redispatchImpactCheckById(impactCheckIdRaw, flags, global);
+  }
+
   const type = parseReportType(args[0]);
   if (type !== "daily") {
     throw new Error("report redispatch currently supports daily only.");

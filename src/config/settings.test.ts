@@ -8,6 +8,7 @@ import {
   _resetSettingsCache,
   reloadSafeConfig,
   _setSettingsConfigPath,
+  type SafeConfigSnapshot,
 } from "./settings.ts";
 
 beforeEach(() => {
@@ -36,7 +37,7 @@ describe("getSettings", () => {
     expect(s.llm.diffTokenBudget).toBe(8000);
     expect(s.llm.maxManifestEntries).toBe(100);
     expect(s.llm.maxTokensPerCall).toBe(4096);
-    expect(s.budget.monthlyCap).toBe(80);
+    expect(s.budget.monthlyCap).toBe(150);
     expect(s.budget.warningThreshold).toBe(0.8);
     expect(typeof s.schedule.dailyCron).toBe("string");
     expect(typeof s.schedule.weeklyCron).toBe("string");
@@ -287,6 +288,123 @@ describe("reloadSafeConfig", () => {
     expect(s.llm.model).toBe(originalModel);
     expect(s.schedule.dailyCron).toBe(originalCron);
     expect(s.github.token).toBe(originalToken);
+  });
+});
+
+const baseConfigWithImpactCheck = {
+  llm: {
+    model: "test-model",
+    baseUrlEnvVar: "LLM_BASE_URL",
+    apiKeyEnvVar: "LLM_API_KEY",
+    maxTokensPerCall: 4096,
+    diffTokenBudget: 8000,
+    maxManifestEntries: 100,
+  },
+  lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
+  github: { tokenEnvVar: "GITHUB_TOKEN" },
+  schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", monthlyCron: "0 10 1 * *", timezone: "UTC" },
+  budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
+  impactCheck: {
+    enabled: false,
+    maxChecksPerDay: 5,
+    maxStepsPerCheck: 12,
+    maxCostPerCheck: 1.0,
+    monthlySubCap: 50,
+    maxAgeDays: 7,
+    clonesDir: "data/mantle-repos",
+    maxCloneDiskGB: 10,
+    codegraphEnabled: false,
+  },
+};
+
+describe("getSettings — impactCheck section", () => {
+  let tmpPath: string;
+
+  beforeEach(() => {
+    tmpPath = join(tmpdir(), `settings-impact-test-${Date.now()}.json`);
+    _setSettingsConfigPath(tmpPath);
+    _resetSettingsCache();
+    process.env["LLM_BASE_URL"] = "https://example.com/v1";
+    process.env["LLM_API_KEY"] = "sk-test";
+    process.env["GITHUB_TOKEN"] = "ghp_test";
+  });
+
+  afterEach(() => {
+    _resetSettingsCache();
+    _setSettingsConfigPath(null);
+    try { unlinkSync(tmpPath); } catch {}
+    delete process.env["LLM_BASE_URL"];
+    delete process.env["LLM_API_KEY"];
+    delete process.env["GITHUB_TOKEN"];
+  });
+
+  it("missing impactCheck section returns enabled: false and does not throw", () => {
+    const cfg = { ...baseConfigWithImpactCheck };
+    const { impactCheck: _removed, ...cfgWithout } = cfg;
+    writeFileSync(tmpPath, JSON.stringify(cfgWithout));
+    const infoSpy = spyOn(console, "info").mockImplementation(() => {});
+    const s = getSettings();
+    expect(s.impactCheck).toBeDefined();
+    expect(s.impactCheck!.enabled).toBe(false);
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("impactCheck section absent"));
+    infoSpy.mockRestore();
+  });
+
+  it("present impactCheck section is loaded correctly", () => {
+    writeFileSync(tmpPath, JSON.stringify(baseConfigWithImpactCheck));
+    const s = getSettings();
+    expect(s.impactCheck).toBeDefined();
+    expect(s.impactCheck!.enabled).toBe(false);
+    expect(s.impactCheck!.maxChecksPerDay).toBe(5);
+    expect(s.impactCheck!.clonesDir).toBe("data/mantle-repos");
+    expect(s.impactCheck!.codegraphEnabled).toBe(false);
+  });
+});
+
+describe("reloadSafeConfig — impactCheck in snapshot", () => {
+  let tmpPath: string;
+
+  beforeEach(() => {
+    tmpPath = join(tmpdir(), `settings-snapshot-test-${Date.now()}.json`);
+    _setSettingsConfigPath(tmpPath);
+    _resetSettingsCache();
+    process.env["LLM_BASE_URL"] = "https://example.com/v1";
+    process.env["LLM_API_KEY"] = "sk-test";
+    process.env["GITHUB_TOKEN"] = "ghp_test";
+  });
+
+  afterEach(() => {
+    _resetSettingsCache();
+    _setSettingsConfigPath(null);
+    try { unlinkSync(tmpPath); } catch {}
+    delete process.env["LLM_BASE_URL"];
+    delete process.env["LLM_API_KEY"];
+    delete process.env["GITHUB_TOKEN"];
+  });
+
+  it("reloadSafeConfig includes impactCheck in the returned snapshot", () => {
+    writeFileSync(tmpPath, JSON.stringify(baseConfigWithImpactCheck));
+    const { snapshot } = reloadSafeConfig();
+    const s: SafeConfigSnapshot = snapshot;
+    expect(s.impactCheck).toBeDefined();
+    expect(s.impactCheck!.enabled).toBe(false);
+    expect(s.impactCheck!.monthlySubCap).toBe(50);
+  });
+
+  it("hot-reload picks up impactCheck changes", () => {
+    writeFileSync(tmpPath, JSON.stringify(baseConfigWithImpactCheck));
+    reloadSafeConfig();
+
+    const updated = {
+      ...baseConfigWithImpactCheck,
+      impactCheck: { ...baseConfigWithImpactCheck.impactCheck, enabled: true, maxChecksPerDay: 10 },
+    };
+    writeFileSync(tmpPath, JSON.stringify(updated));
+
+    const { snapshot, changed } = reloadSafeConfig();
+    expect(changed).toBe(true);
+    expect(snapshot.impactCheck!.enabled).toBe(true);
+    expect(snapshot.impactCheck!.maxChecksPerDay).toBe(10);
   });
 });
 

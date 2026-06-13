@@ -109,9 +109,9 @@ export function resolveTargetCandidates(
   const results: WeeklyCandidate["targetCandidates"] = [];
   const manualTargets = new Set<string>();
 
-  // Manual relationships take priority — check all manual entries first
+  // All configured relationship types take priority over tag fallback
   for (const rel of config.counterpartRelationships) {
-    if (rel.source === sourceProjectId && rel.relationship === "manual") {
+    if (rel.source === sourceProjectId) {
       for (const targetId of rel.targets) {
         manualTargets.add(targetId);
         results.push({

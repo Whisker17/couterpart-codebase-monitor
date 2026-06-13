@@ -64,6 +64,20 @@ function makeDb(): Database {
       sent_at INTEGER,
       UNIQUE(report_id, card_index)
     );
+    CREATE TABLE IF NOT EXISTS impact_checks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pr_id INTEGER NOT NULL DEFAULT 0,
+      analysis_id INTEGER NOT NULL DEFAULT 0,
+      target_project_id TEXT NOT NULL DEFAULT 'test/repo',
+      relationship TEXT NOT NULL DEFAULT 'fork_of',
+      status TEXT NOT NULL DEFAULT 'complete',
+      alert_card_json TEXT,
+      alert_attempt_count INTEGER NOT NULL DEFAULT 0,
+      alert_dispatched_at INTEGER,
+      lark_message_id TEXT,
+      prompt_version TEXT NOT NULL DEFAULT 'v1',
+      config_hash TEXT NOT NULL DEFAULT 'hash'
+    );
   `);
   return db;
 }
@@ -275,5 +289,173 @@ describe("dispatch stage", () => {
 
     expect(result.success).toBe(false);
     expect(result.itemsProcessed).toBe(1);
+  });
+});
+
+describe("dispatch stage — alert card retry", () => {
+  const CARD_JSON = JSON.stringify({ config: { wide_screen_mode: true }, header: { title: { tag: "plain_text", content: "Test" }, template: "red" }, elements: [] });
+
+  function insertAlertCheck(db: Database, opts: {
+    alertCardJson?: string | null;
+    alertAttemptCount?: number;
+    alertDispatchedAt?: number | null;
+  } = {}): number {
+    db.run(
+      `INSERT INTO impact_checks (alert_card_json, alert_attempt_count, alert_dispatched_at)
+       VALUES (?, ?, ?)`,
+      [
+        opts.alertCardJson === undefined ? CARD_JSON : opts.alertCardJson,
+        opts.alertAttemptCount ?? 0,
+        opts.alertDispatchedAt ?? null,
+      ]
+    );
+    const row = testDb.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!;
+    return row.id;
+  }
+
+  beforeEach(() => {
+    testDb = makeDb();
+    mockWebhookUrl = "https://open.larksuite.com/test";
+    sendCardImpl.mockRestore?.();
+    sendCardImpl.mockImplementation(async () => ({
+      code: 0,
+      msg: "success",
+      data: { message_id: "alert-msg-001" },
+    }));
+  });
+
+  afterEach(() => {
+    testDb.close();
+    try { rmSync(TEST_DB_PATH); } catch { /* ignore */ }
+  });
+
+  it("retries a pending alert card and writes alert_dispatched_at", async () => {
+    const checkId = insertAlertCheck(testDb, { alertAttemptCount: 0 });
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(true);
+    expect(result.itemsProcessed).toBe(1);
+
+    const row = testDb.query<{
+      alert_dispatched_at: number | null;
+      lark_message_id: string | null;
+      alert_attempt_count: number;
+    }, [number]>(
+      "SELECT alert_dispatched_at, lark_message_id, alert_attempt_count FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_dispatched_at).not.toBeNull();
+    expect(row.lark_message_id).toBe("alert-msg-001");
+    expect(row.alert_attempt_count).toBe(1);
+  });
+
+  it("does not retry when alert_attempt_count >= 5 (dead-letter)", async () => {
+    insertAlertCheck(testDb, { alertAttemptCount: 5 });
+    const result = await execute(ctx);
+
+    expect(result.itemsProcessed).toBe(0);
+    expect(sendCardImpl).not.toHaveBeenCalled();
+  });
+
+  it("increments attempt_count on Lark error response without setting dispatched_at", async () => {
+    sendCardImpl.mockImplementation(async () => ({ code: 99, msg: "webhook error" }));
+    const checkId = insertAlertCheck(testDb, { alertAttemptCount: 2 });
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(false);
+
+    const row = testDb.query<{
+      alert_dispatched_at: number | null;
+      alert_attempt_count: number;
+    }, [number]>(
+      "SELECT alert_dispatched_at, alert_attempt_count FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_dispatched_at).toBeNull();
+    expect(row.alert_attempt_count).toBe(3);
+  });
+
+  it("increments attempt_count when sendCard throws (network error)", async () => {
+    sendCardImpl.mockImplementation(async () => { throw new Error("DNS failed"); });
+    const checkId = insertAlertCheck(testDb, { alertAttemptCount: 1 });
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(false);
+
+    const row = testDb.query<{ alert_attempt_count: number }, [number]>(
+      "SELECT alert_attempt_count FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_attempt_count).toBe(2);
+  });
+
+  it("does not retry and does not increment when dispatchEnabled=false", async () => {
+    const checkId = insertAlertCheck(testDb, { alertAttemptCount: 0 });
+    const suppressedCtx = { stageResults: new Map(), reportMode: "daily" as const, dispatchEnabled: false };
+    await execute(suppressedCtx);
+
+    expect(sendCardImpl).not.toHaveBeenCalled();
+
+    const row = testDb.query<{ alert_attempt_count: number; alert_dispatched_at: number | null }, [number]>(
+      "SELECT alert_attempt_count, alert_dispatched_at FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+
+    expect(row.alert_attempt_count).toBe(0);
+    expect(row.alert_dispatched_at).toBeNull();
+  });
+
+  it("skips all alert retries when webhook is not configured", async () => {
+    mockWebhookUrl = undefined;
+    const checkId = insertAlertCheck(testDb, { alertAttemptCount: 0 });
+    const result = await execute(ctx);
+
+    expect(result.itemsProcessed).toBe(0);
+    expect(sendCardImpl).not.toHaveBeenCalled();
+
+    const row = testDb.query<{ alert_attempt_count: number; alert_dispatched_at: number | null }, [number]>(
+      "SELECT alert_attempt_count, alert_dispatched_at FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+    expect(row.alert_attempt_count).toBe(0);
+    expect(row.alert_dispatched_at).toBeNull();
+  });
+
+  it("does not retry already-dispatched alerts", async () => {
+    insertAlertCheck(testDb, {
+      alertAttemptCount: 1,
+      alertDispatchedAt: Math.floor(Date.now() / 1000),
+    });
+    const result = await execute(ctx);
+
+    expect(result.itemsProcessed).toBe(0);
+    expect(sendCardImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not retry rows without alert_card_json", async () => {
+    insertAlertCheck(testDb, { alertCardJson: null });
+    const result = await execute(ctx);
+
+    expect(result.itemsProcessed).toBe(0);
+    expect(sendCardImpl).not.toHaveBeenCalled();
+  });
+
+  it("surfaces non-legacy scan errors in stage result", async () => {
+    // Recreate the table with the PK named `check_id` instead of `id`.
+    // The query does `SELECT id, ...` → "no such column: id" is NOT in the
+    // legacy-schema suppression list, so the stage result must reflect failure.
+    testDb.exec("DROP TABLE impact_checks");
+    testDb.exec(`
+      CREATE TABLE impact_checks (
+        check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_card_json TEXT,
+        alert_dispatched_at INTEGER,
+        alert_attempt_count INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.some((e) => e.includes("Alert scan failed"))).toBe(true);
+    expect(sendCardImpl).not.toHaveBeenCalled();
   });
 });

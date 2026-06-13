@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { sendCard } from "../extensions/lark-dispatcher/webhook";
 import { reloadSafeConfig } from "../config/settings";
 import type { SafeConfigSnapshot } from "../config/settings";
-import { reloadTrackedProjects } from "../config/projects";
+import { reloadTrackedProjects, reloadMantleConfig, validateMantleConfig } from "../config/projects";
 import type { TrackedProject, SyncResult } from "../config/projects";
 
 export interface StageResult {
@@ -15,6 +15,11 @@ export interface StageResult {
   budgetSkippedCount?: number;
   syncResult?: SyncResult;
   resolvedProjectCount?: number;
+  impactChecksRun?: number;
+  impactAlertsSent?: number;
+  impactChecksSkipped?: { budget: number; quota: number; clone_failure: number };
+  impactChecksExpired?: number;
+  impactAlertsDeadLettered?: number;
 }
 
 export type ReportMode = "daily" | "weekly" | "monthly" | "all";
@@ -25,6 +30,7 @@ export interface PipelineContext {
   timezone?: string;
   monthlyMonth?: string;
   skipDailyReport?: boolean;
+  dispatchEnabled?: boolean;
 }
 
 export interface PipelineStage {
@@ -205,6 +211,7 @@ export async function runPipeline(
     monthlyMonth?: string;
     skipDailyReport?: boolean;
     healthCheckOptions?: HealthCheckOptions;
+    dispatchEnabled?: boolean;
   }
 ): Promise<Map<string, StageResult>> {
   const { snapshot, prevSnapshot } = reloadSafeConfig();
@@ -222,12 +229,17 @@ export async function runPipeline(
   }
   logConfigReloadDiff(prevSnapshot, snapshot, prevProjects, projects);
 
+  const { config: mantleConfig } = reloadMantleConfig();
+  const trackedProjectIds = new Set(projects.map((p) => `${p.org}/${p.repo}`));
+  validateMantleConfig(mantleConfig, trackedProjectIds, snapshot.impactCheck?.enabled === true);
+
   const ctx: PipelineContext = {
     stageResults: new Map(),
     reportMode: options?.reportMode ?? "daily",
     timezone: options?.timezone ?? "UTC",
     monthlyMonth: options?.monthlyMonth,
     skipDailyReport: options?.skipDailyReport,
+    dispatchEnabled: options?.dispatchEnabled ?? true,
   };
 
   for (const stage of stages) {

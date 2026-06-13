@@ -16,12 +16,15 @@ export interface MantleTarget {
   projectId: string;
   tags: string[];
   notes?: string;
+  repoUrl?: string;
+  branch?: string;
+  architectureNotes?: string;
 }
 
 export interface CounterpartRelationship {
   source: string;
   targets: string[];
-  relationship: "manual";
+  relationship: "fork_of" | "depends_on" | "protocol_dependency" | "manual";
   reason: string;
 }
 
@@ -48,17 +51,30 @@ export interface ProjectSnapshot {
 let _projects: TrackedProject[] | null = null;
 let _mantleConfig: MantleConfig | null = null;
 let _projectsConfigPath: string | null = null;
+let _mantleConfigPath: string | null = null;
 
 export function _resetProjectsCache(): void {
   _projects = null;
+}
+
+export function _resetMantleConfigCache(): void {
+  _mantleConfig = null;
 }
 
 export function _setProjectsConfigPath(path: string | null): void {
   _projectsConfigPath = path;
 }
 
+export function _setMantleConfigPath(path: string | null): void {
+  _mantleConfigPath = path;
+}
+
 function getProjectsConfigPath(): string {
   return _projectsConfigPath ?? join(process.cwd(), "config", "projects.json");
+}
+
+function getMantleConfigPath(): string {
+  return _mantleConfigPath ?? join(process.cwd(), "config", "mantle-config.json");
 }
 
 // ---- URL normalization ----
@@ -316,12 +332,136 @@ export function getTrackedProjects(): TrackedProject[] {
   return _projects;
 }
 
+const RELATIONSHIP_STRENGTH: Record<CounterpartRelationship["relationship"], number> = {
+  fork_of: 4,
+  depends_on: 3,
+  protocol_dependency: 2,
+  manual: 1,
+};
+
+function deduplicateRelationships(rels: CounterpartRelationship[]): CounterpartRelationship[] {
+  // Track best (source, target) → {relationship entry, strength}
+  const best = new Map<string, { rel: CounterpartRelationship; target: string; strength: number }>();
+
+  for (const rel of rels) {
+    for (const target of rel.targets) {
+      const key = `${rel.source}\x00${target}`;
+      const strength = RELATIONSHIP_STRENGTH[rel.relationship] ?? 0;
+      const current = best.get(key);
+      if (!current || strength > current.strength) {
+        best.set(key, { rel, target, strength });
+      }
+    }
+  }
+
+  // Re-group by (source, relationship) to reconstruct the de-duplicated list
+  const grouped = new Map<string, CounterpartRelationship>();
+  for (const { rel, target } of best.values()) {
+    const groupKey = `${rel.source}\x00${rel.relationship}`;
+    const existing = grouped.get(groupKey);
+    if (existing) {
+      existing.targets.push(target);
+    } else {
+      grouped.set(groupKey, {
+        source: rel.source,
+        targets: [target],
+        relationship: rel.relationship,
+        reason: rel.reason,
+      });
+    }
+  }
+
+  return Array.from(grouped.values());
+}
+
 export function getMantleConfig(): MantleConfig {
   if (_mantleConfig) return _mantleConfig;
-  const configPath = join(process.cwd(), "config", "mantle-config.json");
-  const raw = readFileSync(configPath, "utf-8");
-  _mantleConfig = JSON.parse(raw) as MantleConfig;
+  const raw = readFileSync(getMantleConfigPath(), "utf-8");
+  const parsed = JSON.parse(raw) as MantleConfig;
+  _mantleConfig = {
+    ...parsed,
+    counterpartRelationships: deduplicateRelationships(parsed.counterpartRelationships ?? []),
+  };
   return _mantleConfig;
+}
+
+export function reloadMantleConfig(): {
+  config: MantleConfig;
+  prevConfig: MantleConfig | null;
+  changed: boolean;
+} {
+  const prev = _mantleConfig;
+
+  let next: MantleConfig;
+  try {
+    const raw = readFileSync(getMantleConfigPath(), "utf-8");
+    const parsed = JSON.parse(raw) as MantleConfig;
+    next = {
+      ...parsed,
+      counterpartRelationships: deduplicateRelationships(parsed.counterpartRelationships ?? []),
+    };
+  } catch (e) {
+    if (prev) {
+      console.warn(`[config-reload] Failed to reload mantle-config.json, using cached config: ${e}`);
+      return { config: prev, prevConfig: prev, changed: false };
+    }
+    throw new Error(`[config-reload] mantle-config.json invalid and no cached mantle config available: ${e}`);
+  }
+
+  const changed = JSON.stringify(prev) !== JSON.stringify(next);
+  _mantleConfig = next;
+  return { config: next, prevConfig: prev, changed };
+}
+
+export function validateMantleConfig(
+  config: MantleConfig,
+  trackedProjectIds: Set<string>,
+  impactCheckEnabled: boolean
+): void {
+  const targetMap = new Map<string, MantleTarget>();
+  for (const t of config.mantleTargets) {
+    targetMap.set(t.projectId, t);
+  }
+
+  const referencedTargetIds = new Set<string>();
+  for (const rel of config.counterpartRelationships) {
+    for (const t of rel.targets) {
+      referencedTargetIds.add(t);
+    }
+  }
+
+  if (impactCheckEnabled) {
+    for (const targetId of referencedTargetIds) {
+      const target = targetMap.get(targetId);
+      if (!target) continue;
+      if (!target.repoUrl || !target.repoUrl.startsWith("https://github.com/")) {
+        throw new Error(
+          `[config] impactCheck.enabled=true but target "${targetId}" has missing or invalid repoUrl (must be https://github.com/ prefixed)`
+        );
+      }
+    }
+  }
+
+  for (const rel of config.counterpartRelationships) {
+    if (!trackedProjectIds.has(rel.source)) {
+      console.warn(
+        `[config] counterpartRelationship source "${rel.source}" is not in tracked projects — relationship will never trigger`
+      );
+    }
+  }
+
+  for (const rel of config.counterpartRelationships) {
+    if (rel.relationship === "protocol_dependency") {
+      for (const targetId of rel.targets) {
+        const target = targetMap.get(targetId);
+        if (target && (!target.architectureNotes || target.architectureNotes.trim() === "")) {
+          console.warn(
+            `[config] protocol_dependency from "${rel.source}" to "${targetId}" has no architectureNotes — reasoning has no knowledge base`
+          );
+        }
+      }
+    }
+  }
 }
 
 export function reloadTrackedProjects(): {

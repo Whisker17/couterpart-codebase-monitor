@@ -1,23 +1,82 @@
 {
   "mantleTargets": [
     {
-      "projectId": "mantle/reth",
-      "tags": ["reth", "execution-client", "l2", "ethereum"],
-      "notes": "Mantle reth-based sequencer/execution client target"
+      "projectId": "mantle-xyz/reth",
+      "repoUrl": "https://github.com/mantle-xyz/reth",
+      "branch": "main",
+      "tags": ["reth", "execution-client", "l2", "rust"],
+      "notes": "Mantle's Rust execution client — fork of Paradigm's reth",
+      "architectureNotes": "Fork of paradigmxyz/reth (Rust). Mantle customizations target MNT gas token metering, Mantle DA layer integration, and custom chain configuration. Changes to reth's engine API, block validation, EVM execution, or state management propagate directly into Mantle's execution layer. Key divergence areas: crates/chainspec, crates/engine, crates/ethereum/hardforks."
+    },
+    {
+      "projectId": "mantle-xyz/op-geth",
+      "repoUrl": "https://github.com/mantle-xyz/op-geth",
+      "branch": "main",
+      "tags": ["op-geth", "execution-client", "l2", "go"],
+      "notes": "Mantle's Go execution client — fork of ethereum-optimism/op-geth",
+      "architectureNotes": "Fork of ethereum-optimism/op-geth (which itself forks ethereum/go-ethereum; module path retained as github.com/ethereum/go-ethereum). Used in Mantle v2 OP Stack architecture. Changes to op-geth's EVM execution, block derivation API, miner, or RPC surface affect Mantle's execution layer. mantle-xyz/mantle-v2 replaces go-ethereum with mantlenetworkio/op-geth in its go.mod, so op-geth version bumps cascade to the monorepo."
+    },
+    {
+      "projectId": "mantle-xyz/mantle-v2",
+      "repoUrl": "https://github.com/mantle-xyz/mantle-v2",
+      "branch": "main",
+      "tags": ["op-stack", "monorepo", "l2", "go", "derivation"],
+      "notes": "Mantle v2 protocol monorepo — fork of ethereum-optimism/optimism",
+      "architectureNotes": "Fork of ethereum-optimism/optimism (module path github.com/ethereum-optimism/optimism retained in go.mod). Contains op-node (derivation, sequencer), op-batcher, op-proposer, op-challenger, op-dispute-mon, and related OP Stack components. Mantle-specific changes include MNT gas pricing, Mantle DA integration (alt-DA), and custom L1/L2 derivation rules. go.mod replaces github.com/ethereum/go-ethereum with mantlenetworkio/op-geth v1.5.4. Changes to OP Stack derivation pipeline, sequencer, dispute game, or proof system in the upstream optimism monorepo require tracking and rebasing here."
+    },
+    {
+      "projectId": "mantle-xyz/kona",
+      "repoUrl": "https://github.com/mantle-xyz/kona",
+      "branch": "main",
+      "tags": ["kona", "fault-proof", "derivation", "rust", "zk"],
+      "notes": "Mantle's Rust OP Stack derivation and fault proof — fork of op-rs/kona",
+      "architectureNotes": "Fork of op-rs/kona (Rust). Kona implements the OP Stack state transition function and L2 chain derivation in a no_std environment suitable for fault proof programs (FPVM) and ZK circuits. Mantle customizations may include Mantle-specific DA handling and custom chain parameters. Changes to kona's derivation pipeline, preimage oracle interface, or fault proof program structure in op-rs/kona directly affect Mantle's proof infrastructure."
+    },
+    {
+      "projectId": "mantle-xyz/op-succinct",
+      "repoUrl": "https://github.com/mantle-xyz/op-succinct",
+      "branch": "main",
+      "tags": ["op-succinct", "zk", "sp1", "rust", "proof"],
+      "notes": "Mantle's ZK proof system — fork of succinctlabs/op-succinct",
+      "architectureNotes": "Fork of succinctlabs/op-succinct (Rust, SP1-based ZK proving for OP Stack). Turns Mantle's OP Stack rollup into a ZK rollup using Succinct's SP1 prover. Changes to op-succinct's proof verification logic, SP1 integration, OP Stack compatibility layer, or aggregation contracts in the upstream succinctlabs/op-succinct repo require tracking and rebasing here."
     }
   ],
   "counterpartRelationships": [
     {
-      "source": "base/base",
-      "targets": ["mantle/reth"],
-      "relationship": "manual",
-      "reason": "Base and Mantle both track reth / OP Stack execution-client evolution"
+      "source": "paradigmxyz/reth",
+      "targets": ["mantle-xyz/reth"],
+      "relationship": "fork_of",
+      "reason": "mantle-xyz/reth is a direct fork of paradigmxyz/reth. Evidence: GitHub API isFork=true, parent=paradigmxyz/reth; Cargo.toml workspace.package.repository='https://github.com/paradigmxyz/reth' with authors='Mantle Core Contributors'. Upstream reth releases and breaking changes to engine API, block execution, or EVM must be rebased into mantle-xyz/reth."
     },
     {
       "source": "ethereum-optimism/op-geth",
-      "targets": ["mantle/reth"],
-      "relationship": "manual",
-      "reason": "OP Stack execution layer changes may affect Mantle execution-client strategy"
+      "targets": ["mantle-xyz/op-geth"],
+      "relationship": "fork_of",
+      "reason": "mantle-xyz/op-geth is a direct fork of ethereum-optimism/op-geth. Evidence: GitHub API isFork=true, parent=ethereum-optimism/op-geth; go.mod retains module path github.com/ethereum/go-ethereum (inherited from op-geth's own fork of go-ethereum). Upstream op-geth releases tracking new Ethereum hardforks, EIP implementations, or OP Stack execution changes must be rebased here."
+    },
+    {
+      "source": "ethereum-optimism/optimism",
+      "targets": ["mantle-xyz/mantle-v2"],
+      "relationship": "fork_of",
+      "reason": "mantle-xyz/mantle-v2 is a fork of ethereum-optimism/optimism. Evidence: go.mod module path is 'github.com/ethereum-optimism/optimism'; root directory structure mirrors the optimism monorepo exactly (op-node, op-batcher, op-proposer, op-challenger, op-dispute-mon, op-program, cannon, etc.). Upstream OP Stack protocol changes — derivation pipeline, sequencer, fault proof game, interop — must be tracked and rebased into mantle-v2."
+    },
+    {
+      "source": "ethereum/go-ethereum",
+      "targets": ["mantle-xyz/op-geth", "mantle-xyz/mantle-v2"],
+      "relationship": "depends_on",
+      "reason": "mantle-xyz/op-geth descends from ethereum/go-ethereum via the ethereum-optimism/op-geth fork chain (module path github.com/ethereum/go-ethereum retained throughout). mantle-xyz/mantle-v2 requires github.com/ethereum/go-ethereum v1.16.5 in go.mod, replaced with mantlenetworkio/op-geth v1.5.4 (a compatible fork). L1 hardfork changes (new opcodes, block header fields, blob APIs) in go-ethereum propagate through op-geth into both Mantle targets."
+    },
+    {
+      "source": "succinctlabs/op-succinct",
+      "targets": ["mantle-xyz/op-succinct"],
+      "relationship": "fork_of",
+      "reason": "mantle-xyz/op-succinct is a direct fork of succinctlabs/op-succinct. Evidence: GitHub API isFork=true, parent=succinctlabs/op-succinct. Upstream changes to SP1 proof system integration, OP Stack ZK compatibility, or aggregation contracts must be rebased into mantle-xyz/op-succinct."
+    },
+    {
+      "source": "op-rs/kona",
+      "targets": ["mantle-xyz/kona"],
+      "relationship": "fork_of",
+      "reason": "mantle-xyz/kona is a direct fork of op-rs/kona. Evidence: GitHub API isFork=true, parent=op-rs/kona. kona implements the no_std OP Stack derivation and fault proof programs used in ZK circuits and FPVMs. Upstream derivation pipeline changes, preimage oracle updates, or FPVM interface changes in op-rs/kona must be rebased into mantle-xyz/kona."
     }
   ]
 }

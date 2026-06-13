@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
+  findImpactCheckRedispatchRow,
   findReportByPeriod,
   markDeliveryStatus,
   parseRedispatchMode,
@@ -30,6 +31,19 @@ function createDb(): Database {
       status TEXT DEFAULT 'pending',
       sent_at INTEGER,
       UNIQUE(report_id, card_index)
+    );
+    CREATE TABLE impact_checks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pr_id INTEGER NOT NULL DEFAULT 0,
+      target_project_id TEXT NOT NULL DEFAULT 'test/repo',
+      affected TEXT,
+      confidence TEXT,
+      alert_card_json TEXT,
+      alert_dispatched_at INTEGER,
+      alert_attempt_count INTEGER NOT NULL DEFAULT 0,
+      lark_message_id TEXT,
+      checked_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'complete'
     );
   `);
   return db;
@@ -180,4 +194,37 @@ describe("report CLI helpers", () => {
     expect(untouched).toEqual({ status: "sent", lark_message_id: "msg1", sent_at: 456 });
   });
 
+});
+
+describe("findImpactCheckRedispatchRow", () => {
+  let db: Database;
+  const CARD = JSON.stringify({ config: {}, header: { template: "red" }, elements: [] });
+
+  beforeEach(() => {
+    db = createDb();
+  });
+
+  it("returns null when the row does not exist", () => {
+    expect(findImpactCheckRedispatchRow(db, 999)).toBeNull();
+  });
+
+  it("returns the full row when it exists", () => {
+    db.run(
+      `INSERT INTO impact_checks (pr_id, target_project_id, affected, confidence, alert_card_json, alert_attempt_count)
+       VALUES (7, 'mantle/reth', 'yes', 'high', ?, 3)`,
+      [CARD]
+    );
+    const row = findImpactCheckRedispatchRow(db, 1);
+    expect(row).not.toBeNull();
+    expect(row!.id).toBe(1);
+    expect(row!.pr_id).toBe(7);
+    expect(row!.target_project_id).toBe("mantle/reth");
+    expect(row!.affected).toBe("yes");
+    expect(row!.confidence).toBe("high");
+    expect(row!.alert_card_json).toBe(CARD);
+    expect(row!.alert_attempt_count).toBe(3);
+    expect(row!.alert_dispatched_at).toBeNull();
+    expect(row!.lark_message_id).toBeNull();
+    expect(row!.status).toBe("complete");
+  });
 });
