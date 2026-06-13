@@ -112,8 +112,20 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
           AND alert_attempt_count < 5
       `)
       .all();
-  } catch {
-    // impact_checks table may not exist in older DBs; skip gracefully
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Only suppress errors that indicate a pre-migration schema (table or column does not exist yet).
+    // Any other failure (corrupt DB, bad migration, etc.) must surface so alert cards are not silently skipped.
+    const isLegacySchema =
+      msg.includes("no such table: impact_checks") ||
+      msg.includes("no such column: alert_card_json") ||
+      msg.includes("no such column: alert_dispatched_at") ||
+      msg.includes("no such column: alert_attempt_count");
+    if (!isLegacySchema) {
+      const surfaced = `Alert scan failed: ${msg}`;
+      console.error(`[Dispatcher] ${surfaced}`);
+      errors.push(surfaced);
+    }
   }
 
   for (const alertRow of alertRows) {

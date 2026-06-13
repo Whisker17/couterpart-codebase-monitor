@@ -406,11 +406,17 @@ describe("dispatch stage — alert card retry", () => {
 
   it("skips all alert retries when webhook is not configured", async () => {
     mockWebhookUrl = undefined;
-    insertAlertCheck(testDb, { alertAttemptCount: 0 });
+    const checkId = insertAlertCheck(testDb, { alertAttemptCount: 0 });
     const result = await execute(ctx);
 
     expect(result.itemsProcessed).toBe(0);
     expect(sendCardImpl).not.toHaveBeenCalled();
+
+    const row = testDb.query<{ alert_attempt_count: number; alert_dispatched_at: number | null }, [number]>(
+      "SELECT alert_attempt_count, alert_dispatched_at FROM impact_checks WHERE id = ?"
+    ).get(checkId)!;
+    expect(row.alert_attempt_count).toBe(0);
+    expect(row.alert_dispatched_at).toBeNull();
   });
 
   it("does not retry already-dispatched alerts", async () => {
@@ -429,6 +435,27 @@ describe("dispatch stage — alert card retry", () => {
     const result = await execute(ctx);
 
     expect(result.itemsProcessed).toBe(0);
+    expect(sendCardImpl).not.toHaveBeenCalled();
+  });
+
+  it("surfaces non-legacy scan errors in stage result", async () => {
+    // Recreate the table with the PK named `check_id` instead of `id`.
+    // The query does `SELECT id, ...` → "no such column: id" is NOT in the
+    // legacy-schema suppression list, so the stage result must reflect failure.
+    testDb.exec("DROP TABLE impact_checks");
+    testDb.exec(`
+      CREATE TABLE impact_checks (
+        check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_card_json TEXT,
+        alert_dispatched_at INTEGER,
+        alert_attempt_count INTEGER NOT NULL DEFAULT 0
+      )
+    `);
+
+    const result = await execute(ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.errors.some((e) => e.includes("Alert scan failed"))).toBe(true);
     expect(sendCardImpl).not.toHaveBeenCalled();
   });
 });
