@@ -214,7 +214,10 @@ export function makeAgentTools(cloneDir: string) {
         }
       }
 
-      args.push(pattern);
+      // Use --regexp so rg always treats the value as a regex pattern, never
+      // as an option string. Without this, a pattern like "--pre=sh" would
+      // enable rg's preprocessor and execute arbitrary commands.
+      args.push("--regexp", pattern);
 
       // Validate and fence the path
       if (path !== undefined && path !== "") {

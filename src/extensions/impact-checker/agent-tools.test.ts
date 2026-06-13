@@ -220,6 +220,26 @@ describe("grep_repo tool", () => {
     expect(capturedArgs[0]).toContain("-w");
   });
 
+  it("passes pattern via --regexp so flag-like patterns are not parsed as options", async () => {
+    const capturedArgs: string[][] = [];
+    _setRgRunner(async (args) => {
+      capturedArgs.push(args);
+      return { stdout: "", stderr: "", exitCode: 1, timedOut: false };
+    });
+    const { grep_repo } = makeAgentTools(CLONE_DIR);
+    // A pattern that looks like an rg option — must NOT enable preprocessor
+    await (grep_repo.execute as Function)({ pattern: "--pre=sh" }, {} as any);
+    const regexpIdx = capturedArgs[0]?.indexOf("--regexp");
+    // --regexp must appear and be immediately followed by the raw pattern value
+    expect(regexpIdx).not.toBe(-1);
+    expect(capturedArgs[0]?.[regexpIdx! + 1]).toBe("--pre=sh");
+    // The pattern must NOT appear as a bare argv element (which rg would parse as an option)
+    const bareIdx = capturedArgs[0]?.findIndex(
+      (a, i) => a === "--pre=sh" && i !== regexpIdx! + 1
+    );
+    expect(bareIdx).toBe(-1);
+  });
+
   it("rejects disallowed flags (e.g. --pre) without calling rg", async () => {
     let rgCalled = false;
     _setRgRunner(async () => {
