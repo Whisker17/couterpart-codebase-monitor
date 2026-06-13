@@ -43,3 +43,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Codex superpowers plans
 docs/superpowers/
+.superpowers/
+
+# local Claude Code skill symlinks (point into global ~/.claude/skills)
+.claude/skills/
