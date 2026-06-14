@@ -1,0 +1,216 @@
+{
+  "mantleTargets": [
+    {
+      "projectId": "mantle-xyz/reth",
+      "repoUrl": "https://github.com/mantle-xyz/reth",
+      "branch": "mantle-elysium",
+      "tags": ["mantle", "reth", "op-reth", "execution-client", "l2", "rust"],
+      "notes": "Mantle Rust execution client. This is a composite op-reth workspace on the mantle-elysium branch, not a plain paradigmxyz/reth fork.",
+      "architectureNotes": "Runtime shape: (1) op-reth/ is a vendored copy of ethereum-optimism/optimism rust/op-reth at tag op-reth/v2.2.1; this is the real bump driver. (2) reth core crates are inherited from the op-reth manifest at paradigmxyz/reth rev 88505c7fcbfdebfd3b56d88c86b62e950043c6c4 (= v2.2.0); Mantle does not independently track paradigmxyz/reth main. (3) mantle-reth/ contains Mantle's local trait override/build layer, and patches/reth-trie-common overrides one reth core crate. (4) [patch.crates-io] redirects revm/op-revm to mantle-xyz/revm branch mantle-elysium (lock b4f61822), revm-inspectors to mantle-xyz/revm-inspectors branch mantle-elysium (lock af522533), and op-alloy/alloy-op-evm/alloy-op-hardforks to mantle-xyz/mantle-v2 branch mantle-elysium (lock c06cb723). High-signal review areas: op-reth/crates/{evm,node,payload,rpc,txpool,consensus,chainspec,hardforks}, mantle-reth/crates/{chainspec,eth-api,rpc-ext,cli}, patches/reth-trie-common, and any Mantle hardfork/fee-model wiring."
+    },
+    {
+      "projectId": "mantle-xyz/op-geth",
+      "repoUrl": "https://github.com/mantle-xyz/op-geth",
+      "branch": "main",
+      "tags": ["mantle", "op-geth", "execution-client", "op-stack", "l2", "go"],
+      "notes": "Mantle Go execution client. The repository is also reachable as mantlenetworkio/op-geth and is the go-ethereum replacement used by mantle-v2.",
+      "architectureNotes": "Fork of ethereum-optimism/op-geth on the OP Stack Go execution-client line, which itself inherits ethereum/go-ethereum. The upstream merge driver is ethereum-optimism/op-geth's optimism branch; the topology snapshot records Mantle's merge-base at 737ffd1bf and upstream already beyond geth 1.16.5. mantle-v2 imports github.com/ethereum/go-ethereum but replaces it with Mantle op-geth (main currently v1.5.4 in older config; mantle-elysium uses pseudo-version 45ddd63ceae2). High-signal areas: core/types, core/txpool, core/vm, miner, eth/catalyst, internal/ethapi, params/mantle.go, Engine API, deposit handling, L1 cost accounting, preconfirmation/native fee semantics."
+    },
+    {
+      "projectId": "mantle-xyz/mantle-v2",
+      "repoUrl": "https://github.com/mantle-xyz/mantle-v2",
+      "branch": "mantle-elysium",
+      "tags": ["mantle", "op-stack", "monorepo", "l2", "go", "rust", "derivation"],
+      "notes": "Mantle v2 platform monorepo. It is both downstream of the OP Stack and an upstream for mantle-reth's Rust OP/Mantle type layer.",
+      "architectureNotes": "Two-ecosystem repo. Go side is an ethereum-optimism/optimism monorepo fork preserving module github.com/ethereum-optimism/optimism and replacing github.com/ethereum/go-ethereum with Mantle op-geth. Rust side is a rust/ subtree from ethereum-optimism/optimism at kona-client/v1.5.1 via mantle-xyz/optimism-rust-bridge and git subtree pull, then Mantle patches are registered in rust/MANTLE_CHANGES.md. The rust workspace contains kona, op-alloy 2.0.0, alloy-op-evm, and alloy-op-hardforks; op-revm is excluded and revm is patched to mantle-xyz/revm branch mantle-elysium (lock e637f61e). mantle-reth consumes this repo at branch mantle-elysium lock c06cb723 for op-alloy/alloy-op-evm/alloy-op-hardforks. High-signal areas: op-node derivation/sequencer, op-batcher, op-proposer, op-challenger/dispute components, op-program/cannon, op-supervisor/interop, go.mod replace of op-geth, rust/MANTLE_CHANGES.md, rust/op-alloy, rust/alloy-op-evm, rust/alloy-op-hardforks, and rust/kona."
+    },
+    {
+      "projectId": "mantle-xyz/kona",
+      "repoUrl": "https://github.com/mantle-xyz/kona",
+      "branch": "main",
+      "tags": ["mantle", "kona", "fault-proof", "derivation", "rust", "zk"],
+      "notes": "Mantle standalone Kona fork. It is distinct from mantle-v2/rust/kona and is the derivation/execution dependency for mantle-op-succinct.",
+      "architectureNotes": "Standalone Rust fork with historical op-rs/kona lineage, but the current active bump driver is ethereum-optimism/optimism rust/kona after op-rs/kona archival. Baseline is kona-client/v1.2.2; Mantle changes span protocol, proof, and bin host/client code and retain MantleBlobSource, unlike mantle-v2/rust/kona at v1.5.1 where blob sources were removed. Important git/registry lines: mantle-xyz/revm tag v2.2.2 (revm 31/op-revm 12), mantle-xyz/op-alloy tag v2.2.0 (0.23.0 line), mantle-xyz/evm tag v2.2.1, paradigmxyz/reth tag v1.6.0 only for reth-db/reth-codecs supervisor storage, and ethereum-optimism/superchain-registry as registry/submodule data. High-signal areas: derivation pipeline, preimage oracle, MPT/proof executor, protocol genesis/hardforks, Mantle DA/blob source, registry bindings, and proof/client/host crates."
+    },
+    {
+      "projectId": "mantle-xyz/op-succinct",
+      "repoUrl": "https://github.com/mantle-xyz/op-succinct",
+      "branch": "main",
+      "tags": ["mantle", "op-succinct", "zk", "sp1", "rust", "proof"],
+      "notes": "Mantle SP1 validity proving stack. This is the most downstream Rust proof consumer in the topology.",
+      "architectureNotes": "Fork of succinctlabs/op-succinct with Mantle dependency re-pointing. It consumes mantle-xyz/kona tag v2.2.3 (lock 72a20ab9) as the zkVM guest derivation/execution core and pins the same revm/op-alloy/evm refs used by Kona: mantle-xyz/revm v2.2.2, mantle-xyz/op-alloy v2.2.0, and mantle-xyz/evm v2.2.1. SP1 crates are exact-pinned to 6.1.0 and sp1-patches provide zkVM crypto acceleration. Any Kona, SP1, revm/op-alloy/evm, proof-program, or verifier-contract bump requires ELF rebuild and alignment checks. High-signal areas: utils/{client,host,proof}, programs/range, programs/aggregation, validity, Cargo.lock git SHAs, Foundry verifier contracts, and removal/handling of DA backends."
+    },
+    {
+      "projectId": "mantle-xyz/revm",
+      "repoUrl": "https://github.com/mantle-xyz/revm",
+      "branch": "mantle-elysium",
+      "tags": ["mantle", "revm", "evm", "fee-model", "rust"],
+      "notes": "Mantle EVM and fee-model fork. This is the largest internal blast-radius repo in the Rust stack.",
+      "architectureNotes": "Fork of bluealloy/revm with two active Mantle version lines. The mantle-elysium line (revm 38/op-revm 19) is patched into mantle-reth and mantle-v2 and is used by mantle-revm-inspectors; consumers currently resolve different SHAs (reth b4f61822, mantle-v2 e637f61e). The v2.2.2 tag line (revm 31/op-revm 12, resolved 56aee9a6) is consumed by mantle-kona and mantle-op-succinct. This target clone checks the mantle-elysium line; tag-line impacts must be reasoned from relationship notes and lockfiles. High-signal areas: op-revm hardfork gating, BVM_ETH/native-token semantics, token_ratio, ARSIA/JOVIAN behavior, precompiles, transaction validation, and any revm major API surface used by revm-inspectors."
+    },
+    {
+      "projectId": "mantle-xyz/op-alloy",
+      "repoUrl": "https://github.com/mantle-xyz/op-alloy",
+      "branch": "main",
+      "tags": ["mantle", "op-alloy", "op-stack", "types", "rpc", "rust"],
+      "notes": "Mantle standalone op-alloy fork, currently the 0.23.0 line used by Kona and op-succinct.",
+      "architectureNotes": "Fork of alloy-rs/op-alloy on the 0.23.0 line, resolved at tag v2.2.0 / 769c12a9 by Kona and op-succinct. Mantle also has a second op-alloy copy inside mantle-v2/rust on the 2.0.0 line, which is consumed by mantle-reth. Consensus/RPC fields such as eth_value, eth_tx_value, and token_ratio must be dual-written across both copies even though their alloy baselines differ. High-signal areas: OP transaction/envelope/receipt types, L1BlockInfo, TxDeposit encoding/decoding, RPC serialization, and any field semantics shared with mantle-v2/rust/op-alloy."
+    },
+    {
+      "projectId": "mantle-xyz/evm",
+      "repoUrl": "https://github.com/mantle-xyz/evm",
+      "branch": "main",
+      "tags": ["mantle", "alloy-evm", "evm", "rust"],
+      "notes": "Mantle alloy-evm/alloy-op-evm fork used by Kona and op-succinct, not by mantle-reth.",
+      "architectureNotes": "Fork of alloy-rs/evm consumed by mantle-kona and mantle-op-succinct at tag v2.2.1 / ea9e2a86. It supplies alloy-evm/alloy-op-evm behavior for proof execution. mantle-reth intentionally uses crates.io alloy-evm 0.34.0 unpatched rather than this fork, so do not route mantle-reth checks through this target. High-signal areas: ZkvmOpEvmFactory, alloy-op-evm wrappers, executor/proof driver integration, and any EVM abstraction change that can alter proof execution semantics."
+    },
+    {
+      "projectId": "mantle-xyz/revm-inspectors",
+      "repoUrl": "https://github.com/mantle-xyz/revm-inspectors",
+      "branch": "mantle-elysium",
+      "tags": ["mantle", "revm-inspectors", "evm", "tracing", "rust"],
+      "notes": "Mantle tracing inspector fork consumed by mantle-reth.",
+      "architectureNotes": "Fork of paradigmxyz/revm-inspectors with upstream baseline v0.39.0 and Mantle branch mantle-elysium (lock af522533 in mantle-reth). It is mainly a tracing/debug RPC dependency, but it type-couples to the revm major used by mantle-reth. revm major bumps must move revm-inspectors to the matching upstream minor or mantle-reth can resolve incompatible revm versions through direct and inspector paths. High-signal areas: Inspector/Interpreter/Context types, trace builders, debug_trace behavior, and Cargo.lock revm version unification."
+    }
+  ],
+  "counterpartRelationships": [
+    {
+      "source": "ethereum-optimism/optimism",
+      "targets": ["mantle-xyz/reth", "mantle-xyz/mantle-v2", "mantle-xyz/kona"],
+      "relationship": "fork_of",
+      "reason": "Primary OP Stack upstream for three different Mantle lines. For mantle-reth, ethereum-optimism/optimism rust/op-reth at tag op-reth/v2.2.1 is the true bump driver and is vendored into op-reth/. For mantle-v2, the Go monorepo is a whole-repo fork and rust/ is subtree-synced at kona-client/v1.5.1 via mantle-xyz/optimism-rust-bridge. For mantle-kona, post-archive Kona updates come from optimism rust/kona; current standalone baseline is kona-client/v1.2.2. OP derivation, sequencing, fault-proof, interop, op-reth execution, payload, txpool, hardfork, and rust subtree changes should be treated as high-impact."
+    },
+    {
+      "source": "paradigmxyz/reth",
+      "targets": ["mantle-xyz/reth", "mantle-xyz/kona"],
+      "relationship": "depends_on",
+      "reason": "Two separate inherited reth version lines must not be collapsed. mantle-reth inherits paradigmxyz/reth rev 88505c7fcbfdebfd3b56d88c86b62e950043c6c4 (= v2.2.0) from op-reth/v2.2.1; paradigm main is an early-warning signal, not an independent Mantle bump target. mantle-kona inherits tag v1.6.0 only for reth-db/reth-codecs supervisor MDBX storage. Impact checks should state which version line is relevant and avoid mixing the reth v2.2.0 execution-framework line with the kona v1.6.0 storage line."
+    },
+    {
+      "source": "ethereum-optimism/op-geth",
+      "targets": ["mantle-xyz/op-geth"],
+      "relationship": "fork_of",
+      "reason": "mantle-xyz/op-geth is Mantle's fork of ethereum-optimism/op-geth, tracking the upstream optimism branch. Upstream changes to EVM execution, geth kernel bumps, Engine API, miner, txpool, RPC, OP deposit logic, and L1 cost accounting must be merged into Mantle's Go execution client."
+    },
+    {
+      "source": "ethereum/go-ethereum",
+      "targets": ["mantle-xyz/op-geth", "mantle-xyz/mantle-v2"],
+      "relationship": "depends_on",
+      "reason": "go-ethereum is the kernel under ethereum-optimism/op-geth and Mantle op-geth. mantle-v2 imports github.com/ethereum/go-ethereum and replaces it with Mantle op-geth, so hardfork, block header, blob, precompile, RPC, database, and txpool changes propagate through the op-geth fork chain into both targets."
+    },
+    {
+      "source": "bluealloy/revm",
+      "targets": ["mantle-xyz/revm"],
+      "relationship": "fork_of",
+      "reason": "bluealloy/revm is the root upstream for mantle-xyz/revm. Mantle has two active revm lines: mantle-elysium (revm 38/op-revm 19) for reth/mantle-v2/revm-inspectors and tag v2.2.2 (revm 31/op-revm 12) for kona/op-succinct. Upstream revm opcode, precompile, gas, journal, context, or major trait changes can require Mantle fee-model and hardfork patch rework."
+    },
+    {
+      "source": "alloy-rs/op-alloy",
+      "targets": ["mantle-xyz/op-alloy", "mantle-xyz/mantle-v2"],
+      "relationship": "fork_of",
+      "reason": "alloy-rs/op-alloy feeds two divergent Mantle copies. mantle-xyz/op-alloy is the standalone 0.23.0 line consumed by kona/op-succinct; mantle-v2/rust/op-alloy is a separate 2.0.0 subtree copy consumed by reth. OP consensus/RPC type changes must be checked against both copies, especially TxDeposit eth_value/eth_tx_value and L1BlockInfo token_ratio."
+    },
+    {
+      "source": "alloy-rs/evm",
+      "targets": ["mantle-xyz/evm"],
+      "relationship": "fork_of",
+      "reason": "alloy-rs/evm is the upstream for mantle-xyz/evm, which is consumed by kona and op-succinct at tag v2.2.1. Note that mantle-reth does not consume this fork; it uses crates.io alloy-evm 0.34.0 unpatched."
+    },
+    {
+      "source": "paradigmxyz/revm-inspectors",
+      "targets": ["mantle-xyz/revm-inspectors"],
+      "relationship": "fork_of",
+      "reason": "paradigmxyz/revm-inspectors is the upstream baseline for mantle-xyz/revm-inspectors (baseline v0.39.0, Mantle branch mantle-elysium). Upstream inspector API changes must be checked for compatibility with Mantle's revm major and mantle-reth tracing/debug RPC usage."
+    },
+    {
+      "source": "succinctlabs/op-succinct",
+      "targets": ["mantle-xyz/op-succinct"],
+      "relationship": "fork_of",
+      "reason": "mantle-xyz/op-succinct is a Mantle fork of succinctlabs/op-succinct with dependency re-pointing and DA/backend pruning. Upstream proof-program, verifier-contract, aggregation, SP1 integration, and OP Stack compatibility changes must be rebased while preserving Mantle's kona/revm/op-alloy/evm pins."
+    },
+    {
+      "source": "succinctlabs/sp1",
+      "targets": ["mantle-xyz/op-succinct"],
+      "relationship": "depends_on",
+      "reason": "SP1 zkVM crates are exact-version pinned by mantle-op-succinct (currently 6.1.0 plus sp1-patches). SP1 runtime/prover/toolchain changes can force proof ELF rebuilds, verifier-key changes, and proving performance or compatibility checks."
+    },
+    {
+      "source": "ethereum-optimism/superchain-registry",
+      "targets": ["mantle-xyz/mantle-v2", "mantle-xyz/kona"],
+      "relationship": "depends_on",
+      "reason": "superchain-registry provides chain registry/config data to mantle-v2 and mantle-kona. Registry schema, chain metadata, hardfork schedule, or validation changes are usually lower-impact than protocol code changes but can affect chain config generation and kona registry bindings."
+    },
+    {
+      "source": "mantle-xyz/op-geth",
+      "targets": ["mantle-xyz/mantle-v2"],
+      "relationship": "depends_on",
+      "reason": "mantle-v2 replaces github.com/ethereum/go-ethereum with Mantle op-geth. op-geth changes to execution/state/RPC/preconfirmation/native-fee behavior can affect Go services throughout mantle-v2, including op-node, op-batcher, op-proposer, op-challenger, op-program, and genesis/config handling."
+    },
+    {
+      "source": "mantle-xyz/op-geth",
+      "targets": ["mantle-xyz/reth", "mantle-xyz/kona", "mantle-xyz/op-succinct"],
+      "relationship": "protocol_dependency",
+      "reason": "Semantic consistency constraint, not a code dependency. Mantle hardfork and fee semantics are implemented independently across Go op-geth and the Rust stack. Changes in params/mantle.go, token_ratio, BVM_ETH, MetaTransaction, preconfirmation, or hardfork activation must be checked against reth, kona, op-succinct, and their shared revm/op-alloy semantics."
+    },
+    {
+      "source": "mantle-xyz/mantle-v2",
+      "targets": ["mantle-xyz/reth"],
+      "relationship": "depends_on",
+      "reason": "mantle-reth consumes mantle-v2 branch mantle-elysium for op-alloy 2.0.0, alloy-op-evm, and alloy-op-hardforks (lock c06cb723). Changes in mantle-v2/rust/op-alloy, alloy-op-evm, alloy-op-hardforks, or Rust hardfork/type definitions can break reth compilation or alter execution/RPC semantics."
+    },
+    {
+      "source": "mantle-xyz/kona",
+      "targets": ["mantle-xyz/op-succinct"],
+      "relationship": "depends_on",
+      "reason": "mantle-op-succinct consumes mantle-kona tag v2.2.3 as its zkVM guest derivation/execution core. Kona bumps require op-succinct to re-pin the tag, keep revm/op-alloy/evm refs byte-identical to Kona, rebuild ELFs, and revalidate proof/verifier assumptions."
+    },
+    {
+      "source": "mantle-xyz/kona",
+      "targets": ["mantle-xyz/op-geth", "mantle-xyz/reth"],
+      "relationship": "protocol_dependency",
+      "reason": "Semantic consistency constraint. Kona derivation, genesis, hardfork, token_ratio, and Mantle DA/blob changes must agree with the Go execution stack and reth execution stack even when there is no direct code dependency."
+    },
+    {
+      "source": "mantle-xyz/revm",
+      "targets": ["mantle-xyz/reth", "mantle-xyz/mantle-v2", "mantle-xyz/kona", "mantle-xyz/op-succinct", "mantle-xyz/revm-inspectors"],
+      "relationship": "depends_on",
+      "reason": "Mantle revm is consumed across both Rust version lines. The mantle-elysium line feeds reth, mantle-v2, and revm-inspectors; the v2.2.2 tag line feeds kona and op-succinct. EVM, gas, precompile, op-revm, hardfork, context, and trait API changes can cascade into all listed targets. For reth/mantle-v2, also check for commit skew on the same branch."
+    },
+    {
+      "source": "mantle-xyz/revm",
+      "targets": ["mantle-xyz/op-geth"],
+      "relationship": "protocol_dependency",
+      "reason": "Semantic consistency constraint. revm/op-revm carries Rust-side Mantle hardfork and fee semantics; changes there must be mirrored or validated against op-geth params and execution semantics."
+    },
+    {
+      "source": "mantle-xyz/op-alloy",
+      "targets": ["mantle-xyz/kona", "mantle-xyz/op-succinct"],
+      "relationship": "depends_on",
+      "reason": "mantle-kona and mantle-op-succinct consume standalone mantle-xyz/op-alloy tag v2.2.0 / 769c12a9. OP consensus/RPC type, TxDeposit, receipt, and L1BlockInfo changes can alter derivation/proof behavior."
+    },
+    {
+      "source": "mantle-xyz/op-alloy",
+      "targets": ["mantle-xyz/mantle-v2"],
+      "relationship": "protocol_dependency",
+      "reason": "Dual-write constraint. Standalone mantle-xyz/op-alloy and mantle-v2/rust/op-alloy are two divergent copies on different alloy baselines. Consensus/RPC field changes in one copy, especially eth_value, eth_tx_value, and token_ratio, must be ported to the other copy before downstream consumers are semantically aligned."
+    },
+    {
+      "source": "mantle-xyz/evm",
+      "targets": ["mantle-xyz/kona", "mantle-xyz/op-succinct"],
+      "relationship": "depends_on",
+      "reason": "mantle-kona and mantle-op-succinct consume mantle-xyz/evm tag v2.2.1 / ea9e2a86 for alloy-evm/alloy-op-evm proof execution behavior. EVM factory, executor, proof-driver, or EVM abstraction changes can alter proof results."
+    },
+    {
+      "source": "mantle-xyz/revm-inspectors",
+      "targets": ["mantle-xyz/reth"],
+      "relationship": "depends_on",
+      "reason": "mantle-reth consumes mantle-xyz/revm-inspectors branch mantle-elysium for tracing/debug RPC. Changes are usually local to trace functionality, but revm major mismatches can introduce incompatible revm crates through the inspector path."
+    },
+    {
+      "source": "mantle-xyz/optimism-rust-bridge",
+      "targets": ["mantle-xyz/mantle-v2"],
+      "relationship": "depends_on",
+      "reason": "mantle-xyz/optimism-rust-bridge relays ethereum-optimism/optimism rust/ snapshots into mantle-v2/rust through git subtree pull. Bridge updates can indicate a new subtree baseline and should be checked against rust/MANTLE_CHANGES.md, op-alloy/kona/alloy-op-evm patches, and downstream reth compatibility."
+    }
+  ]
+}

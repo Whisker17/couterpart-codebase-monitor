@@ -332,46 +332,21 @@ export function getTrackedProjects(): TrackedProject[] {
   return _projects;
 }
 
-const RELATIONSHIP_STRENGTH: Record<CounterpartRelationship["relationship"], number> = {
-  fork_of: 4,
-  depends_on: 3,
-  protocol_dependency: 2,
-  manual: 1,
-};
-
-function deduplicateRelationships(rels: CounterpartRelationship[]): CounterpartRelationship[] {
-  // Track best (source, target) → {relationship entry, strength}
-  const best = new Map<string, { rel: CounterpartRelationship; target: string; strength: number }>();
-
+function assertNoDuplicateSourceTargetRelationships(rels: CounterpartRelationship[]): void {
+  const seen = new Map<string, CounterpartRelationship["relationship"]>();
   for (const rel of rels) {
     for (const target of rel.targets) {
       const key = `${rel.source}\x00${target}`;
-      const strength = RELATIONSHIP_STRENGTH[rel.relationship] ?? 0;
-      const current = best.get(key);
-      if (!current || strength > current.strength) {
-        best.set(key, { rel, target, strength });
+      const existing = seen.get(key);
+      if (existing) {
+        throw new Error(
+          `[config] duplicate counterpartRelationship for ${rel.source} -> ${target}: ` +
+            `${existing} and ${rel.relationship}. Split semantics are not supported by impact_checks UNIQUE(pr_id, target_project_id).`
+        );
       }
+      seen.set(key, rel.relationship);
     }
   }
-
-  // Re-group by (source, relationship) to reconstruct the de-duplicated list
-  const grouped = new Map<string, CounterpartRelationship>();
-  for (const { rel, target } of best.values()) {
-    const groupKey = `${rel.source}\x00${rel.relationship}`;
-    const existing = grouped.get(groupKey);
-    if (existing) {
-      existing.targets.push(target);
-    } else {
-      grouped.set(groupKey, {
-        source: rel.source,
-        targets: [target],
-        relationship: rel.relationship,
-        reason: rel.reason,
-      });
-    }
-  }
-
-  return Array.from(grouped.values());
 }
 
 export function getMantleConfig(): MantleConfig {
@@ -380,8 +355,9 @@ export function getMantleConfig(): MantleConfig {
   const parsed = JSON.parse(raw) as MantleConfig;
   _mantleConfig = {
     ...parsed,
-    counterpartRelationships: deduplicateRelationships(parsed.counterpartRelationships ?? []),
+    counterpartRelationships: parsed.counterpartRelationships ?? [],
   };
+  assertNoDuplicateSourceTargetRelationships(_mantleConfig.counterpartRelationships);
   return _mantleConfig;
 }
 
@@ -393,13 +369,10 @@ export function reloadMantleConfig(): {
   const prev = _mantleConfig;
 
   let next: MantleConfig;
+  let parsed: MantleConfig;
   try {
     const raw = readFileSync(getMantleConfigPath(), "utf-8");
-    const parsed = JSON.parse(raw) as MantleConfig;
-    next = {
-      ...parsed,
-      counterpartRelationships: deduplicateRelationships(parsed.counterpartRelationships ?? []),
-    };
+    parsed = JSON.parse(raw) as MantleConfig;
   } catch (e) {
     if (prev) {
       console.warn(`[config-reload] Failed to reload mantle-config.json, using cached config: ${e}`);
@@ -407,6 +380,12 @@ export function reloadMantleConfig(): {
     }
     throw new Error(`[config-reload] mantle-config.json invalid and no cached mantle config available: ${e}`);
   }
+
+  next = {
+    ...parsed,
+    counterpartRelationships: parsed.counterpartRelationships ?? [],
+  };
+  assertNoDuplicateSourceTargetRelationships(next.counterpartRelationships);
 
   const changed = JSON.stringify(prev) !== JSON.stringify(next);
   _mantleConfig = next;
@@ -418,6 +397,8 @@ export function validateMantleConfig(
   trackedProjectIds: Set<string>,
   impactCheckEnabled: boolean
 ): void {
+  assertNoDuplicateSourceTargetRelationships(config.counterpartRelationships ?? []);
+
   const targetMap = new Map<string, MantleTarget>();
   for (const t of config.mantleTargets) {
     targetMap.set(t.projectId, t);
@@ -442,11 +423,13 @@ export function validateMantleConfig(
     }
   }
 
-  for (const rel of config.counterpartRelationships) {
-    if (!trackedProjectIds.has(rel.source)) {
-      console.warn(
-        `[config] counterpartRelationship source "${rel.source}" is not in tracked projects — relationship will never trigger`
-      );
+  if (impactCheckEnabled) {
+    for (const rel of config.counterpartRelationships) {
+      if (!trackedProjectIds.has(rel.source)) {
+        console.warn(
+          `[config] counterpartRelationship source "${rel.source}" is not in tracked projects — relationship will never trigger`
+        );
+      }
     }
   }
 

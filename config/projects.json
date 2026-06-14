@@ -1,32 +1,32 @@
 [
   {
     "url": "https://github.com/ethereum/go-ethereum",
-    "tags": ["blockchain", "l1", "go"],
-    "notes": "Ethereum official Go implementation. L1 hardfork changes (EIPs, block header fields, blob APIs) propagate into mantle-xyz/op-geth (via fork chain) and mantle-xyz/mantle-v2 (via go.mod dependency replaced with their op-geth fork)."
+    "tags": ["blockchain", "l1", "execution-client", "go"],
+    "notes": "Ethereum execution kernel. Mantle sees it through ethereum-optimism/op-geth and Mantle op-geth; hardfork, EVM, block header, blob, RPC, and txpool changes can propagate into mantle-xyz/op-geth and mantle-xyz/mantle-v2."
   },
   {
     "url": "https://github.com/ethereum-optimism/optimism",
-    "tags": ["blockchain", "l2", "op-stack", "go"],
-    "notes": "Optimism monorepo (OP Stack). mantle-xyz/mantle-v2 is a fork of this repo. OP Stack protocol changes — derivation, sequencer, fault proof, interop — directly affect Mantle v2."
+    "tags": ["blockchain", "l2", "op-stack", "monorepo", "go", "rust"],
+    "notes": "OP Stack monorepo and the highest-impact Mantle upstream. Feeds mantle-v2 as a Go monorepo fork, mantle-reth through rust/op-reth vendored at op-reth/v2.2.1, mantle-kona through the post-archive rust/kona baseline, and mantle-v2/rust through the kona-client/v1.5.1 subtree path."
   },
   {
     "url": "https://github.com/ethereum-optimism/op-geth",
-    "tags": ["blockchain", "l2", "execution-client", "go"],
-    "notes": "OP Stack execution client (fork of go-ethereum). mantle-xyz/op-geth is a direct fork of this repo. New hardfork activations and EVM changes in op-geth must be tracked and rebased."
-  },
-  {
-    "url": "https://github.com/succinctlabs/op-succinct",
-    "tags": ["blockchain", "l2", "zk", "sp1", "rust"],
-    "notes": "ZK proving for OP Stack rollups using SP1. mantle-xyz/op-succinct is a direct fork. Upstream proof system changes or OP Stack ZK compatibility updates must be rebased."
+    "tags": ["blockchain", "l2", "execution-client", "op-stack", "go"],
+    "notes": "OP Stack Go execution client, itself downstream of ethereum/go-ethereum. mantle-xyz/op-geth tracks this repo's optimism branch; upstream hardfork, EVM, Engine API, miner, txpool, and RPC changes must be merged into Mantle's Go execution layer."
   },
   {
     "url": "https://github.com/paradigmxyz/reth",
     "tags": ["blockchain", "l1", "l2", "execution-client", "rust"],
-    "notes": "Paradigm's Rust Ethereum execution client. mantle-xyz/reth is a direct fork. Upstream reth releases — engine API changes, EVM updates, block execution logic — must be tracked and rebased into mantle-xyz/reth."
+    "notes": "Rust Ethereum execution framework. Mantle has two separate reth version lines: mantle-reth passively inherits rev 88505c7f (= v2.2.0) from op-reth/v2.2.1, while mantle-kona inherits v1.6.0 only for reth-db/reth-codecs supervisor storage."
   },
   {
-    "url": "https://github.com/op-rs/kona",
-    "tags": ["blockchain", "l2", "op-stack", "fault-proof", "derivation", "rust"],
-    "notes": "Rust OP Stack state transition and L2 derivation (no_std, FPVM/ZK compatible). mantle-xyz/kona is a direct fork. Upstream changes to derivation pipeline, preimage oracle, or fault proof interface must be tracked and rebased."
+    "url": "https://github.com/bluealloy/revm",
+    "tags": ["blockchain", "evm", "execution", "rust"],
+    "notes": "EVM core upstream for mantle-xyz/revm. Mantle carries two revm lines: mantle-elysium (revm 38/op-revm 19) for reth and mantle-v2, and v2.2.2 (revm 31/op-revm 12) for kona and op-succinct."
+  },
+  {
+    "url": "https://github.com/succinctlabs/op-succinct",
+    "tags": ["blockchain", "l2", "zk", "sp1", "proof", "rust"],
+    "notes": "SP1-based OP Stack validity proving harness. mantle-xyz/op-succinct is a Mantle fork that re-points kona/revm/op-alloy/evm dependencies to Mantle forks."
   }
 ]

@@ -385,6 +385,60 @@ describe("impact-check stage — agentic flow", () => {
     expect(first.downstreamImpactHint).toBe("likely");
   });
 
+  it("still sends an analysis to upsert when it already has an impact row for another target", async () => {
+    const { prId, analysisId } = insertAnalysisOnly(db);
+    db.query(`
+      INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, status, prompt_version, config_hash)
+      VALUES (?, ?, 'org/existing-target', 'fork_of', 'complete', 'v1', 'existinghash')
+    `).run(prId, analysisId);
+
+    let capturedInputs: GateInput[] | undefined;
+    const mockUpsert = (_dbArg: Database, inputs: GateInput[], ...rest: unknown[]) => {
+      capturedInputs = inputs;
+      return 0;
+    };
+
+    const deps: ImpactCheckStageDeps = {
+      getSettingsFn: (() => ({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG })) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: mockUpsert as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: (() => Promise.resolve()) as unknown as typeof syncTarget,
+    };
+
+    await execute(makeCtx(), deps);
+
+    expect(capturedInputs).toBeDefined();
+    expect(capturedInputs).toHaveLength(1);
+    expect(capturedInputs![0]!.analysisId).toBe(analysisId);
+  });
+
+  it("does not send analyses outside maxAgeDays to upsert", async () => {
+    const { analysisId } = insertAnalysisOnly(db);
+    const oldMergedAt = Math.floor(Date.now() / 1000) - (IMPACT_CHECK_CONFIG.maxAgeDays + 2) * 86400;
+    db.query("UPDATE pull_requests SET merged_at = ? WHERE project_id = 'org/source-repo'").run(oldMergedAt);
+
+    let capturedInputs: GateInput[] | undefined;
+    const mockUpsert = (_dbArg: Database, inputs: GateInput[], ...rest: unknown[]) => {
+      capturedInputs = inputs;
+      return 0;
+    };
+
+    const deps: ImpactCheckStageDeps = {
+      getSettingsFn: (() => ({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG })) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: mockUpsert as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: (() => Promise.resolve()) as unknown as typeof syncTarget,
+    };
+
+    await execute(makeCtx(), deps);
+
+    expect(capturedInputs).toBeDefined();
+    expect(capturedInputs).toHaveLength(0);
+    expect(analysisId).toBeGreaterThan(0);
+  });
+
   it("calls syncTarget once per unique target, not once per pending row", async () => {
     // Insert two pending rows for the same target
     insertTestData(db);
@@ -465,6 +519,63 @@ describe("impact-check stage — agentic flow", () => {
     expect(row?.affected).toBe("yes");
     expect(row?.confidence).toBe("high");
     expect(row?.target_commit).toBe("abc123");
+  });
+
+  it("passes the source-specific relationship reason to the checker when a target has multiple relationships of the same type", async () => {
+    const config = {
+      mantleTargets: [
+        {
+          projectId: "org/target-repo",
+          tags: [],
+          repoUrl: "https://github.com/org/target-repo",
+        },
+      ],
+      counterpartRelationships: [
+        {
+          source: "org/other-source",
+          targets: ["org/target-repo"],
+          relationship: "depends_on",
+          reason: "wrong source reason",
+        },
+        {
+          source: "org/source-repo",
+          targets: ["org/target-repo"],
+          relationship: "depends_on",
+          reason: "correct source reason",
+        },
+      ],
+    };
+    writeFileSync(mantleTmp, JSON.stringify(config));
+    _resetMantleConfigCache();
+
+    const { prId, analysisId } = insertAnalysisOnly(db);
+    db.query(`
+      INSERT INTO impact_checks (pr_id, analysis_id, target_project_id, relationship, status, prompt_version, config_hash)
+      VALUES (?, ?, 'org/target-repo', 'depends_on', 'pending', 'v1', 'testhash')
+    `).run(prId, analysisId);
+
+    const mockSyncTarget = async (_target: unknown, _opts: unknown): Promise<CloneSyncState> =>
+      makeAvailableCloneState("org/target-repo");
+
+    let capturedReason: string | undefined;
+    const mockRunImpactCheck = async (input: Parameters<typeof runImpactCheck>[0]): Promise<ImpactCheckVerdict> => {
+      capturedReason = input.relationship.reason;
+      return makeVerdictResult();
+    };
+
+    const deps: ImpactCheckStageDeps = {
+      getSettingsFn: (() => ({ ...BASE_SETTINGS, impactCheck: IMPACT_CHECK_CONFIG })) as unknown as typeof getSettings,
+      getDbFn: () => db,
+      upsertImpactChecksFn: (() => 0) as unknown as typeof upsertImpactChecks,
+      processQueueFn: (() => ({})) as unknown as ImpactCheckStageDeps["processQueueFn"],
+      syncTargetFn: mockSyncTarget as typeof syncTarget,
+      runImpactCheckFn: mockRunImpactCheck as typeof runImpactCheck,
+    };
+
+    const result = await execute(makeCtx(), deps);
+
+    expect(result.success).toBe(true);
+    expect(capturedReason).toBe("correct source reason");
   });
 
   it("writes failed status and increments retry_count on runImpactCheck error", async () => {

@@ -1,7 +1,7 @@
 # Design: Mantle Codebase 级影响检查（Impact Checker）
 
 Date: 2026-06-12
-Status: APPROVED (rev5 — GPT round-3 口径修正)
+Status: APPROVED (rev6 — GPT 直接修补)
 Affects: pipeline 阶段结构、`analyses` schema、`config/mantle-config.json`、`config/settings.json`、`src/config/projects.ts`、`budget-tracker`、Dockerfile、weekly counterpart-check
 
 ## 背景与目标
@@ -88,12 +88,13 @@ GitHub Collector → Analyzer → Impact Checker → Report Generator → Lark D
     retry_count = 0
   WHERE impact_checks.status IN ('pending','failed','skipped_budget','expired')
     AND (impact_checks.analysis_id != excluded.analysis_id
-         OR impact_checks.config_hash != excluded.config_hash
-         OR impact_checks.prompt_version != excluded.prompt_version);
+         OR impact_checks.config_hash IS NOT excluded.config_hash
+         OR impact_checks.prompt_version IS NOT excluded.prompt_version);
   ```
 
   即：**非终态行跟随 latest analysis 与当前配置刷新并复活**；`complete` 行不动（已裁决的结论不因 re-analysis 静默改变——需要重查时人工 requeue）。
 - **config_hash（rev4 扩面）**：覆盖**所有影响 clone、prompt 或裁决的配置**的稳定哈希——`counterpartRelationships` 中该 source→target 关系条目（relationship/reason）+ target 的 `repoUrl`、`branch`、`architectureNotes`、`notes`、`tags`。任何一项修正后，旧的非终态行自动按新配置重查。prompt 模板版本由独立的 `prompt_version` 列追踪（不混入 config_hash，便于审计区分"配置变了"与"策略 prompt 变了"），但**同样参与 upsert 触发比较**（rev5）——prompt 修复取证策略或裁决约束后，非终态旧行自动复活重查；`complete` 行不受影响，重查仍走人工 requeue。
+- **hash/version 非空约束（rev6）**：`config_hash` 与 `prompt_version` 必须在闸门 upsert 时写入非空稳定值；schema 设为 `NOT NULL`。upsert 比较使用 SQLite 的 `IS NOT` 做 null-safe 比较，避免未来迁移或异常旧行含 NULL 时漏触发刷新。
 - **处理优先级**：`significance`（directional_shift > notable > routine）→ `downstream_impact_hint`（likely > possible > none）→ PR 合并时间倒序。
 - **配额**：每日最多处理 `maxChecksPerDay`（默认 5，上线校准后调整）条；配额按当日已写回裁决的行数计算。
 - **预算停机**：月度子上限（`monthlySubCap`）触线时，剩余 `pending` 行标 `skipped_budget`；总池（`monthlyCap`）触线同理。CLI `bun run cli impact-check requeue` 将 `skipped_budget` 行重置为 `pending`（预算恢复后人工触发；同时重置 `retry_count`）。
@@ -164,8 +165,8 @@ prompts/impact-check/
 }
 ```
 
-- 启动校验：`source` 必须是 projects.json 中被跟踪的 repo，否则打 warning（关系永远不会触发）；`repoUrl` 必须是 `https://github.com/` 前缀（clone 地址只来自配置，不来自任何运行时输入）；`architectureNotes` 为空的 target 上的 `protocol_dependency` 关系打 warning（推理无知识底座，质量不可靠）。
-- 同一对 source→target 配置多条关系时，按强度取最高一条执行检查（`fork_of` > `depends_on` > `protocol_dependency`），与 `impact_checks` 的 `UNIQUE(pr_id, target_project_id)` 约束一致——每个 PR×target 只做一次检查，检查指令中可附带次要关系作为补充上下文。
+- 启动校验：`impactCheck.enabled=true` 时，`source` 必须是 projects.json 中被跟踪的 repo，否则打 warning（关系永远不会触发）；`repoUrl` 必须是 `https://github.com/` 前缀（clone 地址只来自配置，不来自任何运行时输入）；`architectureNotes` 为空的 target 上的 `protocol_dependency` 关系打 warning（推理无知识底座，质量不可靠）。
+- 同一对 source→target 配置多条关系时直接失败。`impact_checks` 的唯一键是 `UNIQUE(pr_id, target_project_id)`，不能安全表达同一 PR 对同一 target 的多种关系；显式失败比按强度静默覆盖更安全。
 
 ### Clone 管理（clone-manager.ts）
 
@@ -260,8 +261,8 @@ CREATE TABLE impact_checks (
   recommended_action TEXT,
   -- 审计与可复现性
   target_commit TEXT,                     -- 检查时 Mantle clone 的 commit hash
-  prompt_version TEXT,                    -- 策略 prompt 文件的版本哈希(参与 upsert 触发比较)
-  config_hash TEXT,                       -- 影响 clone/prompt/裁决的全部配置的稳定哈希(关系条目 + repoUrl/branch/architectureNotes/notes/tags)
+  prompt_version TEXT NOT NULL,           -- 策略 prompt 文件的版本哈希(参与 upsert 触发比较)
+  config_hash TEXT NOT NULL,              -- 影响 clone/prompt/裁决的全部配置的稳定哈希(关系条目 + repoUrl/branch/architectureNotes/notes/tags)
   input_tokens INTEGER, output_tokens INTEGER,
   model_id TEXT, estimated_cost_usd REAL,
   tool_steps INTEGER,
@@ -377,11 +378,12 @@ RUN mkdir -p data/mantle-repos data/impact-checks
 
 - `StageResult` 扩展：`impactChecksRun`、`impactAlertsSent`、`impactChecksSkipped`（按原因分桶：budget/quota/clone_failure）、`impactChecksExpired`、`impactAlertsDeadLettered`（重试耗尽未送达数，rev5）。
 - 日报追加一行摘要："Mantle 影响检查：今日 N 检查 / M 告警 / K 待处理"（仅在有活动时显示）；存在 dead-letter 告警时**必须**追加 "🚨 N 条影响告警投递失败已停止重试，运行 `redispatch --impact-check` 恢复"——dead-letter 的可见性不依赖 operator 主动查询。
+- **无 PR 日的 dead-letter 可见性（rev6）**：当前 report stage 在 `deliverableGrouped.length === 0` 时会跳过 daily delivery；Phase 1 实现必须改变该分支：只要存在 dead-letter impact alert，即使当天没有可报告 PR，也要生成并投递一个最小 ops daily card，内容包含 dead-letter 数量、最近 check id 列表（最多 5 个）和恢复命令。没有 dead-letter 时仍可保持 no-data skip 行为。
 - 现有 `db status` operator CLI 增加 `impact_checks` 各状态计数，含 dead-letter 告警计数（`alert_card_json IS NOT NULL AND alert_dispatched_at IS NULL AND alert_attempt_count >= 5`）。
 
 ## 测试策略
 
-- **单元**：闸门逻辑（hint × significance × 关系 × 配额 × 预算组合 × 超龄）、**upsert 策略**（latest analysis 刷新、complete 行不动、config_hash 变更复活）、队列优先级与过期、失败重试计数、strategies prompt 组装、codegraph CLI 封装（mock 子进程）、**路径围栏**（`..`/绝对路径/符号链接逃逸用例）、工具输出截断、裁决 schema 校验、证据存在性校验、**置信度封顶强制执行**、预算双上限触线顺序、告警重试上限。
+- **单元**：闸门逻辑（hint × significance × 关系 × 配额 × 预算组合 × 超龄）、**upsert 策略**（latest analysis 刷新、complete 行不动、config_hash/prompt_version 变更复活、NULL 旧行 null-safe 比较）、队列优先级与过期、失败重试计数、strategies prompt 组装、codegraph CLI 封装（mock 子进程）、**路径围栏**（`..`/绝对路径/符号链接逃逸用例）、工具输出截断、裁决 schema 校验、证据存在性校验、**置信度封顶强制执行**、预算双上限触线顺序、告警重试上限、无 PR 日 dead-letter 最小 ops card。
 - **集成**：fixture 放一对迷你 repo（fake-upstream + fake-fork，fork 含一个已知共同 bug 和一处偏离），mock LLM 走完整 agentic 循环，验证工具调用与取证路径；clone-manager 用本地 bare repo 测 fetch/reset/超时；budget-tracker 两表合算；回放脚本对 fixture 数据出数。
 - **e2e**：`e2e-run.ts` 增加 `--with-impact-check`，真实 LLM 跑一个历史已知案例（如上游某真实 bug fix），人工核对证据质量与告警卡渲染。
 
@@ -389,7 +391,7 @@ RUN mkdir -p data/mantle-repos data/impact-checks
 
 | Phase | 内容 | 说明 |
 |-------|------|------|
-| 1 | `fork_of` 检查器端到端：clone-manager + grep/read 工具 + **完整队列治理**（upsert/优先级/配额/过期/requeue CLI）+ 阶段内告警发送与重试（含 `dispatchEnabled` 标志）+ budget-tracker 两表合算 + 配置层改造 + Dockerfile（git/rg/prompts）+ **回放校准脚本** | 最窄可上线版本，但队列/发送/预算语义完整——第一天起生产告警就有完整治理。无 codegraph |
+| 1 | `fork_of` 检查器端到端：clone-manager + grep/read 工具 + **完整队列治理**（upsert/优先级/配额/过期/requeue CLI）+ 阶段内告警发送与重试（含 `dispatchEnabled` 标志）+ dead-letter 可观测性（含无 PR 日最小 ops daily card）+ budget-tracker 两表合算 + 配置层改造 + Dockerfile（git/rg/prompts）+ **回放校准脚本** | 最窄可上线版本，但队列/发送/预算语义完整——第一天起生产告警就有完整治理。无 codegraph |
 | 2 | codegraph 集成（实测包名/安装/CLI 后写死版本）+ `codegraphEnabled` 开关 + analyzer 预筛 prompt（正式闸门启用 hint 条件） | 两项独立增强，验证后打开；codegraph 不可用永远可降级 grep-only |
 | 3 | `depends_on` + `protocol_dependency` 策略 | 补全三类关系（含 manifest 置信度封顶规则） |
 | 4 | 周报 counterpart-check 升级为消费 `impact_checks` | 新增 `code_verified` 证据等级 |
@@ -400,6 +402,11 @@ RUN mkdir -p data/mantle-repos data/impact-checks
 
 - **方案 B（CRG 索引 + 符号映射作为判断者）**：fork 偏离处符号匹配最脆弱，覆盖不了依赖/协议两类关系，原 code-review-graph 运维成本高。codegraph 仅作为 agent 工具层被采纳。
 - **方案 C（无 clone，GitHub API 按需取码）**：GitHub code search 对 fork 索引不全、不支持灵活 grep、rate limit 紧，取证能力弱，与高置信度告警定位冲突。
+
+## Rev6 修订记录（GPT 直接修补，2026-06-12）
+
+1. **[P2] dead-letter 无 PR 日可见性**：补充 Phase 1 约束：存在 dead-letter impact alert 时，即使当天无 deliverable PR，也必须生成最小 ops daily card，避免当前 no-data daily 分支跳过投递导致日报不可见。
+2. **[P2] upsert null-safe 与非空约束**：`prompt_version`/`config_hash` 改为 `NOT NULL`，upsert 比较改用 `IS NOT`，防止异常 NULL 旧行漏触发刷新。
 
 ## Rev5 修订记录（GPT round-3 口径修正，2026-06-12）
 

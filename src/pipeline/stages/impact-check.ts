@@ -53,11 +53,15 @@ function findMantleTarget(mantleConfig: MantleConfig, projectId: string): Mantle
 
 function findRelationship(
   mantleConfig: MantleConfig,
+  sourceProjectId: string,
   targetProjectId: string,
   relationship: ImpactRelationship
 ): CounterpartRelationship | undefined {
   return mantleConfig.counterpartRelationships.find(
-    (rel) => rel.relationship === relationship && rel.targets.includes(targetProjectId)
+    (rel) =>
+      rel.source === sourceProjectId &&
+      rel.relationship === relationship &&
+      rel.targets.includes(targetProjectId)
   );
 }
 
@@ -176,16 +180,15 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
     const sendCardFn = deps?.sendCardFn ?? sendCard;
 
     // 1. Enqueue new analyses as pending impact_checks rows
-    const gateInputRows = db.query<GateInputRow, []>(`
+    const gateInputCutoffUnix =
+      Math.floor(Date.now() / 1000) - Math.max(0, impactCheckConfig.maxAgeDays) * 86400;
+    const gateInputRows = db.query<GateInputRow, [number]>(`
       SELECT a.id, a.pr_id, pr.project_id, pr.merged_at,
              a.significance, a.downstream_impact_hint
       FROM analyses a
       JOIN pull_requests pr ON a.pr_id = pr.id
-      WHERE a.id NOT IN (
-        SELECT analysis_id FROM impact_checks
-        WHERE status NOT IN ('expired')
-      )
-    `).all();
+      WHERE pr.merged_at >= ?
+    `).all(gateInputCutoffUnix);
 
     const gateInputs: GateInput[] = gateInputRows.map((r) => ({
       prId: r.pr_id,
@@ -258,14 +261,6 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
         continue;
       }
 
-      const relationship = findRelationship(mantleConfig, row.target_project_id, row.relationship);
-      if (!relationship) {
-        console.warn(
-          `[ImpactCheck] No relationship for ${row.target_project_id}/${row.relationship} — skipping row ${row.id}`
-        );
-        continue;
-      }
-
       const prAnalysis = db
         .query<PRAnalysisRow, [number, number]>(
           `SELECT pr.title, pr.body, pr.diff_status, pr.diff_path,
@@ -279,6 +274,19 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
 
       if (!prAnalysis) {
         console.warn(`[ImpactCheck] PR/analysis data not found for row ${row.id} — skipping`);
+        continue;
+      }
+
+      const relationship = findRelationship(
+        mantleConfig,
+        prAnalysis.project_id,
+        row.target_project_id,
+        row.relationship
+      );
+      if (!relationship) {
+        console.warn(
+          `[ImpactCheck] No relationship for ${prAnalysis.project_id} -> ${row.target_project_id}/${row.relationship} — skipping row ${row.id}`
+        );
         continue;
       }
 

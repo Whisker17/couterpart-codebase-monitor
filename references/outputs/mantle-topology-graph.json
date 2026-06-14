@@ -1,0 +1,480 @@
+{
+  "_schema_version": "2.0.0",
+  "_schema_file": "docs/outputs/mantle-topology-graph.schema.json",
+  "_validator": "scripts/validate_topology.py — run `python3 scripts/validate_topology.py`. JSON Schema alone does NOT check referential integrity / group-edgelessness / fork-copy out-edge / version-line separation / constraints-not-pointing-at-groups; the validator does (see schema x-graph-invariants).",
+
+  "_readme": {
+    "purpose": "Machine-readable dependency-topology model of Mantle's active repos and their upstreams. Designed for agent/programmatic consumption (load, traverse, query 'what breaks if X updates'). Companion to the human-facing docs/outputs/mantle-upstream-topology-full.md (same topology as mermaid + prose).",
+    "node_model": [
+      "Two node granularities. (1) GROUP nodes (is_group=true) represent a repo that has multiple version lines; they carry a 'lines' array of line-node ids and have NO edges — they exist only for display/grouping. (2) LINE nodes (member_of=<group id>) are the real graph nodes that edges attach to.",
+      "Rule enforced: 'same repo name + different ref/copy = different node' (matches mantle-upstream-topology-full.md §5/§10). So paradigmxyz/reth -> {paradigmxyz-reth-v2.2.0, paradigmxyz-reth-v1.6.0}; mantle-xyz/revm -> {mantle-revm-elysium, mantle-revm-v2.2.2}.",
+      "op-alloy is genuinely two code copies in two locations -> two independent nodes (op-alloy-standalone, op-alloy-mv2-subtree), each with its own consumer edges. Never merge.",
+      "Repos with a single version line stay as one ordinary node (no group/line split)."
+    ],
+    "traversal_rules": [
+      "Edges are directed UPSTREAM -> DOWNSTREAM. A->B means 'A is depended on / influences B'; an update in A propagates to B.",
+      "Blast radius of an upstream X = transitive closure of outgoing edges from X. ALWAYS start from a LINE node or an ordinary node, NEVER from a GROUP node (groups have no edges). To expand a group, read its 'lines' and traverse each line node separately — this prevents mixing unrelated version lines (e.g. reth v2.2.0 line vs kona v1.6.0 line).",
+      "edge.impact = severity on the downstream; edge.trigger tells whether Mantle must act (active-follow) or merely inherits (passive-inherit).",
+      "constraints[] are NON-dependency relationships (alignment / lockstep / dual-write / semantic-consistency). Convert them to an upgrade checklist via each constraint's required_actions + validation_queries; 'affects' lists the consumer nodes put at risk if the constraint is violated."
+    ],
+    "source_of_truth_priority": [
+      "1. Cargo.lock / go.sum resolved 'source = git+...#<sha>' (true pin) -> edge.via.resolved_sha",
+      "2. Cargo.toml [workspace.dependencies] + [patch.*] / go.mod require+replace (intent; may contain vestigial declarations)",
+      "3. In-repo docs (MANTLE_CHANGES.md baseline table), header comments ('pinned by upstream X'), git merge-base / merge commits for vendored/subtree/merge provenance -> edge.via.merge_base / subtree_baseline / source_file"
+    ],
+    "generated": "2026-06-13",
+    "derived_from": "docs/outputs/sections/*-upstream-analysis.md (8 single-repo analyses)"
+  },
+
+  "_legend": {
+    "node.kind": {
+      "external-upstream": "Repo outside Mantle's control (root of an upstream chain)",
+      "op-hub": "OP-ecosystem monorepo that is the central hub feeding multiple Mantle repos",
+      "bridge": "Subtree relay repo used to sync a monorepo subtree into a Mantle repo",
+      "mantle-fork": "Mantle-maintained fork of an external lib (injects fee model / protocol changes, or re-points deps)",
+      "mantle-fork-copy": "A second divergent copy of a Mantle fork living inside another repo (distinct version line)",
+      "mantle-repo": "Mantle platform / consumer repo (the things being shipped)"
+    },
+    "node.is_group": "true = display-only grouping node for a multi-version-line repo; has a 'lines' array and NO edges. Traverse its line nodes instead.",
+    "node.member_of": "For line nodes: the id of the group node this version line belongs to.",
+    "node.tier": {
+      "0": "External root upstream",
+      "1": "OP-ecosystem hub (the two monorepos + superchain-registry + bridge)",
+      "2": "Mantle low-level fork / middleware",
+      "3": "Mantle platform / consumer repo"
+    },
+    "edge.type": {
+      "vendored": "Source copied in-tree (not a git dep); tracked by re-vendoring on new upstream tag",
+      "git-merge": "In-tree fork synced by periodic git merge / reset-to-baseline of an upstream branch or tag",
+      "go-replace": "go.mod 'replace' redirect to a Mantle fork",
+      "subtree": "Directory synced via git subtree pull (often through a bridge repo)",
+      "cargo-pin": "Cargo git/registry dependency pinned by tag/branch/rev in [workspace.dependencies]",
+      "cargo-patch": "Cargo [patch.crates-io] redirect (forces whole-graph unification of that crate)",
+      "registry": "Plain crates.io / go-module registry dependency (semver, no fork)",
+      "submodule": "git submodule",
+      "go-require": "go.mod require (registry module)"
+    },
+    "edge.role": {
+      "bump-driver": "The upstream Mantle actively follows (1st-class). Drives the upgrade cadence.",
+      "inherited": "Version inherited from a bump-driver's manifest, not independently chosen.",
+      "mantle-fork": "A Mantle-controlled fork (Mantle decides the ref).",
+      "registry": "Registry baseline lib.",
+      "kernel": "Underlying kernel inherited through an intermediate fork."
+    },
+    "edge.impact": ["critical", "high", "medium-high", "medium", "low"],
+    "edge.trigger": {
+      "active-follow": "Mantle proactively bumps (re-vendor / reset baseline / merge / re-pin).",
+      "passive-inherit": "Moves only when the bump-driver moves.",
+      "mantle-controlled": "Mantle owns the fork ref and decides when to bump.",
+      "version-pin": "Registry version number, controllable via cargo/go update."
+    },
+    "edge.via": {
+      "ref_kind": "What kind of provenance anchors this edge: tag/branch/rev/exact-version/merge-base/subtree-baseline/baseline-tag/kernel-inherited/fork-lineage/whole-repo-fork. Use fork-lineage / whole-repo-fork (+ provenance) for edges with NO resolvable pin, rather than putting prose into tag/baseline_tag.",
+      "provenance": "Free-text provenance note for edges whose anchor is not a resolvable ref (paired with ref_kind=fork-lineage/whole-repo-fork)",
+      "ref": "Human-readable ref label (tag/branch/rev as written; prefer a resolvable value)",
+      "branch": "git branch name (machine field)",
+      "tag": "git tag (machine field)",
+      "rev": "git rev/commit pinned in manifest (machine field)",
+      "resolved_sha": "commit SHA resolved in the consumer's lockfile (string, or object keyed by consumer when it differs per consumer)",
+      "merge_base": "git merge-base for git-merge edges",
+      "baseline_tag": "reset-to-baseline tag for full-fork edges",
+      "subtree_baseline": "upstream tag the subtree was pulled at",
+      "kernel_version": "inherited kernel version for kernel edges",
+      "version": "resolved crate/module version",
+      "package_count": "number of resolved packages this edge brings in",
+      "source_file": "in-repo file that documents this provenance",
+      "detail": "free-text note"
+    },
+    "constraint.type": {
+      "alignment": "Two repos must resolve the SAME fork ref (same workspace forbids divergence).",
+      "lockstep": "Two crates' versions must move together (e.g. revm major <-> revm-inspectors minor).",
+      "dual-write": "A change must be landed in two separate copies to keep both consumers consistent.",
+      "semantic-consistency": "Same protocol semantics implemented independently across stacks; one upgrade must land in all."
+    },
+    "constraint.fields": {
+      "participants": "Nodes that hold the invariant (the things that must stay in sync)",
+      "affects": "Downstream consumer nodes put at risk if the invariant is violated",
+      "required_actions": "Upgrade-time checklist to keep the invariant",
+      "validation_queries": "Concrete checks an agent can run to verify the invariant holds"
+    }
+  },
+
+  "nodes": [
+    {
+      "id": "go-ethereum",
+      "label": "ethereum/go-ethereum",
+      "kind": "external-upstream", "tier": 0, "language": "go",
+      "repo": "github.com/ethereum/go-ethereum",
+      "note": "Ethereum kernel; Mantle sees it only through op-geth. Kernel version at Mantle baseline = v1.16.5."
+    },
+    {
+      "id": "bluealloy-revm",
+      "label": "bluealloy/revm",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "repo": "github.com/bluealloy/revm",
+      "note": "EVM core; fork source of mantle-xyz/revm (both version lines)."
+    },
+    {
+      "id": "alloy-rs-op-alloy",
+      "label": "alloy-rs/op-alloy",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "repo": "github.com/alloy-rs/op-alloy",
+      "note": "OP consensus/RPC types; fork source of BOTH op-alloy copies (standalone 0.23.0 line and mantle-v2 subtree 2.0.0 line)."
+    },
+    {
+      "id": "alloy-rs-evm",
+      "label": "alloy-rs/evm",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "repo": "github.com/alloy-rs/evm",
+      "note": "EVM abstraction (alloy-evm / alloy-op-evm); fork source of mantle-xyz/evm. NOTE: reth uses crates.io alloy-evm 0.34.0 upstream UNPATCHED, not this fork."
+    },
+    {
+      "id": "paradigmxyz-revm-inspectors",
+      "label": "paradigmxyz/revm-inspectors",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "repo": "github.com/paradigmxyz/revm-inspectors",
+      "note": "Tracing inspectors; fork source of mantle-xyz/revm-inspectors. Upstream main at 0.41.1; Mantle fork at 0.39.0."
+    },
+    {
+      "id": "paradigmxyz-reth",
+      "label": "paradigmxyz/reth (group)",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "repo": "github.com/paradigmxyz/reth",
+      "is_group": true,
+      "lines": ["paradigmxyz-reth-v2.2.0", "paradigmxyz-reth-v1.6.0"],
+      "note": "GROUP node (no edges). TWO unrelated version lines reach different consumers; traverse the line nodes."
+    },
+    {
+      "id": "paradigmxyz-reth-v2.2.0",
+      "label": "paradigmxyz/reth @ v2.2.0 (rev 88505c7f)",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "member_of": "paradigmxyz-reth",
+      "scope": "full reth execution framework (~102 pkgs); global execution-layer bedrock",
+      "chosen_by": "op-reth v2.2.1 manifest (Mantle inherits, does not choose)",
+      "note": "reth line. rev = 88505c7fcbfdebfd3b56d88c86b62e950043c6c4."
+    },
+    {
+      "id": "paradigmxyz-reth-v1.6.0",
+      "label": "paradigmxyz/reth @ v1.6.0",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "member_of": "paradigmxyz-reth",
+      "scope": "reth-db / reth-codecs only (~19 pkgs); supervisor MDBX storage",
+      "chosen_by": "upstream kona manifest (inherited)",
+      "note": "kona line. Resolved sha d8451e54. Unrelated to the v2.2.0 line."
+    },
+    {
+      "id": "crates-io",
+      "label": "crates.io (alloy 全家 + precompile/crypto)",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "repo": "crates.io",
+      "note": "alloy base libs + precompile/crypto deps. Both VERSIONS and the dependency SET drift per consumer ref; resolve via each repo's own Cargo.lock. manifest semver is only a lower bound."
+    },
+    {
+      "id": "sp1-zkvm",
+      "label": "Succinct SP1 zkVM (sp1-* =6.1.0) + sp1-patches/*",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "repo": "github.com/succinctlabs/sp1 (+ sp1-patches/*)",
+      "note": "zkVM runtime + proving system, pinned with exact '=6.1.0' (Hypercube). sp1-patches provide zkVM-accelerated crypto. UNIQUE to op-succinct. Any bump forces full ELF rebuild + possible verifying-key change."
+    },
+    {
+      "id": "succinctlabs-op-succinct",
+      "label": "succinctlabs/op-succinct",
+      "kind": "external-upstream", "tier": 0, "language": "rust",
+      "repo": "github.com/succinctlabs/op-succinct",
+      "note": "Proof harness; fork source of mantle-xyz/op-succinct. Mantle baseline merge-base = 530df86 (#555)."
+    },
+
+    {
+      "id": "optimism-monorepo",
+      "label": "ethereum-optimism/optimism (monorepo)",
+      "kind": "op-hub", "tier": 1, "language": "rust+go",
+      "repo": "github.com/ethereum-optimism/optimism",
+      "feeds": {
+        "rust/op-reth": "vendored into mantle-reth (tag op-reth/v2.2.1)",
+        "rust/kona": "future bump baseline for mantle-kona (op-rs/kona archived 2026-01-15)",
+        "rust/ subtree": "subtree source for mantle-v2/rust (tag kona-client/v1.5.1 @ fbbf9089)",
+        "Go": "whole-repo fork base for mantle-v2 (module path preserved)"
+      },
+      "note": "THE Rust+protocol root. Also the home of op-reth and (post-archive) kona."
+    },
+    {
+      "id": "optimism-op-geth",
+      "label": "ethereum-optimism/op-geth (optimism branch)",
+      "kind": "op-hub", "tier": 1, "language": "go",
+      "repo": "github.com/ethereum-optimism/op-geth",
+      "note": "OP execution layer (Go). Branch HEAD already at geth 1.17.2; Mantle baseline (merge-base 737ffd1bf) at 1.16.5 -> next bump crosses a minor."
+    },
+    {
+      "id": "superchain-registry",
+      "label": "ethereum-optimism/superchain-registry",
+      "kind": "external-upstream", "tier": 1, "language": "rust+go",
+      "repo": "github.com/ethereum-optimism/superchain-registry",
+      "note": "Chain registry data."
+    },
+    {
+      "id": "optimism-rust-bridge",
+      "label": "mantle-xyz/optimism-rust-bridge",
+      "kind": "bridge", "tier": 1, "language": "rust",
+      "repo": "github.com/mantle-xyz/optimism-rust-bridge",
+      "note": "Relays optimism rust/ subtree (split + sync) for mantle-v2 to subtree-pull. Tracks kona-client/v1.5.1."
+    },
+
+    {
+      "id": "mantle-revm",
+      "label": "mantle-xyz/revm (group)",
+      "kind": "mantle-fork", "tier": 2, "language": "rust",
+      "repo": "github.com/mantle-xyz/revm",
+      "fork_of": "bluealloy-revm",
+      "fork_form": "leaf fork (published crates have NO Mantle internal deps)",
+      "bump_driver": "bluealloy-revm",
+      "is_group": true,
+      "lines": ["mantle-revm-elysium", "mantle-revm-v2.2.2"],
+      "role_in_stack": "Root upstream of the Rust stack; single source of truth for Mantle fee model (BVM_ETH / token_ratio / ARSIA / JOVIAN). Largest blast-radius single point.",
+      "note": "GROUP node (no edges). Two version lines reach disjoint consumers; traverse line nodes."
+    },
+    {
+      "id": "mantle-revm-elysium",
+      "label": "mantle-xyz/revm @ branch mantle-elysium (revm 38)",
+      "kind": "mantle-fork", "tier": 2, "language": "rust",
+      "member_of": "mantle-revm",
+      "revm": "38.0.0", "op_revm": "19.0.0",
+      "consumed_via": "cargo-patch (reth/mantle-v2) / cargo-pin (revm-inspectors)",
+      "note": "elysium line. Consumers resolve different SHAs (reth b4f61822, mantle-v2 e637f61e). reth/mantle-v2 patch -> whole-graph unified."
+    },
+    {
+      "id": "mantle-revm-v2.2.2",
+      "label": "mantle-xyz/revm @ tag v2.2.2 (revm 31.0.2)",
+      "kind": "mantle-fork", "tier": 2, "language": "rust",
+      "member_of": "mantle-revm",
+      "revm": "31.0.2", "op_revm": "12.0.2", "resolved_sha": "56aee9a6",
+      "consumed_via": "direct git workspace dep (no patch)",
+      "note": "v2.2.2 line. kona does NOT patch -> its lock has registry revm-* AND git revm-* coexisting."
+    },
+    {
+      "id": "op-alloy-standalone",
+      "label": "mantle-xyz/op-alloy (standalone)",
+      "kind": "mantle-fork", "tier": 2, "language": "rust",
+      "repo": "github.com/mantle-xyz/op-alloy",
+      "fork_of": "alloy-rs-op-alloy",
+      "fork_form": "near-root fork (crates.io alloy semver, no git pin; no Mantle internal deps)",
+      "bump_driver": "alloy-rs-op-alloy",
+      "crate_version": "0.23.0",
+      "alloy_baseline": "crates.io alloy 1.1.2 / core 1.2.0",
+      "mantle_diff": "5 files / +436 -26 vs upstream v0.23.0 (TxDeposit.eth_value/eth_tx_value, L1BlockInfo.token_ratio)",
+      "note": "ONE of two op-alloy copies. Consumed by kona + op-succinct via tag v2.2.0 @ 769c12a9. See dual-write constraint with op-alloy-mv2-subtree."
+    },
+    {
+      "id": "mantle-evm",
+      "label": "mantle-xyz/evm",
+      "kind": "mantle-fork", "tier": 2, "language": "rust",
+      "repo": "github.com/mantle-xyz/evm",
+      "fork_of": "alloy-rs-evm",
+      "fork_form": "fork (alloy-evm + alloy-op-evm, 2 pkgs)",
+      "bump_driver": "alloy-rs-evm",
+      "note": "Consumed by kona + op-succinct (tag v2.2.1 @ ea9e2a86). reth does NOT use this fork (uses crates.io alloy-evm 0.34.0 unpatched)."
+    },
+    {
+      "id": "mantle-revm-inspectors",
+      "label": "mantle-xyz/revm-inspectors",
+      "kind": "mantle-fork", "tier": 2, "language": "rust",
+      "repo": "github.com/mantle-xyz/revm-inspectors",
+      "fork_of": "paradigmxyz-revm-inspectors",
+      "fork_form": "dependency re-pointing fork (only real delta: revm dep -> mantle-xyz/revm; no Mantle protocol logic)",
+      "bump_driver": "paradigmxyz-revm-inspectors",
+      "crate_version": "0.39.0",
+      "role_in_stack": "Middle node: consumes mantle-revm (elysium), consumed by mantle-reth (tracing/debug RPC only).",
+      "note": "Consumed only by reth (in analyzed scope), via [workspace.dependencies] git fork + [patch.crates-io], branch mantle-elysium @ af522533. mantle-v2 declares registry 0.39.0 but does NOT use it (0 lock entries)."
+    },
+    {
+      "id": "op-alloy-mv2-subtree",
+      "label": "mantle-v2/rust/op-alloy (subtree copy)",
+      "kind": "mantle-fork-copy", "tier": 2, "language": "rust",
+      "parent": "mantle-v2",
+      "fork_of": "alloy-rs-op-alloy",
+      "fork_form": "subtree copy inside mantle-v2 (distinct version line)",
+      "crate_version": "2.0.0",
+      "alloy_baseline": "crates.io alloy 2.0.4 / primitives 1.5.6",
+      "note": "SECOND op-alloy copy, tracks a DIFFERENT alloy baseline than standalone (2.0.x vs 1.1.x). Consumed by reth via mantle-v2 branch mantle-elysium @ c06cb723 (see its own out-edge to mantle-reth)."
+    },
+    {
+      "id": "mantle-op-geth",
+      "label": "mantle-xyz/op-geth (a.k.a. mantlenetworkio/op-geth)",
+      "kind": "mantle-fork", "tier": 2, "language": "go",
+      "repo": "github.com/mantlenetworkio/op-geth",
+      "fork_of": "optimism-op-geth",
+      "fork_form": "Go monolith fork (module = github.com/ethereum/go-ethereum; zero go.mod replace)",
+      "bump_driver": "optimism-op-geth",
+      "analyzed_ref": "tag v1.5.6 @ 3c1c571e",
+      "mantle_commits": 126,
+      "role_in_stack": "Go execution-layer root. Mantle fee model + MetaTx + BVM_ETH + hardforks + preconf all written in-tree.",
+      "note": "Upgrade via git merge of upstream/optimism (merge-base 737ffd1bf). Conflict-prone areas: core/types, core/txpool, core/vm, internal/ethapi."
+    },
+
+    {
+      "id": "mantle-v2",
+      "label": "mantle-xyz/mantle-v2",
+      "kind": "mantle-repo", "tier": 3, "language": "rust+go",
+      "repo": "github.com/mantle-xyz/mantle-v2",
+      "fork_of": "optimism-monorepo",
+      "fork_form": "whole-repo OP monorepo fork (Go) + rust/ subtree",
+      "bump_driver": "optimism-monorepo",
+      "analyzed_ref": "branch mantle-elysium @ afc419536 (rust deps stable since c06cb723)",
+      "contains": ["op-alloy-mv2-subtree"],
+      "role_in_stack": "MIDDLE node: downstream of optimism+op-geth+revm, upstream of reth. Dual ecosystem (Go 27 op-* services + Rust subtree).",
+      "ecosystems": {
+        "go": "op-node/op-batcher/op-proposer/op-challenger/op-supervisor/op-program... replace go-ethereum => op-geth",
+        "rust": "kona (v1.5.1) + op-alloy(2.0.0) + alloy-op-evm + alloy-op-hardforks; only git dep is mantle-xyz/revm (patch)"
+      },
+      "note": "Provides alloy-op-evm/alloy-op-hardforks to reth directly; provides op-alloy(2.0.0) to reth via the contained op-alloy-mv2-subtree node. Declares paradigmxyz/reth but lock has 0 refs (vestigial)."
+    },
+    {
+      "id": "mantle-kona",
+      "label": "mantle-xyz/kona",
+      "kind": "mantle-repo", "tier": 3, "language": "rust",
+      "repo": "github.com/mantle-xyz/kona",
+      "fork_of": "optimism-monorepo (rust/kona; historical baseline op-rs/kona, archived)",
+      "fork_form": "full repo fork (all kona-* are in-tree path members)",
+      "bump_driver": "optimism-monorepo (rust/kona)",
+      "baseline": "kona-client/v1.2.2",
+      "analyzed_ref": "origin/main = v2.2.3 @ 72a20ab9",
+      "role_in_stack": "Rust derivation + fault-proof stack. Also the upstream of op-succinct.",
+      "note": "Mantle changes span protocol/* + proof/* + bin/{host,client} (63 files). Distinct from mantle-v2/rust/kona (v1.5.1, blob sources removed)."
+    },
+    {
+      "id": "mantle-reth",
+      "label": "mantle-xyz/reth",
+      "kind": "mantle-repo", "tier": 3, "language": "rust",
+      "repo": "github.com/mantle-xyz/reth",
+      "fork_of": "optimism-monorepo (rust/op-reth, vendored)",
+      "fork_form": "thin composition workspace (vendored op-reth + mantle-reth custom layer + patches)",
+      "bump_driver": "optimism-monorepo (rust/op-reth, tag op-reth/v2.2.1)",
+      "role_in_stack": "Rust EL execution node.",
+      "note": "Inherits paradigmxyz/reth rev (v2.2.0) from op-reth (does not choose it). Mantle fee patches in vendored op-reth/ (9 [MANTLE] files) + patches/reth-trie-common."
+    },
+    {
+      "id": "mantle-op-succinct",
+      "label": "mantle-xyz/op-succinct",
+      "kind": "mantle-repo", "tier": 3, "language": "rust",
+      "repo": "github.com/mantle-xyz/op-succinct",
+      "fork_of": "succinctlabs-op-succinct",
+      "fork_form": "fork + dependency re-pointing (thin Mantle adapter; heavy lifting in mantle-kona)",
+      "bump_driver": "succinctlabs-op-succinct + sp1-zkvm + mantle-kona",
+      "analyzed_ref": "workspace version 3.4.1 (merge-base 530df86 #555)",
+      "role_in_stack": "MOST DOWNSTREAM: SP1 zkVM validity-proof system. Runs kona derivation+execution inside zkVM.",
+      "note": "Re-points kona->mantle-xyz/kona v2.2.3; directly pins revm/op-alloy/evm but their refs MUST align with kona (same workspace). Removed Celestia/EigenDA DA backends."
+    }
+  ],
+
+  "edges": [
+    {"from": "go-ethereum", "to": "optimism-op-geth", "type": "git-merge", "role": "kernel", "impact": "medium-high", "trigger": "passive-inherit", "via": {"ref_kind": "kernel-inherited", "kernel_version": "v1.16.5", "detail": "fork lineage; kernel flows through op-geth"}},
+
+    {"from": "bluealloy-revm", "to": "mantle-revm-elysium", "type": "git-merge", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref_kind": "fork-lineage", "version": "revm 38.0.0", "provenance": "Mantle fork rebased on a bluealloy/revm 38.x baseline; no single discrete upstream tag pinned", "detail": "fork lineage"}},
+    {"from": "bluealloy-revm", "to": "mantle-revm-v2.2.2", "type": "git-merge", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref_kind": "fork-lineage", "version": "revm 31.0.2", "provenance": "Mantle fork rebased on a bluealloy/revm 31.x baseline", "detail": "fork lineage"}},
+    {"from": "alloy-rs-evm", "to": "mantle-evm", "type": "git-merge", "role": "mantle-fork", "impact": "medium-high", "trigger": "mantle-controlled", "via": {"ref_kind": "fork-lineage", "provenance": "fork of alloy-rs/evm (alloy-evm/alloy-op-evm); Mantle fork shipped as mantle-xyz/evm tag v2.2.1; precise upstream baseline tag not pinned", "detail": "fork lineage"}},
+    {"from": "alloy-rs-op-alloy", "to": "op-alloy-standalone", "type": "git-merge", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref_kind": "baseline-tag", "baseline_tag": "v0.23.0", "detail": "fork lineage (0.23.0 line); upstream baseline tag v0.23.0 is resolvable"}},
+    {"from": "alloy-rs-op-alloy", "to": "op-alloy-mv2-subtree", "type": "git-merge", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref_kind": "fork-lineage", "version": "2.0.0", "provenance": "separately rebased 2.0.0 copy inside mantle-v2; tracks alloy 2.0.x; no discrete upstream op-alloy tag pinned", "detail": "fork lineage"}},
+    {"from": "paradigmxyz-revm-inspectors", "to": "mantle-revm-inspectors", "type": "git-merge", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref_kind": "baseline-tag", "baseline_tag": "v0.39.0", "detail": "fork lineage; upstream baseline tag v0.39.0 is resolvable"}},
+    {"from": "optimism-op-geth", "to": "mantle-op-geth", "type": "git-merge", "role": "bump-driver", "impact": "critical", "trigger": "active-follow", "via": {"branch": "optimism", "merge_base": "737ffd1bf", "detail": "merge-base + 126 Mantle commits; kernel v1.16.5"}},
+
+    {"from": "optimism-monorepo", "to": "mantle-reth", "type": "vendored", "role": "bump-driver", "impact": "critical", "trigger": "active-follow", "via": {"ref": "rust/op-reth tag op-reth/v2.2.1", "tag": "op-reth/v2.2.1", "package_count": 16, "detail": "16-crate set vendored; re-vendor + rebase fee patches on new tag"}},
+    {"from": "optimism-monorepo", "to": "mantle-kona", "type": "git-merge", "role": "bump-driver", "impact": "critical", "trigger": "active-follow", "via": {"ref_kind": "baseline-tag", "baseline_tag": "kona-client/v1.2.2", "source_file": "git history 'reset to kona-client/v1.2.2 baseline'", "detail": "reset-to-baseline + replay 63-file Mantle patch set"}},
+    {"from": "optimism-monorepo", "to": "mantle-v2", "type": "git-merge", "role": "bump-driver", "impact": "critical", "trigger": "active-follow", "via": {"ref_kind": "whole-repo-fork", "provenance": "Go side is a whole-repo fork of the optimism monorepo tracked by merge; no discrete upstream pin", "source_file": "go.mod (module github.com/ethereum-optimism/optimism preserved)", "detail": "module path preserved so downstreams replace go-ethereum=>op-geth"}},
+    {"from": "optimism-monorepo", "to": "optimism-rust-bridge", "type": "subtree", "role": "bump-driver", "impact": "high", "trigger": "active-follow", "via": {"subtree_baseline": "kona-client/v1.5.1", "resolved_sha": "fbbf9089", "detail": "rust/ split for subtree sync"}},
+    {"from": "optimism-rust-bridge", "to": "mantle-v2", "type": "subtree", "role": "bump-driver", "impact": "high", "trigger": "active-follow", "via": {"subtree_baseline": "kona-client/v1.5.1", "source_file": "rust/MANTLE_CHANGES.md", "detail": "git subtree pull into rust/"}},
+    {"from": "superchain-registry", "to": "mantle-v2", "type": "go-require", "role": "registry", "impact": "low", "trigger": "version-pin", "via": {"detail": "chain config data (go.mod require)"}},
+    {"from": "superchain-registry", "to": "mantle-kona", "type": "submodule", "role": "registry", "impact": "low", "trigger": "version-pin", "via": {"detail": "kona-registry submodule"}},
+
+    {"from": "paradigmxyz-reth-v2.2.0", "to": "mantle-reth", "type": "cargo-pin", "role": "inherited", "impact": "critical", "trigger": "passive-inherit", "via": {"ref": "rev 88505c7f = v2.2.0", "rev": "88505c7fcbfdebfd3b56d88c86b62e950043c6c4", "package_count": 102, "detail": "global execution-layer bedrock; rev inherited from op-reth"}},
+    {"from": "paradigmxyz-reth-v1.6.0", "to": "mantle-kona", "type": "cargo-pin", "role": "inherited", "impact": "low", "trigger": "passive-inherit", "via": {"ref": "tag v1.6.0", "tag": "v1.6.0", "resolved_sha": "d8451e54", "package_count": 19, "detail": "reth-db/reth-codecs only; supervisor MDBX storage; inherited from kona manifest"}},
+
+    {"from": "mantle-revm-elysium", "to": "mantle-reth", "type": "cargo-patch", "role": "mantle-fork", "impact": "critical", "trigger": "mantle-controlled", "via": {"ref": "branch mantle-elysium", "branch": "mantle-elysium", "resolved_sha": "b4f61822", "version": "revm 38", "detail": "patch.crates-io unifies whole graph incl reth-revm/reth-evm"}},
+    {"from": "mantle-revm-elysium", "to": "mantle-v2", "type": "cargo-patch", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref": "branch mantle-elysium", "branch": "mantle-elysium", "resolved_sha": "e637f61e", "version": "revm 38", "detail": "rust/ only git dep"}},
+    {"from": "mantle-revm-elysium", "to": "mantle-revm-inspectors", "type": "cargo-pin", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref": "branch mantle-elysium", "branch": "mantle-elysium", "detail": "the only Mantle internal dep of revm-inspectors; type-coupling (Inspector/Interpreter/ContextTr)"}},
+    {"from": "mantle-revm-v2.2.2", "to": "mantle-kona", "type": "cargo-pin", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref": "tag v2.2.2", "tag": "v2.2.2", "resolved_sha": "56aee9a6", "version": "revm 31.0.2", "detail": "direct git workspace dep; affects proof executor correctness"}},
+    {"from": "mantle-revm-v2.2.2", "to": "mantle-op-succinct", "type": "cargo-pin", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref": "tag v2.2.2", "tag": "v2.2.2", "resolved_sha": "56aee9a6", "detail": "directly pinned; ref must align with kona"}},
+
+    {"from": "mantle-revm-inspectors", "to": "mantle-reth", "type": "cargo-patch", "role": "mantle-fork", "impact": "low", "trigger": "mantle-controlled", "via": {"ref": "branch mantle-elysium", "branch": "mantle-elysium", "resolved_sha": "af522533", "detail": "workspace dep + patch; consumed by reth-rpc/-eth-api/-eth-types; tracing/debug RPC only, not consensus/execution"}},
+
+    {"from": "op-alloy-standalone", "to": "mantle-kona", "type": "cargo-pin", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref": "tag v2.2.0", "tag": "v2.2.0", "resolved_sha": "769c12a9", "version": "0.23.0", "detail": "OP consensus type bedrock"}},
+    {"from": "op-alloy-standalone", "to": "mantle-op-succinct", "type": "cargo-pin", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref": "tag v2.2.0", "tag": "v2.2.0", "resolved_sha": "769c12a9", "version": "0.23.0", "package_count": 7, "detail": "directly declared (4 crates), lock resolves 7"}},
+
+    {"from": "op-alloy-mv2-subtree", "to": "mantle-reth", "type": "cargo-pin", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref": "via mantle-v2 branch mantle-elysium", "branch": "mantle-elysium", "resolved_sha": "c06cb723", "version": "2.0.0", "detail": "op-alloy 2.0.0 reaches reth through the mantle-v2 git branch (subtree copy exposed as path crate)"}},
+
+    {"from": "mantle-evm", "to": "mantle-kona", "type": "cargo-pin", "role": "mantle-fork", "impact": "medium-high", "trigger": "mantle-controlled", "via": {"ref": "tag v2.2.1", "tag": "v2.2.1", "resolved_sha": "ea9e2a86", "detail": "alloy-evm/alloy-op-evm; proof/{executor,driver,proof,proof-interop} + bin"}},
+    {"from": "mantle-evm", "to": "mantle-op-succinct", "type": "cargo-pin", "role": "mantle-fork", "impact": "medium-high", "trigger": "mantle-controlled", "via": {"ref": "tag v2.2.1", "tag": "v2.2.1", "resolved_sha": "ea9e2a86", "detail": "ZkvmOpEvmFactory"}},
+
+    {"from": "mantle-op-geth", "to": "mantle-v2", "type": "go-replace", "role": "mantle-fork", "impact": "critical", "trigger": "mantle-controlled", "via": {"ref": "main: tag v1.5.4 / mantle-elysium: pseudo 45ddd63ce", "resolved_sha": {"mantle-v2@main": "v1.5.4", "mantle-v2@mantle-elysium": "45ddd63ceae2"}, "detail": "replace go-ethereum => op-geth; ref depends on mantle-v2 branch"}},
+
+    {"from": "mantle-v2", "to": "mantle-reth", "type": "cargo-pin", "role": "mantle-fork", "impact": "high", "trigger": "mantle-controlled", "via": {"ref": "branch mantle-elysium", "branch": "mantle-elysium", "resolved_sha": "c06cb723", "detail": "provides alloy-op-evm + alloy-op-hardforks (op-alloy 2.0.0 handled by op-alloy-mv2-subtree -> mantle-reth edge to avoid double count)"}},
+    {"from": "mantle-kona", "to": "mantle-op-succinct", "type": "cargo-pin", "role": "bump-driver", "impact": "critical", "trigger": "active-follow", "via": {"ref": "tag v2.2.3", "tag": "v2.2.3", "resolved_sha": "72a20ab9", "package_count": 25, "detail": "the zkVM guest derivation+execution core; bump => re-pin tag + rebuild ELF"}},
+
+    {"from": "succinctlabs-op-succinct", "to": "mantle-op-succinct", "type": "git-merge", "role": "bump-driver", "impact": "critical", "trigger": "active-follow", "via": {"merge_base": "530df86", "detail": "fork (#555); rebase dep re-pointing + DA pruning on new release"}},
+    {"from": "sp1-zkvm", "to": "mantle-op-succinct", "type": "cargo-pin", "role": "bump-driver", "impact": "critical", "trigger": "active-follow", "via": {"ref_kind": "exact-version", "ref": "=6.1.0", "version": "6.1.0", "detail": "crates.io exact-version pin; bump forces full ELF rebuild + toolchain change"}},
+
+    {"from": "crates-io", "to": "mantle-revm-elysium", "type": "registry", "role": "registry", "impact": "medium", "trigger": "version-pin", "via": {"detail": "alloy primitives/sol-types 1.5.7 + consensus/eips 1.7.3 + crypto incl aws-lc-rs; set drifts per ref"}},
+    {"from": "crates-io", "to": "mantle-revm-v2.2.2", "type": "registry", "role": "registry", "impact": "medium", "trigger": "version-pin", "via": {"detail": "alloy primitives/sol-types 1.4.1 + consensus/eips 1.0.38 + crypto incl rug (no aws-lc-rs)"}},
+    {"from": "crates-io", "to": "op-alloy-standalone", "type": "registry", "role": "registry", "impact": "medium", "trigger": "version-pin", "via": {"detail": "alloy 1.1.2/1.2.0 (caret semver, not git-pinned)"}},
+    {"from": "crates-io", "to": "mantle-kona", "type": "registry", "role": "registry", "impact": "medium", "trigger": "version-pin", "via": {"detail": "alloy 1.0.42; alloy-op-hardforks Mantle-bumped to 0.4.5 (lock 0.4.7)"}},
+    {"from": "crates-io", "to": "mantle-reth", "type": "registry", "role": "registry", "impact": "medium", "trigger": "version-pin", "via": {"detail": "alloy 2.0.4; alloy-evm 0.34.0 UNPATCHED (intentional, mantle-v2#359)"}},
+    {"from": "crates-io", "to": "mantle-op-succinct", "type": "registry", "role": "registry", "impact": "medium", "trigger": "version-pin", "via": {"detail": "alloy 1.x (pin 1.1.0 resolves 1.5.2); kzg-rs/c-kzg; bumped from upstream 0.15.8"}}
+  ],
+
+  "constraints": [
+    {
+      "type": "alignment",
+      "participants": ["mantle-op-succinct", "mantle-kona"],
+      "forks": ["mantle-revm-v2.2.2", "op-alloy-standalone", "mantle-evm"],
+      "affects": ["mantle-op-succinct", "mantle-kona"],
+      "rule": "op-succinct and kona share one cargo workspace resolution; the revm(v2.2.2)/op-alloy(v2.2.0)/evm(v2.2.1) refs MUST be byte-identical, else workspace resolution conflicts. op-succinct directly pins them but cannot bump independently of kona.",
+      "required_actions": [
+        "When bumping mantle-kona to a new tag, re-pin mantle-op-succinct's revm/op-alloy/evm to the SAME tags kona resolves",
+        "Rebuild op-succinct ELFs after any such bump"
+      ],
+      "validation_queries": [
+        "Compare the resolved git SHAs of revm/op-alloy/evm in mantle-kona/Cargo.lock vs mantle-op-succinct/Cargo.lock — must be byte-identical (currently revm 56aee9a6 / op-alloy 769c12a9 / evm ea9e2a86)"
+      ]
+    },
+    {
+      "type": "lockstep",
+      "participants": ["mantle-revm-elysium", "mantle-revm-inspectors"],
+      "affects": ["mantle-reth"],
+      "rule": "revm major bump (e.g. 38->41) requires revm-inspectors bump to the matching upstream minor (revm 38 <-> inspectors 0.39, revm 41 <-> 0.41). reth reaches revm via two paths (direct patch + through inspectors); a mismatch yields two incompatible revm crates in reth's graph.",
+      "required_actions": [
+        "When bumping mantle-revm (elysium) major, bump mantle-revm-inspectors to the matching upstream minor in the same change",
+        "Verify reth resolves a single revm version across both paths"
+      ],
+      "validation_queries": [
+        "grep mantle-reth/Cargo.lock for the revm crate — there must be exactly one resolved version; check it matches the revm-inspectors-pulled revm"
+      ]
+    },
+    {
+      "type": "dual-write",
+      "participants": ["op-alloy-standalone", "op-alloy-mv2-subtree"],
+      "affects": ["mantle-kona", "mantle-op-succinct", "mantle-reth"],
+      "rule": "op-alloy is two divergent copies. A consensus/RPC change (eth_value/eth_tx_value/token_ratio) must be landed in BOTH (mantle-xyz/op-alloy for kona/op-succinct AND mantle-v2/rust/op-alloy for reth), else consumers see inconsistent op-alloy types. The copies also track different alloy baselines (1.1.x vs 2.0.x).",
+      "required_actions": [
+        "Land any op-alloy consensus/RPC field change in BOTH mantle-xyz/op-alloy and mantle-v2/rust/op-alloy",
+        "Reconcile the differing alloy baselines (1.1.x standalone vs 2.0.x subtree) when porting"
+      ],
+      "validation_queries": [
+        "Diff TxDeposit (eth_value/eth_tx_value) and L1BlockInfo (token_ratio) field sets between mantle-xyz/op-alloy and mantle-v2/rust/op-alloy",
+        "Confirm kona/op-succinct (standalone copy) and reth (subtree copy) agree on op-alloy consensus types"
+      ]
+    },
+    {
+      "type": "semantic-consistency",
+      "participants": ["mantle-op-geth", "mantle-revm-elysium", "mantle-revm-v2.2.2", "mantle-kona", "op-alloy-standalone", "mantle-reth", "mantle-v2"],
+      "affects": ["mantle-op-geth", "mantle-reth", "mantle-kona", "mantle-op-succinct", "mantle-v2"],
+      "semantics": ["hardfork chain Everest/Skadi/Limb/Arsia (+BaseFee/BVMETHMint/MetaTxV2/V3/ProxyOwner)", "token_ratio (eth/MNT gas scaling)", "BVM_ETH (ETH minted/transferred as BVM_ETH token)", "MetaTransaction (Go side)", "Mantle DA blob format (Rust derive side)"],
+      "rule": "Mantle's hardfork + fee semantics are implemented INDEPENDENTLY on the Go stack (op-geth, carried by mantle-v2 Go services) and the Rust stack (revm/kona/op-alloy/reth). One hardfork upgrade must land in all of them in sync. This is NOT a code dependency edge but an upgrade-time invariant.",
+      "required_actions": [
+        "Land each Mantle hardfork (Everest/Skadi/Limb/Arsia) in op-geth params AND kona genesis/hardforks AND revm op-revm, with identical activation timestamps",
+        "Propagate to mantle-v2 (Go services run op-geth; Rust subtree carries kona/op-alloy) and downstream reth/op-succinct"
+      ],
+      "validation_queries": [
+        "Compare hardfork activation timestamps in op-geth params/mantle.go (MantleUpgradeChainConfig) vs kona crates/protocol/genesis/.../mantle_hardfork.rs",
+        "Confirm op-revm ARSIA/JOVIAN gating matches the activation times used by op-geth and kona"
+      ]
+    }
+  ]
+}

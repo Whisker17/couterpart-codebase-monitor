@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mantle-xyz/topology/mantle-topology-graph.schema.json",
+  "title": "Mantle upstream topology graph",
+  "description": "Structural schema for mantle-topology-graph.json. Structural/enum/conditional rules are expressed here; referential and graph-semantic invariants (edge endpoints exist, group nodes have no edges, fork-copy nodes have an out-edge, group.lines resolve, line nodes have edges) are checked by the companion validator and listed under x-graph-invariants.",
+  "type": "object",
+  "required": ["_schema_version", "nodes", "edges", "constraints"],
+  "properties": {
+    "_schema_version": {"type": "string"},
+    "_schema_file": {"type": "string"},
+    "_readme": {"type": "object"},
+    "_legend": {"type": "object"},
+    "nodes": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/node"}},
+    "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
+    "constraints": {"type": "array", "items": {"$ref": "#/$defs/constraint"}}
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["id", "label", "kind", "tier"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9._-]+$"},
+        "label": {"type": "string"},
+        "kind": {"enum": ["external-upstream", "op-hub", "bridge", "mantle-fork", "mantle-fork-copy", "mantle-repo"]},
+        "tier": {"type": "integer", "minimum": 0, "maximum": 3},
+        "language": {"enum": ["rust", "go", "rust+go", "n/a"]},
+        "is_group": {"const": true},
+        "lines": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+        "member_of": {"type": "string"},
+        "contains": {"type": "array", "items": {"type": "string"}},
+        "parent": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "comment": "A group node must declare lines.",
+          "if": {"properties": {"is_group": {"const": true}}, "required": ["is_group"]},
+          "then": {"required": ["lines"]}
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "type", "role", "impact", "trigger", "via"],
+      "properties": {
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "type": {"enum": ["vendored", "git-merge", "go-replace", "subtree", "cargo-pin", "cargo-patch", "registry", "submodule", "go-require"]},
+        "role": {"enum": ["bump-driver", "inherited", "mantle-fork", "registry", "kernel"]},
+        "impact": {"enum": ["critical", "high", "medium-high", "medium", "low"]},
+        "trigger": {"enum": ["active-follow", "passive-inherit", "mantle-controlled", "version-pin"]},
+        "via": {"$ref": "#/$defs/via"}
+      },
+      "allOf": [
+        {
+          "comment": "Non-registry edges must carry a machine-readable ref/baseline (not just prose detail).",
+          "if": {"properties": {"type": {"enum": ["vendored", "git-merge", "go-replace", "subtree", "cargo-pin", "cargo-patch"]}}},
+          "then": {
+            "properties": {
+              "via": {
+                "anyOf": [
+                  {"required": ["ref_kind"]},
+                  {"required": ["branch"]},
+                  {"required": ["tag"]},
+                  {"required": ["rev"]},
+                  {"required": ["resolved_sha"]},
+                  {"required": ["merge_base"]},
+                  {"required": ["baseline_tag"]},
+                  {"required": ["subtree_baseline"]},
+                  {"required": ["kernel_version"]}
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "via": {
+      "type": "object",
+      "properties": {
+        "ref_kind": {"enum": ["tag", "branch", "rev", "exact-version", "merge-base", "subtree-baseline", "baseline-tag", "kernel-inherited", "fork-lineage", "whole-repo-fork"], "description": "What KIND of provenance anchors this edge. For edges with no resolvable pin (pure fork lineage / whole-repo fork) use 'fork-lineage'/'whole-repo-fork' + provenance, instead of stuffing prose into tag/baseline_tag."},
+        "provenance": {"type": "string", "description": "Free-text provenance note for edges whose anchor is not a resolvable ref."},
+        "ref": {"type": "string", "description": "Human-readable ref label (prefer a resolvable tag/branch/rev when one exists; otherwise use ref_kind+provenance)."},
+        "branch": {"type": "string"},
+        "tag": {"type": "string"},
+        "rev": {"type": "string"},
+        "resolved_sha": {"type": ["string", "object"]},
+        "merge_base": {"type": "string"},
+        "baseline_tag": {"type": "string"},
+        "subtree_baseline": {"type": "string"},
+        "kernel_version": {"type": "string"},
+        "version": {"type": "string"},
+        "package_count": {"type": "integer"},
+        "source_file": {"type": "string"},
+        "detail": {"type": "string"}
+      },
+      "allOf": [
+        {"if": {"properties": {"ref_kind": {"const": "tag"}}, "required": ["ref_kind"]}, "then": {"required": ["tag"]}},
+        {"if": {"properties": {"ref_kind": {"const": "branch"}}, "required": ["ref_kind"]}, "then": {"required": ["branch"]}},
+        {"if": {"properties": {"ref_kind": {"const": "rev"}}, "required": ["ref_kind"]}, "then": {"required": ["rev"]}},
+        {"if": {"properties": {"ref_kind": {"const": "exact-version"}}, "required": ["ref_kind"]}, "then": {"anyOf": [{"required": ["version"]}, {"required": ["ref"]}]}},
+        {"if": {"properties": {"ref_kind": {"const": "merge-base"}}, "required": ["ref_kind"]}, "then": {"required": ["merge_base"]}},
+        {"if": {"properties": {"ref_kind": {"const": "subtree-baseline"}}, "required": ["ref_kind"]}, "then": {"required": ["subtree_baseline"]}},
+        {"if": {"properties": {"ref_kind": {"const": "baseline-tag"}}, "required": ["ref_kind"]}, "then": {"required": ["baseline_tag"]}},
+        {"if": {"properties": {"ref_kind": {"const": "kernel-inherited"}}, "required": ["ref_kind"]}, "then": {"required": ["kernel_version"]}},
+        {"if": {"properties": {"ref_kind": {"enum": ["fork-lineage", "whole-repo-fork"]}}, "required": ["ref_kind"]}, "then": {"required": ["provenance"]}}
+      ]
+    },
+    "constraint": {
+      "type": "object",
+      "required": ["type", "participants", "affects", "rule", "required_actions", "validation_queries"],
+      "properties": {
+        "type": {"enum": ["alignment", "lockstep", "dual-write", "semantic-consistency"]},
+        "expand_groups": {"type": "boolean", "description": "If true, participants/affects may reference group nodes (meaning 'all their line nodes'). Default false: constraints should point at line nodes, not edgeless group nodes."},
+        "participants": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+        "forks": {"type": "array", "items": {"type": "string"}},
+        "affects": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "semantics": {"type": "array", "items": {"type": "string"}},
+        "rule": {"type": "string"},
+        "required_actions": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "validation_queries": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+      }
+    }
+  },
+  "x-graph-invariants": [
+    "Every node id is unique.",
+    "Every edge.from / edge.to resolves to an existing node id.",
+    "Group nodes (is_group=true) have NO incident edges; their line nodes carry the edges.",
+    "Every id in a group's 'lines' resolves to a node whose member_of points back to that group.",
+    "Every line node (member_of set) has at least one incident edge (so it is reachable in traversal).",
+    "mantle-fork-copy nodes must have at least one OUT edge (they are consumed by something).",
+    "Every constraint participant / fork / affects id resolves to an existing node id.",
+    "node.contains[] and node.parent resolve to existing node ids.",
+    "Constraints must not reference group nodes in participants/forks/affects unless the constraint sets expand_groups=true (groups are edgeless display-only).",
+    "Every non-registry edge (type not in registry/submodule/go-require) carries a machine-readable ref anchor (one of: ref_kind, branch, tag, rev, resolved_sha, merge_base, baseline_tag, subtree_baseline, kernel_version) — prose 'detail' alone is not sufficient.",
+    "An edge.via.ref_kind is backed by its concrete field: tag->tag, branch->branch, rev->rev, exact-version->version|ref, merge-base->merge_base, subtree-baseline->subtree_baseline, baseline-tag->baseline_tag, kernel-inherited->kernel_version, fork-lineage|whole-repo-fork->provenance.",
+    "Version lines stay separated under traversal: paradigmxyz-reth-v2.2.0 does not reach mantle-kona, paradigmxyz-reth-v1.6.0 does not reach mantle-reth, mantle-revm-elysium does not reach mantle-kona/mantle-op-succinct, mantle-revm-v2.2.2 does not reach mantle-reth."
+  ],
+  "x-validator-note": "JSON Schema enforces the structural + ref_kind-backing rules; the referential, group-edgelessness, line-reachability, fork-copy-out-edge, constraint-not-group, and version-line-separation invariants are enforced by scripts/validate_topology.py. JSON Schema validation ALONE is insufficient — run the validator."
+}

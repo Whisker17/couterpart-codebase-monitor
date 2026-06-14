@@ -667,7 +667,7 @@ describe("reloadMantleConfig", () => {
     expect(() => reloadMantleConfig()).toThrow("[config-reload]");
   });
 
-  it("deduplicates same source→target pair keeping highest strength relationship", () => {
+  it("rejects duplicate source→target relationships instead of silently choosing one", () => {
     const withDuplicates: MantleConfig = {
       mantleTargets: baseMantleConfig.mantleTargets,
       counterpartRelationships: [
@@ -678,10 +678,21 @@ describe("reloadMantleConfig", () => {
     };
     writeFileSync(tmpPath, JSON.stringify(withDuplicates));
 
-    const { config } = reloadMantleConfig();
-    const rels = config.counterpartRelationships.filter((r) => r.source === "org/a");
-    expect(rels).toHaveLength(1);
-    expect(rels[0]!.relationship).toBe("fork_of");
+    expect(() => reloadMantleConfig()).toThrow(/duplicate counterpartRelationship/i);
+  });
+
+  it("warm reload fails on duplicate source→target relationships instead of keeping cached config", () => {
+    reloadMantleConfig();
+    const withDuplicates: MantleConfig = {
+      mantleTargets: baseMantleConfig.mantleTargets,
+      counterpartRelationships: [
+        { source: "org/a", targets: ["mantle/reth"], relationship: "manual", reason: "low" },
+        { source: "org/a", targets: ["mantle/reth"], relationship: "fork_of", reason: "high" },
+      ],
+    };
+    writeFileSync(tmpPath, JSON.stringify(withDuplicates));
+
+    expect(() => reloadMantleConfig()).toThrow(/duplicate counterpartRelationship/i);
   });
 });
 
@@ -732,7 +743,20 @@ describe("validateMantleConfig", () => {
     expect(() => validateMantleConfig(config, trackedProjects, false)).not.toThrow();
   });
 
-  it("warns when source is not in tracked projects", () => {
+  it("warns when impact check is enabled and source is not in tracked projects", () => {
+    const config: MantleConfig = {
+      mantleTargets: [validTarget],
+      counterpartRelationships: [
+        { source: "untracked/repo", targets: ["mantle/reth"], relationship: "fork_of", reason: "x" },
+      ],
+    };
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    validateMantleConfig(config, trackedProjects, true);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("not in tracked projects"));
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn for untracked relationship sources while impact check is disabled", () => {
     const config: MantleConfig = {
       mantleTargets: [validTarget],
       counterpartRelationships: [
@@ -741,7 +765,7 @@ describe("validateMantleConfig", () => {
     };
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     validateMantleConfig(config, trackedProjects, false);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("not in tracked projects"));
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining("not in tracked projects"));
     warnSpy.mockRestore();
   });
 
