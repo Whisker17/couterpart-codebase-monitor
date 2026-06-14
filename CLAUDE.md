@@ -185,3 +185,71 @@ M2 has several independent leaf issues (WHI-124, WHI-125, WHI-126, WHI-127) para
 - **Commit message**: `WHI-{id}: {what changed}`
 - **Verify**: run `bun run dev` (or relevant checks) in the worktree before creating a PR
 - **Cleanup**: remove the worktree after PR is merged
+
+## Release Process
+
+A release = one annotated git tag on `main` plus a deploy of that commit to the server. There is no CI/CD; releasing and deploying are manual steps run from `main`.
+
+### Versioning scheme
+
+Pre-1.0 semantic versioning, `vX.Y.Z`:
+
+- **MAJOR (`X`)**: stays `0` until v1.0. Do not bump.
+- **MINOR (`Y`)**: a meaningful feature batch, a new pipeline stage/report type, or a breaking change to config (`config/settings.json`, `config/projects.json`) or the SQLite schema (a new migration that changes existing behavior).
+- **PATCH (`Z`)**: incremental features, bug fixes, prompt tweaks, ops/CLI improvements that don't change config or schema contracts.
+
+When unsure between MINOR and PATCH, prefer MINOR if a deploy requires any manual step beyond `deploy.sh` (e.g. a new required env var or a config migration).
+
+### Version numbers to change
+
+Two places, kept in sync, both set to the **same** value:
+
+1. **`package.json` → `version`** — bump to the new `X.Y.Z` (no `v` prefix) in a commit on `main`.
+2. **git tag** — `vX.Y.Z` (with `v` prefix) pointing at that commit.
+
+Do **not** touch:
+- `version: "3.8"` in `docker-compose.yml` — that is the Compose file-format version, not the app version.
+- `migrations` rows / migration filenames — those are schema versions, independent of the app release version.
+
+> Historical note: tags `v0.1.1`–`v0.2.5` were cut without bumping `package.json` (it sat at `0.1.0`). Going forward `package.json.version` must always equal the latest release tag.
+
+### Cutting a release
+
+Run from a clean `main` that has the merged PRs you want to ship:
+
+```bash
+git checkout main && git pull origin main
+
+# 1. Bump package.json version to the new X.Y.Z, then:
+git add package.json
+git commit -m "chore: release vX.Y.Z"
+git push origin main
+
+# 2. Tag the release commit and push the tag
+git tag -a vX.Y.Z -m "vX.Y.Z: <one-line summary of what shipped>"
+git push origin vX.Y.Z
+```
+
+Use an **annotated** tag (`-a`) with a one-line summary so `git for-each-ref` and release history stay readable.
+
+### Deploying
+
+Deploys are pull-based on the server — they ship whatever is on `origin/main`, so always cut the tag first.
+
+On the deployment host, from the repo root:
+
+```bash
+./scripts/deploy.sh
+```
+
+`deploy.sh` runs `git pull origin main`, rebuilds via `docker compose up -d --build`, then polls the `counterpart-monitor` container health (`data/readiness.json`, must report `ready` and be fresh within 120s) for up to 180s. It exits non-zero and dumps the last 200 log lines if the container is unhealthy or the health check times out.
+
+### Post-deploy verification
+
+- Confirm the container is healthy: `docker compose ps` (or watch `deploy.sh` exit 0).
+- Tail logs for the first scheduled run: `docker compose logs --tail=200 -f monitor`.
+- If a deploy is bad, roll back by checking out the previous tag on the server and re-running `deploy.sh`:
+  ```bash
+  git checkout vX.Y.(Z-1) && ./scripts/deploy.sh   # then investigate on a branch
+  ```
+  Note this leaves the server on a detached HEAD; return it to `main` once a fix is tagged.
