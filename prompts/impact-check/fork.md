@@ -57,14 +57,27 @@ Technical detail: {{analyzer_technical_detail}}
 
 ---
 
+**Contract-drift pre-analysis** (deterministic; computed from the diff vs this clone):
+
+{{contract_drift_analysis}}
+
+> Treat the pre-analysis above as authoritative input. When it reports a STALE LOCAL MIRROR, you
+> still confirm by reading the cited struct with `read_file`, then follow its instruction (report
+> `affected: "yes"` and emit the `contractCheck` evidence). When it says no mirror was found, do not
+> invent one.
+
+---
+
 ## Verdict Definitions
 
 Your final verdict must be one of:
 
 ### `affected: "yes"`
-The fork contains the same bug, vulnerability, or breaking behavior introduced (or fixed) in the upstream PR. The impact is real and present in the fork's current code.
+Either of:
+1. **Bug/behavior present** — the fork contains the same bug, vulnerability, or breaking behavior introduced (or fixed) in the upstream PR; OR
+2. **Stale contract mirror** — the target maintains its **own local copy** of an upstream contract (a mirror struct, re-declared wire type, copied enum/constant/interface) and that copy is now **stale or divergent** because of this PR: it is **missing** a field/variant/method the PR added, or carries a **divergent serialization tag**. The target needs a code adaptation to re-sync. This counts as `affected: "yes"` even though the changed upstream code itself lives in an unreadable external dependency — the proof is the target's own out-of-date copy.
 
-**Requirements**: Must have `code_evidence` — file path, exact line range, and code snippet confirming the issue exists in the fork.
+**Requirements**: Must have `code_evidence`. For case 2, the snippet MUST be the **full enclosing mirror struct**, plus a `contractCheck` object (`mirror`, `member`, `serializedKey`, `expectedTag`, `observedTag`, `actual`). State the gap in `summary` (so it surfaces in the digest, which reads `summary` not `evidence`).
 
 > `affected` only states whether the change is **present / divergent** in this target. How
 > badly it matters is a SEPARATE judgment — see `## Operational Severity` below. A divergence

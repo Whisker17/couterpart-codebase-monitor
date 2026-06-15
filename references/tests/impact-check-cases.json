@@ -1,0 +1,114 @@
+{
+  "_doc": "Ground-truth test cases for the impact-check service. Each case pairs an upstream change with a KNOWN downstream Mantle adaptation commit (human-verified). Used to validate that the service detects 'this upstream PR requires a Mantle adaptation'. See README.md for methodology. Uses the `--ref` flag on scripts/analyze-pr.ts (implemented) to pin the downstream clone to a specific commit.",
+  "_methodology": "For each case: PIN the downstream target clone to `test.positive.pinRef` (the parent of the adaptation commit = pre-adaptation state) and run impact-check on the upstream PR -> EXPECT affected=yes (adaptation still needed). PIN to `test.negative.pinRef` (the adaptation commit itself) -> EXPECT affected=no (already adapted).",
+  "target_branch_note": "Both adaptation commits live on mantle-xyz/mantle-v2 branch mantle-elysium. The downstream file op-service/sources/types.go (struct RPCHeader) is Mantle's OWN mirror of go-ethereum's core/types.Header, maintained in-repo (NOT via the external op-geth go.mod replace) — so it IS readable in the mantle-v2 clone, making these good in-clone positive tests.",
+  "cases": [
+    {
+      "id": "eip7843-slotnumber-add",
+      "title": "EIP-7843 adds Header.SlotNumber; Mantle mirrors it into RPCHeader",
+      "upstream": {
+        "repo": "ethereum/go-ethereum",
+        "pr": 33589,
+        "prTitle": "core/vm: implement eip-7843: SLOTNUM",
+        "mergeCommit": "f811bfe4fdec2fe1dd384a65db415848787a9ab8",
+        "verified": "CONFIRMED 2026-06-15: #33589 is a combined PR — it implements the SLOTNUM opcode (core/vm) AND introduces the core/types.Header.SlotNumber field in the SAME commit. Its diff to core/types/block.go adds `SlotNumber *uint64 `json:\"slotNumber\" rlp:\"optional\"`` (lines are pure additions; the parent had no such field), which is exactly the field the downstream RPCHeader mirrors. #33589/f811bfe4f is the correct upstream anchor; no separate companion PR exists or is needed."
+      },
+      "downstreamTarget": {
+        "projectId": "mantle-xyz/mantle-v2",
+        "repoUrl": "https://github.com/mantle-xyz/mantle-v2",
+        "branch": "mantle-elysium",
+        "relationship": "depends_on",
+        "file": "op-service/sources/types.go",
+        "symbol": "RPCHeader.SlotNumber"
+      },
+      "groundTruthAdaptation": {
+        "commit": "0c77c603668d728a0b06af6b63ab54169bf4a448",
+        "parent": "46803658bf7c4b2835f9ab8b2dbc1dfecff08f59",
+        "author": "pandainzoo (gary.zhu@mantle.xyz)",
+        "date": "2026-04-30T06:43:04Z",
+        "message": "EIP-7843: add SlotNumber in RPCHeader",
+        "diffstat": "op-service/sources/types.go (+5/-0)",
+        "what": "Adds `SlotNumber *uint64 `json:\"slotNumber\" rlp:\"optional\"`` to RPCHeader and passes hdr.SlotNumber through in CreateGethHeader()."
+      },
+      "test": {
+        "positive": {
+          "pinRef": "46803658bf7c4b2835f9ab8b2dbc1dfecff08f59",
+          "note": "pre-adaptation parent — RPCHeader does NOT yet have SlotNumber",
+          "expected": { "affected": "yes", "severity": "medium", "wouldAlert": false, "rationale": "Feature-parity / compatibility mirror sync so Mantle can deserialize headers carrying slotNumber. Field is rlp:optional and ignored in legacy headers, so a missing field would not halt the chain -> NOT critical. Per impact-alert-severity-bar this belongs in the digest, not a critical push." }
+        },
+        "negative": {
+          "pinRef": "0c77c603668d728a0b06af6b63ab54169bf4a448",
+          "note": "adaptation applied — SlotNumber present",
+          "expected": { "affected": "no" }
+        }
+      }
+    },
+    {
+      "id": "eip7843-slotnumber-omitempty",
+      "title": "Pre-Amsterdam payloads must omit empty slotNumber; Mantle adds ,omitempty",
+      "upstream": {
+        "repo": "ethereum/go-ethereum",
+        "pr": 34704,
+        "prTitle": "beacon/engine, miner: fix testing_buildBlockV1 response",
+        "mergeCommit": "ecae519972c0c8b4b702fae651e1825be64275e0",
+        "verified": "CONFIRMED 2026-06-15: #34704 IS the correct upstream despite its misleading 'testing_buildBlockV1' title. Its PR description's first item and its diff add `,omitempty` to SlotNumber on the engine payload types: `SlotNumber *hexutil.Uint64 `json:\"slotNumber\"`` -> `json:\"slotNumber,omitempty\"` (and the matching *uint64 struct), so pre-Amsterdam ExecutableData/ExecutionPayload no longer serialize a null slotNumber. This is the upstream analogue of the downstream `,omitempty` fix applied to RPCHeader. The earlier 'does NOT match' note judged by PR title only and was wrong."
+      },
+      "downstreamTarget": {
+        "projectId": "mantle-xyz/mantle-v2",
+        "repoUrl": "https://github.com/mantle-xyz/mantle-v2",
+        "branch": "mantle-elysium",
+        "relationship": "depends_on",
+        "file": "op-service/sources/types.go",
+        "symbol": "RPCHeader.SlotNumber json tag"
+      },
+      "groundTruthAdaptation": {
+        "commit": "32f5a6ad5612e869ccd3a8fdc4fbc0d91a11e7c4",
+        "parent": "0c77c603668d728a0b06af6b63ab54169bf4a448",
+        "author": "pandainzoo (gary.zhu@mantle.xyz)",
+        "date": "2026-05-06T06:56:30Z",
+        "message": "add ,omitempty for SlotNumber in RPCHeader",
+        "diffstat": "op-service/sources/types.go (+1/-1)",
+        "what": "Changes `json:\"slotNumber\"` -> `json:\"slotNumber,omitempty\"` so pre-Amsterdam headers don't serialize `\"slotNumber\":null` and stay JSON-compatible with upstream/peers."
+      },
+      "test": {
+        "positive": {
+          "pinRef": "0c77c603668d728a0b06af6b63ab54169bf4a448",
+          "note": "pre-adaptation parent — SlotNumber present but WITHOUT ,omitempty",
+          "expected": { "affected": "no", "rationale": "REVISED after implementation: the upstream change is on ExecutableData (engine/payload domain). Per the cross-struct DOMAIN guardrail (§3 of the spec), a payload-domain change maps to a payload-domain mirror (op-service ExecutionPayload), NOT to the header-domain RPCHeader. ExecutionPayload deliberately does not carry slotNumber (verified at tip), so there is no synced downstream mirror to drift against -> no required adaptation. The human's RPCHeader omitempty was a parallel cosmetic decision the (domain-respecting) structural detector neither can nor should attribute to this PR. The original 'yes' expectation contradicted the spec's own domain guardrail; this case is NOT detectable by domain-respecting structural mirror detection. Kept as a documented negative/limitation case." }
+        },
+        "negative": {
+          "pinRef": "32f5a6ad5612e869ccd3a8fdc4fbc0d91a11e7c4",
+          "note": "adaptation applied — ,omitempty present",
+          "expected": { "affected": "no" }
+        }
+      }
+    }
+  ],
+  "_validationResults_2026-06-15": {
+    "note": "Live replay after implementing the contract-drift detector (docs/spark/2026-06-15-...). Honest outcomes vs the locked `expected`:",
+    "C1-positive": { "result": "affected=yes", "match": true, "detail": "Pre-pass found RPCHeader (sibling-overlap 21 vs upstream Header) MISSING SlotNumber; deterministic stale-mirror override forced affected=yes with a contractCheck code_evidence citing the full RPCHeader struct. THE headline fix: this exact case was 'uncertain' before. Severity rated critical by the LLM (RLP hash path); confidence=medium so it routes to digest, no push." },
+    "C1-negative": { "result": "affected=uncertain", "match": "partial", "detail": "Mirror correctly detected as SYNCED (RPCHeader has SlotNumber) — no false positive. Verdict stayed uncertain (not 'no') due to residual EXTERNAL-dependency uncertainty (op-geth source not in clone), which is the documented out-of-scope limitation, not a mirror issue. Consistent with the pre-fix baseline; not a regression." },
+    "C2-positive": { "result": "affected=no", "match": true, "detail": "Expected REVISED to 'no' (see case). CONTRADICTION FOUND IN SPEC: the locked C2-positive=yes assumed the upstream ExecutableData tag change maps to RPCHeader. But the spec's own cross-struct guardrail requires SAME semantic domain, and ExecutableData (engine/payload domain) maps structurally to op-service ExecutionPayload (payload domain), NOT to RPCHeader (header domain). Verified at tip: Mantle deliberately mirrors slotNumber ONLY in RPCHeader, never in ExecutionPayload. So #34704's ExecutableData tag change has no synced downstream mirror to drift against → no required adaptation. The human's RPCHeader omitempty was a parallel cosmetic decision a structural detector cannot (and per the domain guardrail, should not) attribute to #34704. C2 is not detectable by domain-respecting structural mirror detection." },
+    "C2-negative": { "result": "affected=no", "match": true, "detail": "Correct." },
+    "verdict": "Core fix validated (C1-positive yes). Negatives produce no false positives. C2 reframed honestly per the spec's own domain guardrail."
+  },
+  "_regressionDoc": "Reproducible no-regression cases (replace the ephemeral DB-row IDs #99/#100/#103/#95). Each pins a stable ref and asserts the contract-drift mirror phase did NOT change the prior depends_on verdict. Run via scripts/analyze-pr.ts with --ref. mantle-elysium ref pinned to a 2026-06-15 commit for repeatability.",
+  "regressionCases": [
+    {
+      "id": "regression-no-manifest-version-bump",
+      "upstream": { "repo": "bluealloy/revm", "pr": 3753, "prTitle": "chore: release (lockstep v41 version bump)" },
+      "downstreamTarget": { "projectId": "mantle-xyz/reth", "relationship": "depends_on" },
+      "pinRef": "85b5aba",
+      "expected": { "affected": "no" },
+      "rationale": "Pure version-number bump, no source change; revm consumed via [patch] at a pinned rev; NO local mirror of any changed contract. Mirror phase must find nothing and fall back to the manifest/consumer verdict (no). Guards against the mirror phase inventing a false yes."
+    },
+    {
+      "id": "regression-external-dep-uncertain",
+      "upstream": { "repo": "paradigmxyz/reth", "pr": 25140, "prTitle": "add admin_banPeer/admin_unbanPeer RPC methods" },
+      "downstreamTarget": { "projectId": "mantle-xyz/reth", "relationship": "depends_on" },
+      "pinRef": "85b5aba",
+      "expected": { "affected": "uncertain" },
+      "rationale": "Changed reth crates are consumed as git deps (source not in clone) and there is NO local mirror of the changed API. Must stay uncertain (safe, no false alert) — the mirror phase must NOT turn this into a yes just because an identifier coincidentally appears somewhere."
+    }
+  ]
+}

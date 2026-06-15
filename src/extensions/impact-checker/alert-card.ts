@@ -28,7 +28,20 @@ export interface AlertCardInput {
     severity: string;
     impactType: string;
     evidenceKind: string;
-    evidence: Array<{ file: string; lines: string; snippet: string; note: string }>;
+    evidence: Array<{
+      file: string;
+      lines: string;
+      snippet: string;
+      note: string;
+      contractCheck?: {
+        mirror: string;
+        member: string;
+        serializedKey: string | null;
+        expectedTag: string | null;
+        observedTag: string | null;
+        actual: "missing" | "tag-diverged" | "present";
+      } | null;
+    }>;
     confidence: string;
     summary: string;
     recommendedAction: string;
@@ -51,9 +64,13 @@ function buildEvidenceMarkdown(
   evidence: AlertCardInput["verdict"]["evidence"]
 ): string {
   if (evidence.length === 0) return "";
-  const parts = evidence.map(
-    (e) => `• \`${e.file}:${e.lines}\` — ${e.note}\n\`\`\`\n${truncateSnippet(e.snippet)}\n\`\`\``
-  );
+  const parts = evidence.map((e) => {
+    const cc = e.contractCheck;
+    const gap = cc
+      ? `\n  · 镜像漂移: \`${cc.mirror}.${cc.member}\` ${cc.actual === "missing" ? "缺失" : cc.actual === "tag-diverged" ? `tag 不一致(\`${cc.observedTag}\` ≠ \`${cc.expectedTag}\`)` : "已同步"}`
+      : "";
+    return `• \`${e.file}:${e.lines}\` — ${e.note}${gap}\n\`\`\`\n${truncateSnippet(e.snippet)}\n\`\`\``;
+  });
   return "**证据:**\n" + parts.join("\n");
 }
 

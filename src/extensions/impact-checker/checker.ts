@@ -9,6 +9,8 @@ import { withLLMRetry } from "../analyzer/llm-retry";
 import { truncateDiff } from "../analyzer/diff-truncator";
 import { makeAgentTools, fencePathToCloneDir } from "./agent-tools";
 import { getCheckInstructions } from "./strategies";
+import { extractContractDeltas, findLocalContractMirrors, enrichDeltaFromSource, verifyContractDrift, languageForFile } from "./contract-drift";
+import type { ContractDelta, MirrorMatch } from "./contract-drift";
 
 const PROMPT_VERSION = "v1.0-fork-forensic";
 const AUDIT_DIR = "data/impact-checks";
@@ -62,6 +64,19 @@ export const VerdictSchema = z.object({
       lines: z.string(),
       snippet: z.string(),
       note: z.string(),
+      // Contract-drift mirror check (present only for mirror-drift evidence). The snippet MUST be the
+      // full enclosing mirror struct so the verifier can confirm presence/absence of the member.
+      contractCheck: z
+        .object({
+          mirror: z.string(), // local struct name, e.g. "RPCHeader"
+          member: z.string(), // changed upstream member, e.g. "SlotNumber"
+          serializedKey: z.string().nullable(),
+          expectedTag: z.string().nullable(), // upstream tag, e.g. 'json:"slotNumber,omitempty"'
+          observedTag: z.string().nullable(), // tag actually on the mirror member
+          actual: z.enum(["missing", "tag-diverged", "present"]),
+        })
+        .nullable()
+        .optional(),
     })
   ),
   confidence: z.enum(["high", "medium", "low"]),
@@ -85,6 +100,10 @@ export interface UpstreamPRInfo {
   body: string | null;
   diffRaw: string | null;
   diffStatus: "available" | "unavailable" | "too_large";
+  // Optional: fetch the FULL upstream file content (at the PR head) for a changed path. Used by the
+  // contract-drift pre-pass to harvest the complete sibling set of a changed struct (the diff's narrow
+  // context is too thin to locate a lagging mirror). Best-effort; returns null on failure.
+  getFile?: (path: string) => Promise<string | null>;
 }
 
 export interface AnalyzerSummary {
@@ -128,9 +147,148 @@ function loadSystemPromptTemplate(): string {
   }
 }
 
+// Deterministic contract-drift pre-pass: extract struct/field/tag deltas from the upstream diff,
+// locate any LOCAL mirror in the clone (by sibling overlap, not the new identifier), and render a
+// directive block for the verdict prompt. This is what lets the checker catch "the target keeps its
+// own stale copy of an upstream contract" even when the dependency source is in an unreadable repo.
+export interface DriftFinding {
+  delta: ContractDelta;
+  mirror: MirrorMatch | null;
+}
+
+export async function buildContractDriftBlock(input: CheckerInput): Promise<{
+  block: string;
+  findings: DriftFinding[];
+  stalePrimary: DriftFinding | null;
+}> {
+  if (input.upstreamPR.diffStatus !== "available" || !input.upstreamPR.diffRaw) {
+    return { block: "No upstream diff available — contract-drift pre-analysis skipped.", findings: [], stalePrimary: null };
+  }
+  let deltas: ContractDelta[] = [];
+  try {
+    deltas = extractContractDeltas(input.upstreamPR.diffRaw);
+  } catch {
+    deltas = [];
+  }
+  if (deltas.length === 0) {
+    return {
+      block: "No structural contract deltas (Go/Rust struct field or tag changes) detected in the diff.",
+      findings: [],
+      stalePrimary: null,
+    };
+  }
+
+  // Enrich siblings from the FULL upstream file (the diff's context is too thin to find a lagging
+  // mirror). Best-effort: one fetch per unique changed file; degrade to diff-only siblings on failure.
+  const getFile = input.upstreamPR.getFile;
+  if (getFile) {
+    const cache = new Map<string, string | null>();
+    for (const d of deltas) {
+      if (!cache.has(d.file)) {
+        try {
+          cache.set(d.file, await getFile(d.file));
+        } catch {
+          cache.set(d.file, null);
+        }
+      }
+    }
+    deltas = deltas.map((d) => {
+      const src = cache.get(d.file);
+      return src ? enrichDeltaFromSource(d, src) : d;
+    });
+  }
+
+  // Find ALL qualifying mirrors per delta (not just the best) so a smaller, genuinely-stale mirror is
+  // not HIDDEN behind a larger already-synced one.
+  const findings: DriftFinding[] = [];
+  for (const delta of deltas.slice(0, 40)) {
+    let mirrors: MirrorMatch[] = [];
+    try {
+      mirrors = findLocalContractMirrors(input.cloneState.cloneDir, delta, {
+        architectureNotes: input.target.architectureNotes,
+      });
+    } catch {
+      mirrors = [];
+    }
+    if (mirrors.length === 0) findings.push({ delta, mirror: null });
+    else for (const mirror of mirrors) findings.push({ delta, mirror });
+  }
+
+  // A drift is real only when the mirror MEANINGFULLY lags this PR:
+  //   - field-added delta + mirror MISSING the member  -> stale
+  //   - tag-changed delta + mirror has the member with a DIVERGED tag -> stale
+  // A tag-changed delta whose mirror lacks the field ENTIRELY is NOT a drift for this PR (the tag
+  // change doesn't apply to an absent field; the field's absence — if it matters — is a different PR).
+  const isStale = (f: DriftFinding): boolean => {
+    const m = f.mirror;
+    if (!m) return false;
+    if (f.delta.kind === "field-added") return m.actual === "missing";
+    return m.actual === "tag-diverged"; // tag-changed
+  };
+
+  const withMirror = findings.filter((f) => f.mirror).sort((a, b) => b.mirror!.siblingOverlap - a.mirror!.siblingOverlap);
+  const overallStrongest = withMirror[0];
+  const staleFindings = withMirror.filter(isStale);
+
+  // Which upstream contracts have a PRESENT (synced) local mirror? If a contract is provably mirrored
+  // locally AND also has a stale copy, that stale copy is almost certainly a real lagging mirror.
+  const contractKey = (f: DriftFinding) => `${f.delta.file}::${f.delta.enclosingContract}`;
+  const syncedContracts = new Set(findings.filter((f) => f.mirror?.actual === "present").map(contractKey));
+
+  // Deterministic force-yes applies to a stale mirror that is EITHER the overall-strongest mirror (the
+  // single clearest mirror, e.g. a sole RPCHeader missing the field) OR whose contract also has a synced
+  // sibling mirror locally (a same-contract copy lags — GPT's "smaller stale behind a synced bigger"
+  // case). A lone stale mirror of a contract with NO synced sibling (e.g. an L2 ExecutionPayload that
+  // legitimately omits an L1 field) is NOT force-yes'd — it is surfaced to the LLM for semantic judgment.
+  const forceable = staleFindings.filter(
+    (f) => f === overallStrongest || syncedContracts.has(contractKey(f))
+  );
+  const stalePrimary = forceable.sort((a, b) => b.mirror!.siblingOverlap - a.mirror!.siblingOverlap)[0] ?? null;
+  const primary = overallStrongest;
+
+  const renderStale = (f: DriftFinding): string => {
+    const m = f.mirror!;
+    const what =
+      m.actual === "missing"
+        ? `is MISSING member \`${f.delta.member}\` (key \`${f.delta.serializedKey ?? "n/a"}\`)`
+        : `has \`${f.delta.member}\` but with a DIVERGED tag (observed \`${m.observedTag}\` vs expected \`${m.expectedTag}\`)`;
+    return (
+      `- Upstream \`${f.delta.enclosingContract}\` (${f.delta.file}) ${f.delta.kind === "tag-changed" ? "changed the tag on" : "added"} \`${f.delta.member}\`. ` +
+      `Local mirror \`${m.mirror}\` (sibling overlap ${m.siblingOverlap}) at \`${m.file}:${m.lines}\` ${what}. ` +
+      `contractCheck { mirror: "${m.mirror}", member: "${f.delta.member}", serializedKey: ${JSON.stringify(f.delta.serializedKey)}, expectedTag: ${JSON.stringify(m.expectedTag)}, observedTag: ${JSON.stringify(m.observedTag)}, actual: "${m.actual}" }`
+    );
+  };
+
+  const lines: string[] = [];
+  const secondary = staleFindings.filter((f) => f !== stalePrimary);
+  if (stalePrimary) {
+    lines.push(
+      "⚠️ STALE LOCAL MIRROR DETECTED — the target keeps its own copy of an upstream contract that is now out of sync. This is a real adaptation gap: you MUST report `affected: \"yes\"`, describe the gap in `summary`, and emit `code_evidence` citing the FULL enclosing mirror struct with the `contractCheck` object shown. Severity for additive/optional compatibility fields is `medium` (digest), unless the field is on a consensus/parse-critical path."
+    );
+    lines.push(renderStale(stalePrimary) + `\nCite this struct:\n\`\`\`\n${stalePrimary.mirror!.snippet.slice(0, 1200)}\n\`\`\``);
+  } else if (primary && primary.mirror!.actual === "present") {
+    lines.push(
+      `Primary local mirror \`${primary.mirror!.mirror}\` already contains \`${primary.delta.member}\` in sync with upstream (verified by reading the clone). The mirror adaptation for that contract is DONE.`
+    );
+  } else {
+    lines.push(
+      "No stale local mirror of the changed contract(s) was found (no high-overlap struct missing the added field or carrying a diverged tag). " +
+        "Do NOT invent a mirror; fall back to dependency-boundary (consumer) reasoning for this check."
+    );
+  }
+  if (secondary.length > 0) {
+    lines.push(
+      `ADDITIONAL candidate mirror(s) that also appear stale — evaluate each on its merits (a structurally-similar struct may legitimately omit the field, e.g. an L2 type omitting an L1-only field; confirm with read_file before concluding):`
+    );
+    for (const f of secondary.slice(0, 5)) lines.push(renderStale(f));
+  }
+  return { block: lines.join("\n"), findings, stalePrimary };
+}
+
 function buildSystemPrompt(
   input: CheckerInput,
   checkInstructions: string,
+  contractDriftBlock: string,
   settings: { llm: { diffTokenBudget: number; maxManifestEntries: number } }
 ): string {
   const template = loadSystemPromptTemplate();
@@ -169,7 +327,8 @@ function buildSystemPrompt(
     .replace("{{clone_commit_hash}}", cloneState.commitHash)
     .replace("{{clone_sync_time}}", cloneState.lastFetchAt)
     .replace("{{prompt_version}}", PROMPT_VERSION)
-    .replace("{{check_instructions}}", checkInstructions);
+    .replace("{{check_instructions}}", checkInstructions)
+    .replace("{{contract_drift_analysis}}", contractDriftBlock);
 }
 
 function estimateStepCost(inputTokens: number, outputTokens: number): number {
@@ -235,6 +394,26 @@ function verifyEvidence(
         }
       } catch {
         failures.push(`Could not read file for snippet verification: ${ev.file}`);
+      }
+    }
+
+    // Contract-drift claims (missing / tag-diverged / present) are validated against the REAL struct
+    // re-parsed from the file by mirror name — NOT against the LLM-provided snippet, which could be a
+    // partial copy that omits the member to fake a "missing". This is the authoritative check.
+    const cc = ev.contractCheck;
+    if (cc) {
+      const lang = fenced ? languageForFile(ev.file) : null;
+      if (!fenced || !lang) {
+        failures.push(`contractCheck for ${cc.mirror} could not be verified (unreadable or unsupported file: ${ev.file})`);
+      } else {
+        const res = verifyContractDrift(fenced, lang, {
+          mirror: cc.mirror,
+          member: cc.member,
+          expectedTag: cc.expectedTag,
+          observedTag: cc.observedTag,
+          actual: cc.actual,
+        });
+        if (!res.ok) failures.push(`contractCheck verification failed for ${cc.mirror}.${cc.member}: ${res.reason}`);
       }
     }
   }
@@ -333,7 +512,8 @@ export async function runImpactCheck(
   });
 
   const checkInstructions = getCheckInstructions(input.relationship.relationship);
-  const systemPrompt = buildSystemPrompt(input, checkInstructions, settings);
+  const { block: contractDriftBlock, stalePrimary } = await buildContractDriftBlock(input);
+  const systemPrompt = buildSystemPrompt(input, checkInstructions, contractDriftBlock, settings);
   const { grep_repo, read_file } = makeAgentTools(input.cloneState.cloneDir);
 
   // Ensure audit directory exists
@@ -519,7 +699,60 @@ export async function runImpactCheck(
     rawVerdict.confidence = "medium";
   }
 
-  // Evidence verification for code_evidence
+  // Deterministic stale-mirror override (applied BEFORE evidence verification so the verifier validates
+  // the ground-truth evidence). The pre-pass found, by reading the actual clone, that the target's own
+  // copy of an upstream contract is stale — a FACT, not an inference. "affected" = "does the target need
+  // an adaptation" = yes, regardless of when the external dependency bumps (that timing is
+  // severity/recommendedAction, not affected). This wins over LLM hedging and truncation→uncertain.
+  if (stalePrimary && stalePrimary.mirror) {
+    const m = stalePrimary.mirror;
+    rawVerdict.affected = "yes";
+    if (rawVerdict.severity === "low") rawVerdict.severity = "medium";
+    rawVerdict.evidenceKind = "code_evidence";
+    if (rawVerdict.confidence === "low") rawVerdict.confidence = "medium";
+    // Use ONLY the deterministic finding as evidence (ground truth read from the clone). Replacing the
+    // LLM's evidence here means a bogus LLM-supplied contractCheck cannot ride through verification; the
+    // injected item is then validated by verifyEvidence below like any other.
+    rawVerdict.evidence = [
+      {
+        file: m.file,
+        lines: m.lines,
+        snippet: m.snippet,
+        note: `Stale local mirror: ${m.mirror} ${m.actual === "missing" ? `is missing member ${stalePrimary.delta.member}` : `has a diverged tag on ${stalePrimary.delta.member}`} (upstream ${stalePrimary.delta.enclosingContract}).`,
+        contractCheck: {
+          mirror: m.mirror,
+          member: stalePrimary.delta.member,
+          serializedKey: stalePrimary.delta.serializedKey,
+          expectedTag: m.expectedTag,
+          observedTag: m.observedTag,
+          actual: m.actual,
+        },
+      },
+    ];
+    // Keep impactType / summary / recommendedAction CONSISTENT with affected=yes — otherwise the verdict
+    // contradicts itself (e.g. affected=yes + impactType=not_affected + summary="No action needed") and
+    // could fire a misleading alert. These deterministic fields describe the mirror gap directly.
+    rawVerdict.impactType = m.actual === "missing" ? "breaking_change" : "behavior_change";
+    const gapDesc =
+      m.actual === "missing"
+        ? `local mirror struct \`${m.mirror}\` (${m.file}) is MISSING the \`${stalePrimary.delta.member}\` field that upstream \`${stalePrimary.delta.enclosingContract}\` added`
+        : `local mirror struct \`${m.mirror}\` (${m.file}) carries a DIVERGED serialization tag on \`${stalePrimary.delta.member}\` (observed ${m.observedTag} vs upstream ${m.expectedTag})`;
+    rawVerdict.summary = `Contract mirror drift: ${gapDesc}. Mantle maintains its own copy of upstream \`${stalePrimary.delta.enclosingContract}\` and it is now out of sync — a code adaptation is needed to re-sync.`;
+    rawVerdict.recommendedAction =
+      m.actual === "missing"
+        ? `Add \`${stalePrimary.delta.member}\` to \`${m.mirror}\` in ${m.file} to mirror upstream \`${stalePrimary.delta.enclosingContract}\`.`
+        : `Update the serialization tag on \`${m.mirror}.${stalePrimary.delta.member}\` in ${m.file} to match upstream (${m.expectedTag}).`;
+    writeAuditEntry(auditPath, {
+      type: "stale_mirror_override",
+      mirror: m.mirror,
+      file: m.file,
+      member: stalePrimary.delta.member,
+      actual: m.actual,
+    });
+  }
+
+  // Evidence verification for code_evidence (validates the deterministic contractCheck above too — no
+  // manual bypass; if it cannot be confirmed against the clone, confidence is dropped honestly).
   let evidenceVerificationFailed = false;
   if (rawVerdict.evidenceKind === "code_evidence") {
     const { verified, failures } = verifyEvidence(rawVerdict, input.cloneState.cloneDir);

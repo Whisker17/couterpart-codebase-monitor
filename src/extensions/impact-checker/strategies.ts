@@ -67,7 +67,23 @@ intermediate Mantle fork. The upstream change matters only if it lands in a comp
 version, and code path this target actually consumes. Your first job is to establish that
 dependency boundary from the manifests, not to grep for code blindly.
 
-**Follow this three-phase investigation sequence:**
+**Follow this sequence:**
+
+### Phase 0 — Contract-drift mirror check (do this FIRST)
+The target may keep its OWN local copy of an upstream contract (a mirror struct / re-declared wire
+type) that must be hand-synced. The "Contract-drift pre-analysis" block (in Context) already located
+any such mirror by sibling overlap — independent of the dependency boundary.
+- If it reports a **STALE LOCAL MIRROR** (member missing, or tag diverged): confirm by \`read_file\` on
+  the cited struct, then conclude **\`affected: "yes"\`** and emit the \`contractCheck\` code_evidence as
+  instructed. You are DONE — you do not need the dependency-boundary analysis for that contract. This
+  holds even though the changed upstream code lives in an external dep you cannot read: the proof is the
+  target's own stale copy.
+- If it reports an **already-synced mirror**: that supports \`affected: "no"\` for that contract.
+- If it reports **no mirror found**: continue to the dependency-boundary phases below.
+
+Cross-struct rule: a mirror in a *different* struct than the upstream one still counts if it shares the
+serialized key, the same protocol domain (header/payload/engine/consensus), AND sibling overlap or an
+architecture-notes path — the pre-analysis already applied these guardrails.
 
 ### Phase 1 — Establish the dependency boundary (manifests first)
 1. Identify which upstream component the PR touches (crate, Go module, or package) from the diff.
