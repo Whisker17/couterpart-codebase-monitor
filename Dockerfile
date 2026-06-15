@@ -7,6 +7,7 @@ RUN bun install --frozen-lockfile --production
 COPY src/ ./src/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
+COPY prompts/ ./prompts/
 
 RUN mkdir -p data/diffs data/reports data/analysis-inputs data/archive
 
