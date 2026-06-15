@@ -87,6 +87,12 @@ You cannot determine impact with confidence. Use when:
 
 **Requirements**: Explain what you searched for and why you could not conclude.
 
+> **Dependency relationships override this.** When the check instructions are for a `depends_on`
+> relationship, a resolved version boundary in the lockfile/manifest is decisive: if the target's
+> pinned version/rev predates the change, or the component is absent, conclude `affected: "no"`
+> (manifest_evidence, medium) — do NOT report "uncertain" just because you could not read the
+> dependency's source. Reserve "uncertain" for a genuinely unresolvable pin.
+
 ---
 
 ## Evidence Quality
@@ -148,7 +154,7 @@ compiling/running?" If no, it is at most `medium`.
 
 1. **Start broad, then narrow**: Use `grep_repo` with function names, error messages, or constants from the upstream diff.
 2. **Read before concluding**: Always use `read_file` to confirm what `grep_repo` found before stating the code exists or doesn't exist.
-3. **Three strikes**: If 3 targeted searches find nothing, conclude `uncertain` rather than assuming `not_affected`.
+3. **Three strikes**: If 3 targeted searches find nothing, conclude `uncertain` rather than assuming `not_affected` — UNLESS this is a `depends_on` check and the lockfile/manifest already resolves the version boundary (then conclude `no` per the check instructions, not `uncertain`).
 4. **Cross-reference**: Check callers, imports, and related files when the directly changed code isn't found at first.
 
 ---
@@ -156,3 +162,5 @@ compiling/running?" If no, it is at most `medium`.
 ## Output Format
 
 Produce a single structured verdict including `affected`, **`severity`** (see `## Operational Severity`), `impactType`, `evidenceKind`, `evidence`, `confidence`, `summary`, and `recommendedAction`. Do not hedge or qualify in the `summary` — be direct and evidence-grounded. The `recommendedAction` should be actionable (e.g. "Cherry-pick upstream fix #1234", "No action needed — fork already applied an equivalent fix in commit abc123", "Manual review required — diff unavailable").
+
+**Your `affected` value MUST match your own investigation conclusion.** If your `summary` states the change is **not present** in the target, is **not in its dependency graph**, or is **pinned before the change**, then `affected` MUST be `"no"` — NOT `"uncertain"`. Marking `"uncertain"` while your summary explains why the target is not impacted is a contradiction and is wrong. Use `"uncertain"` ONLY when your summary genuinely cannot state whether the change is present.

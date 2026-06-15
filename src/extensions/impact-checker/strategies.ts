@@ -82,15 +82,26 @@ dependency boundary from the manifests, not to grep for code blindly.
 3. Determine: is this component even in the target's dependency graph? At what version/rev?
    Is it consumed directly or via an intermediate Mantle fork?
 
-### Phase 2 — Is the upstream change in-scope for the consumed version?
-4. Decide whether the changed code can actually reach this target:
-   - The component is **NOT a dependency** of the target → \`affected: no\` (manifest_evidence).
-   - The target pins a **version/rev BEFORE the change** → not yet inherited → \`affected: no\`
-     (it will only matter on a future bump; say so in recommended_action).
-   - The target pins a **version/rev AT or AFTER the change** → the change is (or will be)
-     present → continue to Phase 3.
-   - Consumption goes through a Mantle fork: use \`grep_repo\`/\`read_file\` to check whether that
-     fork has already re-ported or diverged from the changed code.
+### Phase 2 — Resolve the version boundary (this usually DECIDES the verdict)
+The lockfile / manifest pin is decisive evidence on its own. You do NOT need to read the
+dependency's source to conclude "no" when the boundary is clear. Apply these rules in order:
+
+4. - Component **NOT in the dependency graph** (no \`Cargo.lock\` entry / no \`go.mod\` require) →
+     \`affected: no\`, manifest_evidence, **medium**.
+   - Upstream PR adds an **entirely new crate / module / opt-in feature** and the target's pinned
+     version predates it or does not enable it (e.g. a new \`revmc\`/JIT crate, a feature removed
+     from \`default\` features) → the new code cannot reach the target → \`affected: no\`,
+     manifest_evidence, **medium**. Put the future-bump caveat in recommendedAction.
+   - Target pins a **version/rev BEFORE the upstream change** (e.g. lock = reth v2.2.0 / rev
+     \`88505c7f\` and the PR landed after that tag) → the change is NOT present in the target →
+     \`affected: no\`, manifest_evidence, **medium**. **Do NOT report "uncertain" here** — the pinned
+     rev in the lockfile already proves absence, even when you cannot read the dependency's source
+     and even when the upstream diff is large.
+   - Target pins a **version/rev AT or AFTER the change** → in scope → go to Phase 3.
+   - Consumed via a **Mantle fork** (\`[patch]\`→mantle-xyz/*, \`go.mod replace\`→mantle op-geth): if
+     that fork's source is in THIS clone, read it; if it lives in another repo you cannot read,
+     resolve the boundary from the lock/replace pin and reason from the upstream diff — only fall
+     back to "uncertain" if the pin itself cannot be located.
 
 ### Phase 3 — Assess impact at the consumption boundary
 5. If the change is in-scope, assess how it reaches this target:
@@ -104,14 +115,15 @@ dependency boundary from the manifests, not to grep for code blindly.
    consume, or one with no runtime effect, is \`low\`.
 
 **Evidence requirements:**
-- Prefer **manifest_evidence** (the \`Cargo.toml\`/\`Cargo.lock\`/\`go.mod\` line proving consumption,
-  the version/rev, or proving the component is absent) — for depends_on, the dependency boundary
-  IS the key fact.
-- Add **code_evidence** (file + line range + snippet) when you confirm a changed path is reachable.
-- "affected: no" is a STRONG, expected conclusion here when the manifest shows the component is not
-  consumed or is pinned before the change — back it with the manifest line and use **high** confidence.
-  Do not default to "uncertain" when the manifest gives you a clear answer.
-- Use "uncertain" only when you genuinely cannot resolve the version boundary after reading the manifests.
+- **manifest_evidence is decisive for depends_on.** Cite the exact \`Cargo.lock\`/\`go.mod\`/\`Cargo.toml\`
+  line proving consumption, the pinned version/rev, or the component's absence.
+- A clear "no" from the lockfile/replace pin is \`affected: no\`, **manifest_evidence, medium** — this
+  is the EXPECTED, confident outcome, NOT "uncertain" and NOT "low". (manifest_evidence cannot be
+  \`high\`; medium is the correct ceiling here.)
+- Add **code_evidence** only when the changed path is actually reachable AND present in this clone.
+- Reserve "uncertain" for when the lockfile genuinely does not resolve the boundary (a floating
+  version range you cannot pin, or a Mantle-fork pin you cannot locate). Being unable to read the
+  dependency's source is NOT a reason for "uncertain" once the pinned version answers the question.
 `.trim();
 }
 
