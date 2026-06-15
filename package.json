@@ -1,6 +1,6 @@
 {
   "name": "couterpart-codebase-ecosystem",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
