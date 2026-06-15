@@ -11,7 +11,7 @@ import { syncTarget } from "../../extensions/impact-checker/clone-manager";
 import type { CloneSyncState, CloneManagerOptions } from "../../extensions/impact-checker/clone-manager";
 import { runImpactCheck } from "../../extensions/impact-checker/checker";
 import type { CheckerInput, ImpactCheckVerdict } from "../../extensions/impact-checker/checker";
-import { renderAlertCard } from "../../extensions/impact-checker/alert-card";
+import { renderAlertCardZh } from "../../extensions/impact-checker/alert-card";
 import { sendCard } from "../../extensions/lark-dispatcher/webhook";
 import type { LarkWebhookResponse } from "../../extensions/lark-dispatcher/webhook";
 
@@ -318,16 +318,19 @@ export async function execute(ctx: PipelineContext, deps?: ImpactCheckStageDeps)
       try {
         const verdict = await runImpactCheckFn(checkerInput);
 
-        const alertCardJson = renderAlertCard({
-          checkId: row.id,
-          verdict,
-          prNumber: prAnalysis.pr_number,
-          prTitle: prAnalysis.title,
-          sourceProjectId: prAnalysis.project_id,
-          targetProjectId: row.target_project_id,
-          targetCommit: cloneState.commitHash,
-          checkedAt: new Date().toISOString().slice(0, 10),
-        });
+        const alertCardJson = await renderAlertCardZh(
+          {
+            checkId: row.id,
+            verdict,
+            prNumber: prAnalysis.pr_number,
+            prTitle: prAnalysis.title,
+            sourceProjectId: prAnalysis.project_id,
+            targetProjectId: row.target_project_id,
+            targetCommit: cloneState.commitHash,
+            checkedAt: new Date().toISOString().slice(0, 10),
+          },
+          settings
+        );
 
         // Write verdict + alert_card_json atomically in one UPDATE
         writeVerdictSuccess(db, row.id, verdict, cloneState.commitHash, alertCardJson);

@@ -14,7 +14,7 @@ import { getMantleConfig } from "../src/config/projects";
 import { syncTarget } from "../src/extensions/impact-checker/clone-manager";
 import { runImpactCheck } from "../src/extensions/impact-checker/checker";
 import type { CheckerInput } from "../src/extensions/impact-checker/checker";
-import { renderAlertCard } from "../src/extensions/impact-checker/alert-card";
+import { renderAlertCardZh } from "../src/extensions/impact-checker/alert-card";
 
 const MAX_DIFF_BYTES = 2_000_000;
 
@@ -179,15 +179,18 @@ for (const edge of edges) {
   };
 
   const v = await runImpactCheck(input);
-  const card = renderAlertCard({
-    checkId: 0,
-    verdict: v,
-    prNumber,
-    prTitle: title,
-    sourceProjectId: sourceId,
-    targetProjectId: edge.targetId,
-    targetCommit: commitHash,
-  });
+  const card = await renderAlertCardZh(
+    {
+      checkId: 0,
+      verdict: v,
+      prNumber,
+      prTitle: title,
+      sourceProjectId: sourceId,
+      targetProjectId: edge.targetId,
+      targetCommit: commitHash,
+    },
+    settings
+  );
 
   console.log(`  VERDICT: affected=${v.affected}  severity=${v.severity}  confidence=${v.confidence}  impactType=${v.impactType}`);
   console.log(`  evidenceKind=${v.evidenceKind}  steps=${v.toolSteps}  cost=$${v.cost.toFixed(3)}`);

@@ -718,7 +718,7 @@ export async function runImpactCheck(
         file: m.file,
         lines: m.lines,
         snippet: m.snippet,
-        note: `Stale local mirror: ${m.mirror} ${m.actual === "missing" ? `is missing member ${stalePrimary.delta.member}` : `has a diverged tag on ${stalePrimary.delta.member}`} (upstream ${stalePrimary.delta.enclosingContract}).`,
+        note: `下游副本 \`${m.mirror}\` ${m.actual === "missing" ? `缺少成员 \`${stalePrimary.delta.member}\`` : `的 \`${stalePrimary.delta.member}\` 标签与上游不一致`}（对应上游 \`${stalePrimary.delta.enclosingContract}\`）。`,
         contractCheck: {
           mirror: m.mirror,
           member: stalePrimary.delta.member,
@@ -733,15 +733,15 @@ export async function runImpactCheck(
     // contradicts itself (e.g. affected=yes + impactType=not_affected + summary="No action needed") and
     // could fire a misleading alert. These deterministic fields describe the mirror gap directly.
     rawVerdict.impactType = m.actual === "missing" ? "breaking_change" : "behavior_change";
-    const gapDesc =
+    // Plain-language summary — a Mantle engineer should get it without knowing the term "contract drift".
+    rawVerdict.summary =
       m.actual === "missing"
-        ? `local mirror struct \`${m.mirror}\` (${m.file}) is MISSING the \`${stalePrimary.delta.member}\` field that upstream \`${stalePrimary.delta.enclosingContract}\` added`
-        : `local mirror struct \`${m.mirror}\` (${m.file}) carries a DIVERGED serialization tag on \`${stalePrimary.delta.member}\` (observed ${m.observedTag} vs upstream ${m.expectedTag})`;
-    rawVerdict.summary = `Contract mirror drift: ${gapDesc}. Mantle maintains its own copy of upstream \`${stalePrimary.delta.enclosingContract}\` and it is now out of sync — a code adaptation is needed to re-sync.`;
+        ? `Mantle 在下游手写维护了一份上游 \`${stalePrimary.delta.enclosingContract}\` 的副本 \`${m.mirror}\`（${m.file}）。上游这次给 \`${stalePrimary.delta.enclosingContract}\` 新增了 \`${stalePrimary.delta.member}\` 字段,但下游这份副本还没跟上、缺了该字段,两边已经对不上。如果不补,用这份旧副本解析/构造数据时会丢掉 \`${stalePrimary.delta.member}\`,导致与上游不一致。`
+        : `Mantle 下游手写的上游 \`${stalePrimary.delta.enclosingContract}\` 副本 \`${m.mirror}\`（${m.file}）里,\`${stalePrimary.delta.member}\` 的序列化标签和上游对不上了（下游 \`${m.observedTag}\`,上游 \`${m.expectedTag}\`）。不一致会导致序列化/反序列化的 JSON 形态与上游/对端不同。`;
     rawVerdict.recommendedAction =
       m.actual === "missing"
-        ? `Add \`${stalePrimary.delta.member}\` to \`${m.mirror}\` in ${m.file} to mirror upstream \`${stalePrimary.delta.enclosingContract}\`.`
-        : `Update the serialization tag on \`${m.mirror}.${stalePrimary.delta.member}\` in ${m.file} to match upstream (${m.expectedTag}).`;
+        ? `在 ${m.file} 的 \`${m.mirror}\` 里补上 \`${stalePrimary.delta.member}\` 字段(并在相关构造/转换处透传),让它跟上游 \`${stalePrimary.delta.enclosingContract}\` 保持一致。`
+        : `把 ${m.file} 中 \`${m.mirror}.${stalePrimary.delta.member}\` 的序列化标签改成与上游一致(\`${m.expectedTag}\`)。`;
     writeAuditEntry(auditPath, {
       type: "stale_mirror_override",
       mirror: m.mirror,
