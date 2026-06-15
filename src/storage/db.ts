@@ -1,7 +1,7 @@
 import { Database, constants } from "bun:sqlite";
 import { mkdirSync } from "fs";
 import { dirname } from "path";
-import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007 } from "./schema";
+import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008 } from "./schema";
 
 const DB_PATH = "data/monitor.db";
 
@@ -70,6 +70,11 @@ function runMigrations(database: Database): void {
   if (!applied.includes("007_impact_check")) {
     database.exec(MIGRATION_007);
     database.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("007_impact_check");
+  }
+
+  if (!applied.includes("008_impact_check_severity")) {
+    database.exec(MIGRATION_008);
+    database.query("INSERT OR IGNORE INTO migrations (version) VALUES (?)").run("008_impact_check_severity");
   }
 }
 

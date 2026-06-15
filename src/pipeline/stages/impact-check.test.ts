@@ -83,6 +83,7 @@ function makeAvailableCloneState(targetId: string): CloneSyncState {
 function makeVerdictResult(): ImpactCheckVerdict {
   return {
     affected: "yes",
+    severity: "critical",
     impactType: "behavior_change",
     evidenceKind: "code_evidence",
     evidence: [{ file: "src/main.ts", lines: "10-20", snippet: "foo()", note: "changed" }],
@@ -150,6 +151,7 @@ function applySchema(db: Database): void {
       relationship TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
       affected TEXT,
+      severity TEXT,
       impact_type TEXT,
       evidence_kind TEXT,
       evidence TEXT,

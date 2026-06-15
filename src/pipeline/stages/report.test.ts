@@ -339,6 +339,7 @@ function applySchema(db: Database): void {
       relationship TEXT,
       status TEXT DEFAULT 'pending',
       affected TEXT,
+      severity TEXT,
       impact_type TEXT,
       evidence_kind TEXT,
       evidence TEXT,

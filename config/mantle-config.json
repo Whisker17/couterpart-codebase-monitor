@@ -41,6 +41,39 @@
       ],
       "relationship": "fork_of",
       "reason": "Primary OP Stack upstream for three different Mantle lines. For mantle-reth, ethereum-optimism/optimism rust/op-reth at tag op-reth/v2.2.1 is the true bump driver and is vendored into op-reth/. For mantle-v2, the Go monorepo is a whole-repo fork and rust/ is subtree-synced at kona-client/v1.5.1 via mantle-xyz/optimism-rust-bridge. For mantle-kona, post-archive Kona updates come from optimism rust/kona; current standalone baseline is kona-client/v1.2.2. OP derivation, sequencing, fault-proof, interop, op-reth execution, payload, txpool, hardfork, and rust subtree changes should be treated as high-impact."
+    },
+    {
+      "source": "ethereum/go-ethereum",
+      "targets": [
+        "mantle-xyz/mantle-v2"
+      ],
+      "relationship": "depends_on",
+      "reason": "Execution-kernel root of mantle-v2's Go side. mantle-v2 replaces github.com/ethereum/go-ethereum (via go.mod replace) with Mantle op-geth, which itself tracks ethereum-optimism/op-geth's optimism branch, which tracks go-ethereum. So go-ethereum hardfork/EVM/block-header/blob/RPC/txpool changes propagate two hops down into mantle-v2's Go execution layer. Reach mantle-v2 only; reth gets the same protocol via the op-reth/reth Rust lineage, not via go-ethereum code, so no edge to mantle-reth here."
+    },
+    {
+      "source": "ethereum-optimism/op-geth",
+      "targets": [
+        "mantle-xyz/mantle-v2"
+      ],
+      "relationship": "depends_on",
+      "reason": "OP Stack Go execution client, downstream of go-ethereum and upstream of Mantle op-geth. mantle-xyz/op-geth tracks this repo's optimism branch and is wired into mantle-v2 via go.mod replace, so upstream hardfork, EVM, Engine API, miner, txpool, and RPC changes flow into mantle-v2's Go execution layer."
+    },
+    {
+      "source": "paradigmxyz/reth",
+      "targets": [
+        "mantle-xyz/reth"
+      ],
+      "relationship": "depends_on",
+      "reason": "reth core crates for mantle-reth are inherited from the op-reth manifest pinned at paradigmxyz/reth rev 88505c7fcbfdebfd3b56d88c86b62e950043c6c4 (= v2.2.0). Mantle does not independently track paradigmxyz/reth main, so only changes at/around that pinned rev (and the trie-common crate overridden in patches/reth-trie-common) are directly relevant. High-signal areas mirror the op-reth/reth crates the target consumes: evm, node, payload, rpc, txpool, consensus, chainspec, hardforks, trie."
+    },
+    {
+      "source": "bluealloy/revm",
+      "targets": [
+        "mantle-xyz/reth",
+        "mantle-xyz/mantle-v2"
+      ],
+      "relationship": "depends_on",
+      "reason": "EVM core for both Mantle lines via mantle-xyz/revm. For mantle-reth, [patch.crates-io] redirects revm/op-revm to mantle-xyz/revm branch mantle-elysium (revm 38/op-revm 19, lock b4f61822). For mantle-v2's rust side, revm is patched to mantle-xyz/revm branch mantle-elysium (lock e637f61e); op-revm is excluded there. So upstream revm interpreter/host/precompile/gas/opcode and op-revm changes can require re-porting into mantle-xyz/revm and then into both targets. (A separate v2.2.2 revm 31/op-revm 12 line feeds kona/op-succinct and is out of scope for these two targets.)"
     }
   ]
 }

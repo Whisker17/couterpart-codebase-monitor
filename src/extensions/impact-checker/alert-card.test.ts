@@ -7,6 +7,7 @@ function makeInput(overrides?: Partial<AlertCardInput["verdict"]>): AlertCardInp
     checkId: 42,
     verdict: {
       affected: "yes",
+      severity: "critical",
       impactType: "behavior_change",
       evidenceKind: "code_evidence",
       evidence: [
@@ -42,6 +43,35 @@ describe("renderAlertCard", () => {
     expect(renderAlertCard(makeInput({ confidence: "low" }))).toBeNull();
   });
 
+  it("returns null for sub-threshold severities (medium/low) even when affected=yes & high", () => {
+    expect(renderAlertCard(makeInput({ severity: "medium" }))).toBeNull();
+    expect(renderAlertCard(makeInput({ severity: "low" }))).toBeNull();
+  });
+
+  it("renders a card for critical and high severity", () => {
+    expect(renderAlertCard(makeInput({ severity: "critical" }))).not.toBeNull();
+    expect(renderAlertCard(makeInput({ severity: "high" }))).not.toBeNull();
+  });
+
+  it("high severity uses orange template and ⚠️ 高 badge; critical uses red and 🚨 严重", () => {
+    const high = JSON.parse(renderAlertCard(makeInput({ severity: "high" }))!) as {
+      header: { title: { content: string }; template: string };
+    };
+    expect(high.header.template).toBe("orange");
+    expect(high.header.title.content).toContain("⚠️ 高");
+
+    const critical = JSON.parse(renderAlertCard(makeInput({ severity: "critical" }))!) as {
+      header: { title: { content: string }; template: string };
+    };
+    expect(critical.header.template).toBe("red");
+    expect(critical.header.title.content).toContain("🚨 严重");
+  });
+
+  it("footer includes severity", () => {
+    const json = renderAlertCard(makeInput({ severity: "critical" }))!;
+    expect(json).toContain("severity: critical");
+  });
+
   it("returns valid JSON string for affected=yes confidence=high", () => {
     const result = renderAlertCard(makeInput());
     expect(result).not.toBeNull();
@@ -58,7 +88,7 @@ describe("renderAlertCard", () => {
     };
     expect(card.header.template).toBe("red");
     expect(card.header.title.content).toContain("行为变更");
-    expect(card.header.title.content).toContain("🚨 Mantle 影响告警");
+    expect(card.header.title.content).toContain("Mantle 影响告警");
   });
 
   it("card elements contain PR link, target project, and footer with check id", () => {

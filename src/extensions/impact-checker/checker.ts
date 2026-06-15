@@ -39,6 +39,15 @@ function resolveAnthropicBaseUrl(rawUrl: string): string | undefined {
 
 export const VerdictSchema = z.object({
   affected: z.enum(["yes", "no", "uncertain"]),
+  // Operational severity — how badly this change threatens the downstream target's
+  // runtime/compatibility, ORTHOGONAL to `affected` (which only says the change is
+  // present/divergent). Drives the Lark alert gate: only critical/high are pushed.
+  //   critical — chain halt / liveness / safety: consensus divergence, block/tx/state
+  //              parsing or encoding break (e.g. an L1 EIP changing the block header).
+  //   high     — breaks the target's build/runtime/API compatibility; needs action.
+  //   medium   — operationally relevant but non-breaking behavior change / has workaround.
+  //   low      — non-operational: feature parity gap, CLI/tooling, docs, tests, formatting.
+  severity: z.enum(["critical", "high", "medium", "low"]),
   impactType: z.enum([
     "bug_also_present",
     "breaking_change",
@@ -468,6 +477,7 @@ export async function runImpactCheck(
     // Produce a safe fallback uncertain verdict
     rawVerdict = {
       affected: "uncertain",
+      severity: "low",
       impactType: "not_affected",
       evidenceKind: "reasoning_based",
       evidence: [],

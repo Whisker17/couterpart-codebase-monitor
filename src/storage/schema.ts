@@ -37,6 +37,11 @@ export const MIGRATION_007 = readFileSync(
   "utf-8"
 );
 
+export const MIGRATION_008 = readFileSync(
+  join(import.meta.dir, "migrations/008_impact_check_severity.sql"),
+  "utf-8"
+);
+
 // Row types
 
 export interface Analysis {
@@ -65,6 +70,7 @@ export interface ImpactCheck {
   relationship: "fork_of" | "depends_on" | "protocol_dependency";
   status: "pending" | "complete" | "failed" | "skipped_budget" | "expired";
   affected: "yes" | "no" | "uncertain" | null;
+  severity: "critical" | "high" | "medium" | "low" | null;
   impact_type: string | null;
   evidence_kind: string | null;
   evidence: string | null;

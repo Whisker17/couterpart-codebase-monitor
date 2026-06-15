@@ -7,8 +7,10 @@ import {
   buildImpactCheckSummaryLine,
   buildImpactCheckDeadLetterLine,
   buildImpactCheckBudgetLine,
+  buildSubThresholdDigestLine,
   buildImpactOpsCard,
 } from "../../extensions/report-generator/daily";
+import type { SubThresholdFinding } from "../../extensions/report-generator/daily";
 import { buildWeeklyPromptCard } from "../../extensions/report-generator/templates/weekly-prompt-card";
 import { generateWeeklyPromptReport } from "../../extensions/report-generator/weekly-prompt-report";
 import { buildMonthlyPromptCard } from "../../extensions/report-generator/templates/monthly-prompt-card";
@@ -225,7 +227,26 @@ export async function execute(ctx: PipelineContext): Promise<StageResult> {
   });
   const impactDeadLetterLine = buildImpactCheckDeadLetterLine(impactCheckResult?.impactAlertsDeadLettered ?? 0);
   const impactBudgetLine = buildImpactCheckBudgetLine(impactCheckResult?.impactChecksSkipped?.budget ?? 0);
-  const rawNotices = [impactSummaryLine, impactDeadLetterLine, impactBudgetLine].filter((l): l is string => Boolean(l));
+
+  // Sub-threshold findings (affected=yes but severity medium/low): recorded, not pushed —
+  // digested here for the day's merged PRs. See impact-alert-severity-bar.
+  const subThresholdFindings = db
+    .query<SubThresholdFinding, [number, number]>(
+      `SELECT pr.project_id AS sourceProjectId, pr.pr_number AS prNumber,
+              ic.target_project_id AS targetProjectId, ic.severity AS severity, ic.summary AS summary
+       FROM impact_checks ic
+       JOIN pull_requests pr ON ic.pr_id = pr.id
+       WHERE ic.status = 'complete' AND ic.affected = 'yes'
+         AND ic.severity IN ('medium','low')
+         AND pr.merged_at >= ? AND pr.merged_at < ?
+       ORDER BY CASE ic.severity WHEN 'medium' THEN 0 ELSE 1 END, pr.merged_at DESC`
+    )
+    .all(reportData.periodStartUnix, reportData.periodEndUnix);
+  const impactSubThresholdLine = buildSubThresholdDigestLine(subThresholdFindings);
+
+  const rawNotices = [impactSummaryLine, impactDeadLetterLine, impactBudgetLine, impactSubThresholdLine].filter(
+    (l): l is string => Boolean(l)
+  );
 
   const finalCard = buildDailyPromptCard({
     date: promptReport.input.period.date,

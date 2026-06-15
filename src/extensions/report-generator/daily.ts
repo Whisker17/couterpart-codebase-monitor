@@ -200,6 +200,36 @@ export function buildImpactCheckBudgetLine(budgetSkipped: number): string | unde
   return `⚠ ${budgetSkipped} 个影响检查因预算暂停`;
 }
 
+// Sub-threshold impact findings: affected=yes but severity medium/low — real divergence
+// that does NOT threaten the target's runtime/compatibility, so it is recorded and digested
+// here rather than pushed as a 🚨 alert. See impact-alert-severity-bar.
+export interface SubThresholdFinding {
+  sourceProjectId: string;
+  prNumber: number;
+  targetProjectId: string;
+  severity: string;
+  summary: string | null;
+}
+
+export function buildSubThresholdDigestLine(
+  findings: SubThresholdFinding[],
+  maxItems = 5
+): string | undefined {
+  if (findings.length === 0) return undefined;
+  const lines = [`📋 低优先分歧 ${findings.length} 条（已记录，未告警）：`];
+  for (const f of findings.slice(0, maxItems)) {
+    const url = `https://github.com/${f.sourceProjectId}/pull/${f.prNumber}`;
+    const oneLineSummary = (f.summary ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+    lines.push(
+      `• [${f.sourceProjectId}#${f.prNumber}](${url}) → ${f.targetProjectId}（${f.severity}）${oneLineSummary ? "：" + oneLineSummary : ""}`
+    );
+  }
+  if (findings.length > maxItems) {
+    lines.push(`• …等 ${findings.length - maxItems} 条`);
+  }
+  return lines.join("\n");
+}
+
 export function buildImpactOpsCard(deadLetterCount: number, recentCheckIds: number[]): object {
   const idList = recentCheckIds.length > 0 ? recentCheckIds.join(", ") : "无";
   return {

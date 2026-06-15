@@ -66,6 +66,11 @@ The fork contains the same bug, vulnerability, or breaking behavior introduced (
 
 **Requirements**: Must have `code_evidence` — file path, exact line range, and code snippet confirming the issue exists in the fork.
 
+> `affected` only states whether the change is **present / divergent** in this target. How
+> badly it matters is a SEPARATE judgment — see `## Operational Severity` below. A divergence
+> that does not threaten the target's runtime or compatibility is still `affected: "yes"` but
+> `severity: "low"`.
+
 ### `affected: "no"`
 The fork is not impacted. Either:
 - The upstream change does not apply to the fork's code (diverged, already fixed, different implementation), OR
@@ -112,6 +117,33 @@ For each `code_evidence` item, provide:
 
 ---
 
+## Operational Severity
+
+`severity` measures how badly the upstream change threatens **this target's runtime, compatibility,
+or chain operation** — NOT whether the fork merely diverges or lacks an upstream feature. This is the
+field that decides whether a 🚨 alert fires, so judge it strictly and on operational grounds.
+
+- **`critical`** — chain halt / liveness / safety. Consensus divergence, block-header / transaction /
+  state parsing or encoding breakage, anything that can stop the chain or fork it. Example: an L1 EIP
+  changes the block-header structure → the target can no longer parse blocks → the chain halts.
+- **`high`** — breaks the target's **build, runtime, or API compatibility**. A breaking API/type/signature
+  change at a boundary the target consumes, such that the target will fail to compile or run correctly
+  until someone reacts.
+- **`medium`** — operationally relevant but **non-breaking** behavior change, or one with a clear workaround.
+- **`low`** — **non-operational**: a feature-parity gap the target does not need to run, CLI/tooling changes,
+  documentation, tests, formatting, or refactors with no observable runtime effect.
+
+**Decisive examples:**
+- L1/consensus/header/gas/encoding change reaching the target → `critical`.
+- Upstream removes/renames a public type or function the target calls → `high`.
+- A new optional CLI flag (e.g. `--format json`) the fork lacks → `low` (the chain runs fine without it).
+- A doc-only or test-only PR → `low`.
+
+When in doubt between two levels, ask: "If this lands and we do nothing, can the chain break or stop
+compiling/running?" If no, it is at most `medium`.
+
+---
+
 ## Investigation Strategy
 
 1. **Start broad, then narrow**: Use `grep_repo` with function names, error messages, or constants from the upstream diff.
@@ -123,4 +155,4 @@ For each `code_evidence` item, provide:
 
 ## Output Format
 
-Produce a single structured verdict. Do not hedge or qualify in the `summary` — be direct and evidence-grounded. The `recommendedAction` should be actionable (e.g. "Cherry-pick upstream fix #1234", "No action needed — fork already applied an equivalent fix in commit abc123", "Manual review required — diff unavailable").
+Produce a single structured verdict including `affected`, **`severity`** (see `## Operational Severity`), `impactType`, `evidenceKind`, `evidence`, `confidence`, `summary`, and `recommendedAction`. Do not hedge or qualify in the `summary` — be direct and evidence-grounded. The `recommendedAction` should be actionable (e.g. "Cherry-pick upstream fix #1234", "No action needed — fork already applied an equivalent fix in commit abc123", "Manual review required — diff unavailable").

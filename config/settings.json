@@ -25,7 +25,7 @@
     "cutoffThreshold": 1.0
   },
   "impactCheck": {
-    "enabled": false,
+    "enabled": true,
     "maxChecksPerDay": 40,
     "maxStepsPerCheck": 12,
     "maxCostPerCheck": 1.0,

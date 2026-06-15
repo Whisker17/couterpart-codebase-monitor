@@ -8,6 +8,16 @@ const IMPACT_TYPE_LABELS: Record<string, string> = {
   not_affected: "不受影响",
 };
 
+// Severities that warrant a pushed Lark alert. medium/low are persisted and surfaced
+// in the daily/weekly digest instead — see impact-alert-severity-bar.
+const ALERTABLE_SEVERITIES = new Set(["critical", "high"]);
+
+// Header badge + Lark card color per severity.
+const SEVERITY_HEADER: Record<string, { label: string; template: "red" | "orange" }> = {
+  critical: { label: "🚨 严重", template: "red" },
+  high: { label: "⚠️ 高", template: "orange" },
+};
+
 const CARD_SIZE_LIMIT_BYTES = 20 * 1024;
 const SNIPPET_MAX_LINES = 10;
 
@@ -15,6 +25,7 @@ export interface AlertCardInput {
   checkId: number;
   verdict: {
     affected: string;
+    severity: string;
     impactType: string;
     evidenceKind: string;
     evidence: Array<{ file: string; lines: string; snippet: string; note: string }>;
@@ -52,6 +63,8 @@ function assembleCard(
 ): LarkCard {
   const impactLabel =
     IMPACT_TYPE_LABELS[input.verdict.impactType] ?? input.verdict.impactType;
+  const severityHeader =
+    SEVERITY_HEADER[input.verdict.severity] ?? { label: input.verdict.severity, template: "red" as const };
   const prUrl = `https://github.com/${input.sourceProjectId}/pull/${input.prNumber}`;
   const shortCommit = input.targetCommit.slice(0, 8);
   const date = input.checkedAt ?? new Date().toISOString().slice(0, 10);
@@ -59,7 +72,7 @@ function assembleCard(
   const upstreamLine = `**上游**: [${input.sourceProjectId}#${input.prNumber}](${prUrl}) — ${input.prTitle}`;
   const affectsLine = `**影响**: ${input.targetProjectId} @ \`${shortCommit}\``;
   const evidenceMd = buildEvidenceMarkdown(evidence);
-  const footerLine = `confidence: ${input.verdict.confidence} · evidence: ${input.verdict.evidenceKind} · check #${input.checkId} · ${date}`;
+  const footerLine = `severity: ${input.verdict.severity} · confidence: ${input.verdict.confidence} · evidence: ${input.verdict.evidenceKind} · check #${input.checkId} · ${date}`;
 
   const elements: LarkElement[] = [
     { tag: "markdown", content: `${upstreamLine}\n${affectsLine}` },
@@ -80,8 +93,11 @@ function assembleCard(
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: "plain_text", content: `🚨 Mantle 影响告警: ${impactLabel}` },
-      template: "red",
+      title: {
+        tag: "plain_text",
+        content: `${severityHeader.label} Mantle 影响告警: ${impactLabel}`,
+      },
+      template: severityHeader.template,
     },
     elements,
   };
@@ -89,13 +105,19 @@ function assembleCard(
 
 /**
  * Renders a Lark alert card JSON string for an impact check result.
- * Returns null if the check does not meet the alert threshold
- * (affected=yes && confidence=high).
+ * Returns null if the check does not meet the alert threshold:
+ * affected=yes && confidence=high && severity ∈ {critical, high}.
+ * Sub-threshold findings (severity medium/low) are intentionally NOT pushed —
+ * they are persisted and surfaced in the daily/weekly digest instead.
  * If the rendered JSON exceeds 20 KB, evidence is trimmed to the first
  * two items to stay safely below Lark's 30 KB card limit.
  */
 export function renderAlertCard(input: AlertCardInput): string | null {
-  if (input.verdict.affected !== "yes" || input.verdict.confidence !== "high") {
+  if (
+    input.verdict.affected !== "yes" ||
+    input.verdict.confidence !== "high" ||
+    !ALERTABLE_SEVERITIES.has(input.verdict.severity)
+  ) {
     return null;
   }
 

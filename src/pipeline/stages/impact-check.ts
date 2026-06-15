@@ -119,6 +119,7 @@ function writeVerdictSuccess(
     UPDATE impact_checks SET
       status = 'complete',
       affected = ?,
+      severity = ?,
       impact_type = ?,
       evidence_kind = ?,
       evidence = ?,
@@ -134,6 +135,7 @@ function writeVerdictSuccess(
     WHERE id = ?
   `).run(
     verdict.affected,
+    verdict.severity,
     verdict.impactType,
     verdict.evidenceKind,
     JSON.stringify(verdict.evidence),
