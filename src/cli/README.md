@@ -69,12 +69,14 @@ bun run cli -- project list --date 2026-06-09
 bun run cli -- config show
 bun run cli -- config show projects
 bun run cli -- config show budget
+bun run cli -- config show impact-check
 bun run cli -- budget
 bun run cli -- budget --month 2026-06
 ```
 
 - `project list --date` 会按项目补充当天 PR 和分析状态计数。
 - `config show` 会隐藏敏感值，只显示对应环境变量是否已设置。
+- `config show impact-check` 会显示当前生效的 Impact Checker 开关、配额、子预算和 clone/codegraph 参数。
 - `budget` 会显示目标月份的 LLM token、估算成本、预算余量和当前动作建议。
 
 ### 3. 手动触发 pipeline
@@ -224,7 +226,7 @@ bun run cli -- --db /tmp/monitor-copy.db report mark-delivery daily --date 2026-
 | `backfill` | `--since`, `--until`, `--allow-partial` | 会写回填结果，不发送 Lark。 |
 | `db status` | `--date`, `--week-date`, `--json` | 否。 |
 | `project list` | `--date`, `--json` | 否。 |
-| `config show` | `projects`, `budget`, `--json` | 否。 |
+| `config show` | `projects`, `budget`, `impact-check`, `--json` | 否。 |
 | `budget` | `--month`, `--json` | 否。 |
 | `export audit` | `--since`, `--until`, `--output` | 写导出文件，不改数据库。 |
 

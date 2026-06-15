@@ -14,13 +14,13 @@ interface ClosableDatabase {
   close: () => unknown;
 }
 
-function applyPragmas(database: Database): void {
+export function applyPragmas(database: Database): void {
+  database.exec("PRAGMA busy_timeout=5000");
   database.exec("PRAGMA journal_mode=WAL");
   database.exec("PRAGMA foreign_keys=ON");
   database.exec("PRAGMA temp_store=MEMORY");
   database.exec("PRAGMA cache_size=-64000");
   database.exec("PRAGMA mmap_size=268435456");
-  database.exec("PRAGMA busy_timeout=5000");
 }
 
 function runMigrations(database: Database): void {

@@ -12,6 +12,9 @@ import { getCheckInstructions } from "./strategies";
 
 const PROMPT_VERSION = "v1.0-fork-forensic";
 const AUDIT_DIR = "data/impact-checks";
+const VERDICT_INVESTIGATION_TEXT_LIMIT = 12000;
+const VERDICT_TRACE_RESULT_LIMIT = 1200;
+const VERDICT_TRACE_TOTAL_LIMIT = 12000;
 
 // Cost estimates matching llm-reviewer.ts (claude-sonnet-4-6)
 const INPUT_COST_PER_TOKEN = 3 / 1_000_000;
@@ -174,8 +177,20 @@ function verifyEvidence(
 
   const failures: string[] = [];
 
+  if (verdict.evidence.length === 0) {
+    failures.push("code_evidence verdict has no evidence entries");
+  }
+
   for (const ev of verdict.evidence) {
-    if (!ev.file) continue;
+    if (!ev.file.trim()) {
+      failures.push("code_evidence entry is missing file path");
+      continue;
+    }
+
+    if (!ev.snippet.trim()) {
+      failures.push(`code_evidence entry for '${ev.file}' is missing snippet`);
+      continue;
+    }
 
     // Fence evidence paths to the clone directory to prevent the LLM from
     // citing files outside the repo (e.g. "../escape.ts" or symlinked paths).
@@ -218,6 +233,26 @@ function verifyEvidence(
   return { verified: failures.length === 0, failures };
 }
 
+function recommendsNoTargetAction(verdict: Verdict): boolean {
+  const text = `${verdict.summary}\n${verdict.recommendedAction}`.toLowerCase();
+  const explicitNoChange =
+    /\bno action needed\b/.test(text) ||
+    /\bno operator action\b/.test(text) ||
+    /\boperators should not need\b/.test(text) ||
+    /\bmust remain unchanged\b/.test(text) ||
+    /\bshould remain\b/.test(text) ||
+    /\bcorrect default\b/.test(text) ||
+    /\bcorrect behavior\b/.test(text) ||
+    /\bleave (the )?fork unchanged\b/.test(text);
+
+  const forbidAdoption =
+    /\bdo not (cherry-pick|apply|adopt)\b/.test(text) ||
+    /\bdon't (cherry-pick|apply|adopt)\b/.test(text) ||
+    /\bshould not be (cherry-picked|applied|adopted)\b/.test(text);
+
+  return explicitNoChange || (forbidAdoption && /\b(no|not) (target|operator|configuration) action\b/.test(text));
+}
+
 function writeAuditEntry(auditPath: string, entry: object): void {
   try {
     appendFileSync(auditPath, JSON.stringify(entry) + "\n", "utf-8");
@@ -226,6 +261,45 @@ function writeAuditEntry(auditPath: string, entry: object): void {
       `[checker] Failed to write audit entry: ${err instanceof Error ? err.message : String(err)}`
     );
   }
+}
+
+function stringifyForPrompt(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value ?? {});
+  } catch {
+    return String(value);
+  }
+}
+
+function clipForPrompt(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}\n[truncated]` : value;
+}
+
+function compactTraceForPrompt(stepTrace: object[]): string {
+  if (stepTrace.length === 0) return "(no tool steps recorded)";
+
+  return clipForPrompt(
+    stepTrace
+    .map((entry, idx) => {
+      const step = entry as {
+        toolCalls?: Array<{ toolName?: string; input?: unknown }>;
+        toolResults?: Array<{ toolName?: string; output?: unknown }>;
+      };
+      const calls = (step.toolCalls ?? [])
+        .map((call) => `${call.toolName ?? "tool"} ${stringifyForPrompt(call.input)}`)
+        .join("; ");
+      const results = (step.toolResults ?? [])
+        .map(
+          (result) =>
+            `${result.toolName ?? "tool"} => ${clipForPrompt(stringifyForPrompt(result.output), VERDICT_TRACE_RESULT_LIMIT)}`
+        )
+        .join("; ");
+      return `Step ${idx}: calls=[${calls || "none"}]\nresults=[${results || "none"}]`;
+    })
+      .join("\n\n"),
+    VERDICT_TRACE_TOTAL_LIMIT
+  );
 }
 
 export async function runImpactCheck(
@@ -277,6 +351,7 @@ export async function runImpactCheck(
   let toolSteps = 0;
   let truncatedByStepCount = false;
   let truncatedByCost = false;
+  let investigationText = "";
 
   // Phase 1: Agentic step loop
   const stepTrace: object[] = [];
@@ -334,6 +409,7 @@ export async function runImpactCheck(
     if (textResult.steps && textResult.steps.length >= maxSteps) {
       truncatedByStepCount = true;
     }
+    investigationText = textResult.text ?? "";
 
     // Update token totals from the complete result (may include final step)
     totalInputTokens = textResult.usage?.inputTokens ?? totalInputTokens;
@@ -358,6 +434,13 @@ export async function runImpactCheck(
   const verdictSystemPrompt = forcedUncertain
     ? `${systemPrompt}\n\n⚠️ IMPORTANT: The investigation was cut short (${truncatedByCost ? "cost limit reached" : "step limit reached"}). You MUST produce verdict with affected="uncertain". Set confidence to "low".`
     : systemPrompt;
+  const compactInvestigationText = investigationText
+    ? clipForPrompt(investigationText, VERDICT_INVESTIGATION_TEXT_LIMIT)
+    : "(empty)";
+  const compactToolTrace = compactTraceForPrompt(stepTrace);
+  const verdictPrompt = forcedUncertain
+    ? `The investigation was cut short. Produce an uncertain verdict based on what was found so far. Set affected="uncertain".\n\nAgent investigation text:\n${compactInvestigationText}\n\nTool trace:\n${compactToolTrace}`
+    : `Based on the investigation below, produce the final structured verdict with all evidence.\n\nAgent investigation text:\n${compactInvestigationText}\n\nTool trace:\n${compactToolTrace}`;
 
   let rawVerdict: Verdict;
 
@@ -367,9 +450,7 @@ export async function runImpactCheck(
         model: anthropic(settings.llm.model),
         schema: VerdictSchema,
         system: verdictSystemPrompt,
-        prompt: forcedUncertain
-          ? 'The investigation was cut short. Produce an uncertain verdict based on what was found so far. Set affected="uncertain".'
-          : "Based on your investigation above, produce the final structured verdict with all evidence.",
+        prompt: verdictPrompt,
         maxRetries: 0,
       })
     );
@@ -401,7 +482,7 @@ export async function runImpactCheck(
   // Force uncertain if truncated
   if (forcedUncertain) {
     rawVerdict.affected = "uncertain";
-    if (rawVerdict.confidence === "high") rawVerdict.confidence = "medium";
+    rawVerdict.confidence = "low";
   }
 
   // Diff unavailable → cap confidence at medium
@@ -417,9 +498,20 @@ export async function runImpactCheck(
     rawVerdict.confidence = "medium";
   }
 
+  // A high-confidence alert should imply a target-side action is needed.
+  // If the structured verdict says the correct action is explicitly to leave
+  // the fork unchanged, keep the result for reports but prevent alerting.
+  if (
+    rawVerdict.affected === "yes" &&
+    rawVerdict.confidence === "high" &&
+    recommendsNoTargetAction(rawVerdict)
+  ) {
+    rawVerdict.confidence = "medium";
+  }
+
   // Evidence verification for code_evidence
   let evidenceVerificationFailed = false;
-  if (rawVerdict.evidenceKind === "code_evidence" && rawVerdict.evidence.length > 0) {
+  if (rawVerdict.evidenceKind === "code_evidence") {
     const { verified, failures } = verifyEvidence(rawVerdict, input.cloneState.cloneDir);
     if (!verified) {
       evidenceVerificationFailed = true;

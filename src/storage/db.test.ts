@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { closeDatabaseHandle } from "./db";
+import { applyPragmas, closeDatabaseHandle } from "./db";
 import { MIGRATION_001, MIGRATION_002, MIGRATION_003, MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007 } from "./schema";
 import { syncSubscriptionProjects } from "../config/projects";
 import type { TrackedProject } from "../config/projects";
@@ -861,5 +861,21 @@ describe("closeDatabaseHandle", () => {
 
     expect(() => closeDatabaseHandle(database)).not.toThrow();
     expect(calls).toEqual(["fileControl", "PRAGMA wal_checkpoint(TRUNCATE)", "close"]);
+  });
+});
+
+describe("applyPragmas", () => {
+  it("sets busy_timeout before WAL so concurrent startup waits instead of failing fast", () => {
+    const calls: string[] = [];
+    const database = {
+      exec: (sql: string) => {
+        calls.push(sql);
+      },
+    } as unknown as Database;
+
+    applyPragmas(database);
+
+    expect(calls[0]).toBe("PRAGMA busy_timeout=5000");
+    expect(calls.indexOf("PRAGMA busy_timeout=5000")).toBeLessThan(calls.indexOf("PRAGMA journal_mode=WAL"));
   });
 });

@@ -26,7 +26,7 @@
   },
   "impactCheck": {
     "enabled": false,
-    "maxChecksPerDay": 5,
+    "maxChecksPerDay": 40,
     "maxStepsPerCheck": 12,
     "maxCostPerCheck": 1.0,
     "monthlySubCap": 50,

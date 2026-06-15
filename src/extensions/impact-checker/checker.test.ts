@@ -183,6 +183,46 @@ describe("runImpactCheck — confidence cap enforcement", () => {
     expect(verdict.confidence).toBe("high");
     expect(verdict.evidenceVerificationFailed).toBe(false);
   });
+
+  it("demotes high confidence when the recommendation says no target action is needed", async () => {
+    const { runImpactCheck } = await import("./checker");
+    const noActionVerdict = {
+      ...GOOD_VERDICT,
+      impactType: "behavior_change",
+      confidence: "high",
+      summary:
+        "The fork intentionally keeps the current default because the upstream default does not apply.",
+      recommendedAction:
+        "Do NOT cherry-pick this upstream change. The current default must remain unchanged, and operators should not need to change their configurations.",
+    };
+
+    const verdict = await runImpactCheck(makeInput(), {
+      settings: FAKE_SETTINGS as any,
+      generateTextFn: makeFakeGenerateText() as any,
+      generateObjectFn: makeFakeGenerateObject(noActionVerdict) as any,
+    });
+
+    expect(verdict.confidence).toBe("medium");
+  });
+
+  it("keeps high confidence when the recommendation says to manually port a fix", async () => {
+    const { runImpactCheck } = await import("./checker");
+    const manualPortVerdict = {
+      ...GOOD_VERDICT,
+      confidence: "high",
+      summary: "The current default still exposes the fork to the upstream bug.",
+      recommendedAction:
+        "Do NOT cherry-pick directly. Manually port the upstream fix to the fork-specific implementation.",
+    };
+
+    const verdict = await runImpactCheck(makeInput(), {
+      settings: FAKE_SETTINGS as any,
+      generateTextFn: makeFakeGenerateText() as any,
+      generateObjectFn: makeFakeGenerateObject(manualPortVerdict) as any,
+    });
+
+    expect(verdict.confidence).toBe("high");
+  });
 });
 
 // ─── Evidence verification failure ────────────────────────────────────────────
@@ -254,6 +294,49 @@ describe("runImpactCheck — evidence verification", () => {
       settings: FAKE_SETTINGS as any,
       generateTextFn: makeFakeGenerateText() as any,
       generateObjectFn: makeFakeGenerateObject(escapingPathVerdict) as any,
+    });
+
+    expect(verdict.confidence).toBe("low");
+    expect(verdict.evidenceVerificationFailed).toBe(true);
+  });
+
+  it("sets confidence to low when code evidence contains an empty file or snippet", async () => {
+    const { runImpactCheck } = await import("./checker");
+    const emptyEvidenceVerdict = {
+      ...GOOD_VERDICT,
+      evidence: [
+        {
+          file: "",
+          lines: "",
+          snippet: "",
+          note: "negative grep result, not code evidence",
+        },
+      ],
+    };
+
+    const verdict = await runImpactCheck(makeInput(), {
+      settings: FAKE_SETTINGS as any,
+      generateTextFn: makeFakeGenerateText() as any,
+      generateObjectFn: makeFakeGenerateObject(emptyEvidenceVerdict) as any,
+    });
+
+    expect(verdict.confidence).toBe("low");
+    expect(verdict.evidenceVerificationFailed).toBe(true);
+  });
+
+  it("sets confidence to low when code evidence has no entries", async () => {
+    const { runImpactCheck } = await import("./checker");
+    const noEvidenceVerdict = {
+      ...GOOD_VERDICT,
+      evidenceKind: "code_evidence",
+      evidence: [],
+      confidence: "high",
+    };
+
+    const verdict = await runImpactCheck(makeInput(), {
+      settings: FAKE_SETTINGS as any,
+      generateTextFn: makeFakeGenerateText() as any,
+      generateObjectFn: makeFakeGenerateObject(noEvidenceVerdict) as any,
     });
 
     expect(verdict.confidence).toBe("low");
@@ -384,6 +467,112 @@ describe("runImpactCheck — step count limit", () => {
 
     expect(verdict.truncatedByStepCount).toBe(true);
     expect(verdict.affected).toBe("uncertain");
+  });
+
+  it("forces low confidence when maxSteps is reached", async () => {
+    const { runImpactCheck } = await import("./checker");
+
+    const stepLimitedGenerateText = mock(async (_opts: any) => {
+      const steps = Array.from({ length: 3 }, (_, i) => ({
+        stepNumber: i,
+        toolCalls: [],
+        toolResults: [],
+        usage: { inputTokens: 100, outputTokens: 50 },
+      }));
+      if (_opts.onStepFinish) {
+        for (const s of steps) await _opts.onStepFinish(s);
+      }
+      return {
+        text: "Investigation cut short with partial evidence.",
+        steps,
+        usage: { inputTokens: 300, outputTokens: 150 },
+      };
+    });
+
+    const mediumConfidenceVerdict = {
+      ...GOOD_VERDICT,
+      affected: "no",
+      confidence: "medium",
+    };
+
+    const verdict = await runImpactCheck(makeInput(), {
+      settings: FAKE_SETTINGS as any,
+      generateTextFn: stepLimitedGenerateText as any,
+      generateObjectFn: makeFakeGenerateObject(mediumConfidenceVerdict) as any,
+    });
+
+    expect(verdict.truncatedByStepCount).toBe(true);
+    expect(verdict.affected).toBe("uncertain");
+    expect(verdict.confidence).toBe("low");
+  });
+});
+
+// ─── Structured verdict receives investigation context ───────────────────────
+
+describe("runImpactCheck — verdict synthesis context", () => {
+  it("passes the agent investigation text and tool trace into generateObject", async () => {
+    const { runImpactCheck } = await import("./checker");
+    const seenPrompts: string[] = [];
+
+    const generateTextWithEvidence = mock(async (_opts: any) => {
+      const step = {
+        stepNumber: 0,
+        toolCalls: [
+          { toolName: "grep_repo", input: { pattern: "operator_fee" } },
+        ],
+        toolResults: [
+          {
+            toolName: "grep_repo",
+            output: {
+              matches:
+                "mantle-reth/crates/rpc-ext/src/lib.rs:442: // Operator fee: gas * scalar * 100 + constant",
+            },
+          },
+        ],
+        usage: { inputTokens: 100, outputTokens: 50 },
+      };
+      if (_opts.onStepFinish) await _opts.onStepFinish(step);
+      return {
+        text:
+          "Found Mantle Rust operator fee formula in mantle-reth/crates/rpc-ext/src/lib.rs.",
+        steps: [step],
+        usage: { inputTokens: 100, outputTokens: 50 },
+      };
+    });
+
+    const generateObjectCapturingPrompt = mock(async (_opts: any) => {
+      seenPrompts.push(String(_opts.prompt));
+      return {
+        object: {
+          affected: "yes",
+          impactType: "bug_also_present",
+          evidenceKind: "code_evidence",
+          evidence: [
+            {
+              file: "src/parser.ts",
+              lines: "10-15",
+              snippet: "vulnerable_function_content",
+              note: "valid fixture evidence",
+            },
+          ],
+          confidence: "high",
+          summary: "Valid fixture verdict.",
+          recommendedAction: "Apply upstream patch.",
+        },
+        usage: { inputTokens: 200, outputTokens: 100 },
+      };
+    });
+
+    await runImpactCheck(makeInput(), {
+      settings: FAKE_SETTINGS as any,
+      generateTextFn: generateTextWithEvidence as any,
+      generateObjectFn: generateObjectCapturingPrompt as any,
+    });
+
+    expect(seenPrompts[0]).toContain("Found Mantle Rust operator fee formula");
+    expect(seenPrompts[0]).toContain("grep_repo");
+    expect(seenPrompts[0]).toContain("operator_fee");
+    expect(seenPrompts[0]).toContain("Operator fee: gas * scalar * 100 + constant");
   });
 });
 
