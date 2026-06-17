@@ -21,5 +21,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["data", "node_modules", ".worktrees", "worktrees", "dist", "out"]
 }
