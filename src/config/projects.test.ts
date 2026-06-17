@@ -46,7 +46,7 @@ describe("getTrackedProjects", () => {
     const { getTrackedProjects } = await import("./projects.ts");
     const ps = getTrackedProjects();
     const keys = ps.map((p) => `${p.org}/${p.repo}`);
-    expect(keys).toContain("ethereum/go-ethereum");
+    expect(keys).toContain("base/base");
     expect(keys).toContain("ethereum-optimism/optimism");
   });
 

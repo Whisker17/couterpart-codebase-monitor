@@ -6,6 +6,7 @@ import { register as registerHello } from "./extensions/hello/index.ts";
 import { registerScheduler } from "./scheduler/cron";
 import { startReadinessHeartbeat } from "./pipeline/runner";
 import { exportAnalyses } from "./utils/audit-export";
+import { runStartupBackfillIfNeeded } from "./startup/backfill";
 
 function buildModel() {
   const baseModel = getModel("anthropic", "claude-sonnet-4-20250514");
@@ -51,6 +52,7 @@ async function main() {
 
   validateEnv();
   getDb();
+  await runStartupBackfillIfNeeded();
 
   const model = buildModel();
   const agent = new Agent({
