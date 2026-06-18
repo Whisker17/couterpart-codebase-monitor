@@ -233,10 +233,27 @@ describe("fetchMergedPRs", () => {
     expect(pr.changed_files).toBe(0);
   });
 
-  it("throws RepoNotFoundError on 404", async () => {
-    mockPullsList.mockRejectedValueOnce(makeNotFoundError());
+  it("retries a transient 404 then succeeds", async () => {
+    installFakeTimers();
+    mockPullsList
+      .mockRejectedValueOnce(makeNotFoundError())
+      .mockResolvedValueOnce({ data: [] });
+
+    const result = await fetchMergedPRs("org", "repo", new Date());
+    expect(result).toHaveLength(0);
+    expect(mockPullsList.mock.calls).toHaveLength(2);
+  });
+
+  it("throws RepoNotFoundError after exhausting 404 retries", async () => {
+    installFakeTimers();
+    mockPullsList
+      .mockRejectedValueOnce(makeNotFoundError())
+      .mockRejectedValueOnce(makeNotFoundError())
+      .mockRejectedValueOnce(makeNotFoundError());
 
     await expect(fetchMergedPRs("myorg", "myrepo", new Date())).rejects.toThrow(RepoNotFoundError);
+    // 1 initial + 2 retries = 3 attempts
+    expect(mockPullsList.mock.calls).toHaveLength(3);
   });
 
   it("retries and succeeds after rate limit 403", async () => {
@@ -299,9 +316,14 @@ describe("fetchRepoMetadata", () => {
     expect(meta.topics).toEqual([]);
   });
 
-  it("throws RepoNotFoundError on 404", async () => {
-    mockReposGet.mockRejectedValueOnce(makeNotFoundError());
+  it("throws RepoNotFoundError after exhausting 404 retries", async () => {
+    installFakeTimers();
+    mockReposGet
+      .mockRejectedValueOnce(makeNotFoundError())
+      .mockRejectedValueOnce(makeNotFoundError())
+      .mockRejectedValueOnce(makeNotFoundError());
     await expect(fetchRepoMetadata("org", "deleted-repo")).rejects.toThrow(RepoNotFoundError);
+    expect(mockReposGet.mock.calls).toHaveLength(3);
   });
 });
 

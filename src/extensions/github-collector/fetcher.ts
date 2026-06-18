@@ -58,6 +58,11 @@ async function waitForRateLimitReset(err: RequestError): Promise<void> {
 }
 
 const MAX_GITHUB_RETRIES = 3;
+// A 404 is usually terminal (deleted / renamed / inaccessible repo), but GitHub
+// intermittently returns 404 for a valid repo under load or replication lag.
+// Retry a bounded number of times before declaring the repo gone, so a single
+// transient 404 doesn't deactivate a tracked repo for the whole run.
+const MAX_NOT_FOUND_RETRIES = 2;
 
 async function withGitHubRetry<T>(
   fn: () => Promise<T>,
@@ -71,7 +76,17 @@ async function withGitHubRetry<T>(
       return await fn();
     } catch (err) {
       if (!(err instanceof RequestError)) throw err;
-      if (err.status === 404) throw new RepoNotFoundError(org, repo);
+
+      if (err.status === 404) {
+        lastError = new RepoNotFoundError(org, repo);
+        if (attempt >= MAX_NOT_FOUND_RETRIES) break;
+        const delay = 1_000 * (attempt + 1);
+        console.warn(
+          `[GitHub] ${org}/${repo}: 404 (attempt ${attempt + 1}/${MAX_NOT_FOUND_RETRIES + 1}); retrying in ${delay}ms in case it is a transient 404...`
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
 
       lastError = err;
       if (attempt === MAX_GITHUB_RETRIES) break;
