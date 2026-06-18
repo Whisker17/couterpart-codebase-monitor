@@ -1,4 +1,4 @@
-function getLocalDateParts(
+export function getLocalDateParts(
   timezone: string,
   date: Date
 ): { year: number; month: number; day: number } {
@@ -107,6 +107,17 @@ export function getDayPeriod(
     startUnix: Math.floor(startMs / 1000),
     endUnix: Math.floor(endMs / 1000),
   };
+}
+
+export function enumerateDays(since: string, until: string): string[] {
+  const days: string[] = [];
+  const current = new Date(`${since}T00:00:00Z`);
+  const end = new Date(`${until}T00:00:00Z`);
+  while (current <= end) {
+    days.push(current.toISOString().slice(0, 10));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return days;
 }
 
 export function getMonthPeriod(

@@ -23,5 +23,11 @@
     "monthlyCap": 80,
     "warningThreshold": 0.8,
     "cutoffThreshold": 1.0
+  },
+  "startup": {
+    "backfill": {
+      "enabled": true,
+      "range": "last7"
+    }
   }
 }

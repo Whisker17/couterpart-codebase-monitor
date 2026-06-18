@@ -49,9 +49,25 @@ const DEFAULT_HEALTH_PATH = "data/health.json";
 const DEFAULT_READINESS_PATH = "data/readiness.json";
 const CONSECUTIVE_FAILURE_THRESHOLD = 3;
 const READINESS_HEARTBEAT_MS = 30_000;
+let pipelineLock: Promise<void> = Promise.resolve();
 
 function dirname(path: string): string {
   return path.includes("/") ? path.split("/").slice(0, -1).join("/") : ".";
+}
+
+export async function runWithPipelineLock<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = pipelineLock;
+  let release!: () => void;
+  pipelineLock = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
 }
 
 export async function writeReadiness(readinessPath = DEFAULT_READINESS_PATH): Promise<void> {
@@ -198,6 +214,19 @@ function logConfigReloadDiff(
 }
 
 export async function runPipeline(
+  stages: PipelineStage[],
+  options?: {
+    reportMode?: ReportMode;
+    timezone?: string;
+    monthlyMonth?: string;
+    skipDailyReport?: boolean;
+    healthCheckOptions?: HealthCheckOptions;
+  }
+): Promise<Map<string, StageResult>> {
+  return runWithPipelineLock(() => runPipelineUnlocked(stages, options));
+}
+
+async function runPipelineUnlocked(
   stages: PipelineStage[],
   options?: {
     reportMode?: ReportMode;

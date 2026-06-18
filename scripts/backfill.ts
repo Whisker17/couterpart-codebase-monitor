@@ -7,7 +7,7 @@
  */
 import { getSettings } from "../src/config/settings";
 import { getDb, closeDb } from "../src/storage/db";
-import { getDayPeriod } from "../src/utils/time-window";
+import { enumerateDays, getDayPeriod } from "../src/utils/time-window";
 import { execute as collectExecute, type CollectDeps } from "../src/pipeline/stages/collect";
 import type { CollectOptions } from "../src/pipeline/stages/collect";
 import { execute as analyzeExecute } from "../src/pipeline/stages/analyze";
@@ -36,6 +36,10 @@ export interface DaySummary {
 export interface BackfillResult {
   days: DaySummary[];
   anySkipped: boolean;
+}
+
+export interface BackfillRunOptions {
+  resetAnalysisStatus?: boolean;
 }
 
 export interface BackfillDeps {
@@ -76,17 +80,6 @@ function makeProductionDeps(): BackfillDeps {
     buildDailyPromptCard,
     writeReportFile,
   };
-}
-
-function enumerateDays(since: string, until: string): string[] {
-  const days: string[] = [];
-  const current = new Date(since + "T00:00:00Z");
-  const end = new Date(until + "T00:00:00Z");
-  while (current <= end) {
-    days.push(current.toISOString().slice(0, 10));
-    current.setUTCDate(current.getUTCDate() + 1);
-  }
-  return days;
 }
 
 function nullifyDayReports(db: Database, days: string[], timezone: string): void {
@@ -157,9 +150,11 @@ export async function runBackfill(
   since: string,
   until: string,
   allowPartial: boolean,
-  deps: BackfillDeps
+  deps: BackfillDeps,
+  options: BackfillRunOptions = {}
 ): Promise<BackfillResult> {
   const { timezone, db } = deps;
+  const resetAnalysisStatus = options.resetAnalysisStatus ?? true;
   const days = enumerateDays(since, until);
 
   if (days.length === 0) {
@@ -226,13 +221,15 @@ export async function runBackfill(
 
   // Phase 2: Reset failed/budget_skipped PRs + Analyze
   console.log("[Backfill] Phase 2: Reset + Analyze");
-  db.run(
-    `UPDATE pull_requests
-     SET analysis_status = 'pending', retry_count = 0
-     WHERE merged_at >= ? AND merged_at <= ?
-       AND analysis_status IN ('failed', 'budget_skipped')`,
-    [rangeStartUnix, rangeEndUnix]
-  );
+  if (resetAnalysisStatus) {
+    db.run(
+      `UPDATE pull_requests
+       SET analysis_status = 'pending', retry_count = 0
+       WHERE merged_at >= ? AND merged_at <= ?
+         AND analysis_status IN ('failed', 'budget_skipped')`,
+      [rangeStartUnix, rangeEndUnix]
+    );
+  }
 
   try {
     const analyzeResult = await deps.analyzeExecute(ctx, {

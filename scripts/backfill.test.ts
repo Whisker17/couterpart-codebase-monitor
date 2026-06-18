@@ -239,6 +239,36 @@ describe("backfill script", () => {
     expect(pr3.retry_count).toBe(1);
   });
 
+  it("can preserve failed retry_count during automatic backfill retries", async () => {
+    testDb.run(
+      `INSERT INTO pull_requests (project_id, pr_number, title, merged_at, analysis_status, retry_count)
+       VALUES ('org/repo', 1, 'Still failing PR', ${DAY_MID}, 'failed', 2)`
+    );
+
+    await runBackfill(
+      DAY,
+      DAY,
+      true,
+      makeTestDeps(testDb, {
+        analyzeExecute: async (): Promise<StageResult> => {
+          testDb.run(
+            "UPDATE pull_requests SET analysis_status = 'failed', retry_count = retry_count + 1 WHERE pr_number = 1"
+          );
+          return { success: false, itemsProcessed: 1, errors: ["LLM failed"], durationMs: 0 };
+        },
+      }),
+      { resetAnalysisStatus: false }
+    );
+
+    const pr = testDb
+      .query<{ analysis_status: string; retry_count: number }, []>(
+        "SELECT analysis_status, retry_count FROM pull_requests WHERE pr_number = 1"
+      )
+      .get()!;
+    expect(pr.analysis_status).toBe("failed");
+    expect(pr.retry_count).toBe(3);
+  });
+
   // --- Partial NULL digest ---
 
   it("writes NULL digest_json when allow-partial and day has incomplete PRs", async () => {

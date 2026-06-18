@@ -7,6 +7,8 @@ import { registerScheduler } from "./scheduler/cron";
 import { startReadinessHeartbeat } from "./pipeline/runner";
 import { exportAnalyses } from "./utils/audit-export";
 import { runStartupBackfillIfNeeded } from "./startup/backfill";
+import { runAppStartup } from "./startup/app";
+import type { StartupAgent } from "./startup/app";
 
 function buildModel() {
   const baseModel = getModel("anthropic", "claude-sonnet-4-20250514");
@@ -50,37 +52,22 @@ async function main() {
     return runExportAudit();
   }
 
-  validateEnv();
-  getDb();
-  await runStartupBackfillIfNeeded();
-
-  const model = buildModel();
-  const agent = new Agent({
-    initialState: { model, systemPrompt: "Counterpart Monitor agent." },
-    getApiKey: () =>
-      process.env.LLM_BASE_URL && process.env.LLM_API_KEY ? process.env.LLM_API_KEY : undefined,
+  await runAppStartup({
+    validateEnv,
+    getDb,
+    runStartupBackfillIfNeeded,
+    buildModel,
+    createAgent: (model) =>
+      new Agent({
+        initialState: { model, systemPrompt: "Counterpart Monitor agent." },
+        getApiKey: () =>
+          process.env.LLM_BASE_URL && process.env.LLM_API_KEY ? process.env.LLM_API_KEY : undefined,
+      }) as StartupAgent,
+    registerHello: (agent) => registerHello(agent as unknown as Agent),
+    startReadinessHeartbeat,
+    registerScheduler,
+    log: console.log,
   });
-
-  // Load extensions. Each extension receives the agent and registers its tools.
-  registerHello(agent);
-  registerHello(agent); // second call must not duplicate tools (hot-reload idempotency check)
-  if (agent.state.tools.filter((t) => t.name === "hello-world").length !== 1) {
-    throw new Error("register() idempotency check failed: duplicate tool entries");
-  }
-
-  console.log("pi-agent initialized. Registered tools:", agent.state.tools.map((t) => t.name));
-
-  // Validate hello-world tool by calling its execute function directly.
-  const helloTool = agent.state.tools.find((t) => t.name === "hello-world");
-  if (!helloTool) throw new Error("hello-world tool not registered");
-
-  const result = await helloTool.execute("validate-0", {}, undefined, undefined);
-  console.log("hello-world result:", result.details);
-
-  console.log("Session ready. Hot-reload: modify a handler and re-register the extension to pick up changes.");
-
-  await startReadinessHeartbeat();
-  registerScheduler();
 }
 
 main().catch((err) => {

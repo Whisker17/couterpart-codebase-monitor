@@ -1,6 +1,9 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 
+export type StartupBackfillRangeMode = "last7" | "month";
+type StartupBackfillRangeConfigValue = StartupBackfillRangeMode | "week";
+
 interface SettingsConfig {
   llm: {
     model: string;
@@ -26,6 +29,12 @@ interface SettingsConfig {
     monthlyCap: number;
     warningThreshold: number;
     cutoffThreshold: number;
+  };
+  startup?: {
+    backfill?: {
+      enabled?: boolean;
+      range?: StartupBackfillRangeConfigValue;
+    };
   };
 }
 
@@ -54,6 +63,12 @@ export interface Settings {
     monthlyCap: number;
     warningThreshold: number;
     cutoffThreshold: number;
+  };
+  startup: {
+    backfill: {
+      enabled: boolean;
+      range: StartupBackfillRangeMode;
+    };
   };
 }
 
@@ -93,6 +108,25 @@ function validateSafeFields(cfg: SettingsConfig): void {
   if (typeof cfg.budget.cutoffThreshold !== "number") throw new Error("budget.cutoffThreshold must be a number");
   if (typeof cfg.llm.diffTokenBudget !== "number") throw new Error("llm.diffTokenBudget must be a number");
   if (typeof cfg.llm.maxManifestEntries !== "number") throw new Error("llm.maxManifestEntries must be a number");
+  const backfill = cfg.startup?.backfill;
+  if (backfill) {
+    if (backfill.enabled !== undefined && typeof backfill.enabled !== "boolean") {
+      throw new Error("startup.backfill.enabled must be a boolean");
+    }
+    if (
+      backfill.range !== undefined &&
+      backfill.range !== "last7" &&
+      backfill.range !== "month" &&
+      backfill.range !== "week"
+    ) {
+      throw new Error('startup.backfill.range must be "last7" or "month"');
+    }
+  }
+}
+
+function normalizeStartupBackfillRange(range: StartupBackfillRangeConfigValue | undefined): StartupBackfillRangeMode {
+  if (range === "month") return "month";
+  return "last7";
 }
 
 function buildSettingsFromConfig(cfg: SettingsConfig): Settings {
@@ -113,6 +147,12 @@ function buildSettingsFromConfig(cfg: SettingsConfig): Settings {
     },
     schedule: cfg.schedule,
     budget: cfg.budget,
+    startup: {
+      backfill: {
+        enabled: cfg.startup?.backfill?.enabled ?? false,
+        range: normalizeStartupBackfillRange(cfg.startup?.backfill?.range),
+      },
+    },
   };
 }
 

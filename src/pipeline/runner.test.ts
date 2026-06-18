@@ -131,6 +131,51 @@ describe("runPipeline", () => {
     await runPipeline([checkStage], { reportMode: "weekly" });
     expect(seenMode).toBe("weekly");
   });
+
+  it("serializes concurrent pipeline runs", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "pipeline-lock-test-"));
+    const events: string[] = [];
+    let releaseFirst!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      const firstStage: PipelineStage = {
+        name: "first",
+        execute: async () => {
+          events.push("first-start");
+          resolve();
+          await new Promise<void>((release) => {
+            releaseFirst = release;
+          });
+          events.push("first-end");
+          return { success: true, itemsProcessed: 1, errors: [], durationMs: 0 };
+        },
+      };
+      void runPipeline([firstStage], { healthCheckOptions: { healthJsonPath: join(tmpDir, "first.json") } });
+    });
+
+    try {
+      await firstStarted;
+      const secondStage: PipelineStage = {
+        name: "second",
+        execute: async () => {
+          events.push("second-start");
+          return { success: true, itemsProcessed: 1, errors: [], durationMs: 0 };
+        },
+      };
+      const secondRun = runPipeline([secondStage], {
+        healthCheckOptions: { healthJsonPath: join(tmpDir, "second.json") },
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(events).toEqual(["first-start"]);
+
+      releaseFirst();
+      await secondRun;
+      expect(events).toEqual(["first-start", "first-end", "second-start"]);
+    } finally {
+      releaseFirst?.();
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("writeHealthAndMaybeAlert", () => {

@@ -38,6 +38,8 @@ describe("getSettings", () => {
     expect(s.llm.maxTokensPerCall).toBe(4096);
     expect(s.budget.monthlyCap).toBe(80);
     expect(s.budget.warningThreshold).toBe(0.8);
+    expect(s.startup.backfill.enabled).toBe(true);
+    expect(s.startup.backfill.range).toBe("last7");
     expect(typeof s.schedule.dailyCron).toBe("string");
     expect(typeof s.schedule.weeklyCron).toBe("string");
     expect(typeof s.schedule.monthlyCron).toBe("string");
@@ -249,6 +251,40 @@ describe("reloadSafeConfig", () => {
     expect(s.github.token).toBe("ghp_test");
     expect(s.schedule.dailyCron).toBe("0 9 * * *");
     expect(s.schedule.monthlyCron).toBe("0 10 1 * *");
+    expect(s.startup.backfill.enabled).toBe(false);
+    expect(s.startup.backfill.range).toBe("last7");
+  });
+
+  it("cold start reads explicit startup backfill config", () => {
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({
+        ...baseConfig,
+        startup: { backfill: { enabled: true, range: "month" } },
+      })
+    );
+
+    reloadSafeConfig();
+
+    const s = getSettings();
+    expect(s.startup.backfill.enabled).toBe(true);
+    expect(s.startup.backfill.range).toBe("month");
+  });
+
+  it("cold start normalizes legacy week startup backfill range to last7", () => {
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({
+        ...baseConfig,
+        startup: { backfill: { enabled: true, range: "week" } },
+      })
+    );
+
+    reloadSafeConfig();
+
+    const s = getSettings();
+    expect(s.startup.backfill.enabled).toBe(true);
+    expect(s.startup.backfill.range).toBe("last7");
   });
 
   // Test 6: Unsafe fields unchanged on warm reload
@@ -330,5 +366,49 @@ describe("getSettings — validation path", () => {
       })
     );
     expect(() => getSettings()).toThrow("budget.monthlyCap must be a number");
+  });
+
+  it("throws when startup.backfill.enabled is not a boolean", () => {
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({
+        llm: {
+          model: "test-model",
+          baseUrlEnvVar: "LLM_BASE_URL",
+          apiKeyEnvVar: "LLM_API_KEY",
+          maxTokensPerCall: 4096,
+          diffTokenBudget: 8000,
+          maxManifestEntries: 100,
+        },
+        lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
+        github: { tokenEnvVar: "GITHUB_TOKEN" },
+        schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", monthlyCron: "0 10 1 * *", timezone: "UTC" },
+        budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
+        startup: { backfill: { enabled: "yes", range: "last7" } },
+      })
+    );
+    expect(() => getSettings()).toThrow("startup.backfill.enabled must be a boolean");
+  });
+
+  it("throws when startup.backfill.range is invalid", () => {
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({
+        llm: {
+          model: "test-model",
+          baseUrlEnvVar: "LLM_BASE_URL",
+          apiKeyEnvVar: "LLM_API_KEY",
+          maxTokensPerCall: 4096,
+          diffTokenBudget: 8000,
+          maxManifestEntries: 100,
+        },
+        lark: { webhookUrlEnvVar: "LARK_WEBHOOK_URL" },
+        github: { tokenEnvVar: "GITHUB_TOKEN" },
+        schedule: { dailyCron: "0 9 * * *", weeklyCron: "30 9 * * 1", monthlyCron: "0 10 1 * *", timezone: "UTC" },
+        budget: { monthlyCap: 80, warningThreshold: 0.8, cutoffThreshold: 1.0 },
+        startup: { backfill: { enabled: true, range: "current_week" } },
+      })
+    );
+    expect(() => getSettings()).toThrow('startup.backfill.range must be "last7" or "month"');
   });
 });
