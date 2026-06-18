@@ -197,6 +197,27 @@ describe("collect stage", () => {
     expect(result.failedProjects).toContain("org/repo");
   });
 
+  it("PullsUnavailableError sets inactive_reason = 'pulls_disabled' on the project row", async () => {
+    const { PullsUnavailableError } = await import("../../extensions/github-collector/fetcher");
+    testDb.run(`INSERT OR IGNORE INTO projects (id, org, repo, url) VALUES ('org/repo', 'org', 'repo', 'https://github.com/org/repo')`);
+
+    // Repo metadata resolves (repo is reachable), but listing PRs 404s.
+    mockFetchMergedPRs.mockImplementationOnce(async () => {
+      throw new PullsUnavailableError("org", "repo");
+    });
+
+    const result = await execute({ stageResults: new Map(), reportMode: "daily" as const }, makeDeps());
+
+    const row = testDb
+      .query<{ active: number; inactive_reason: string | null }, []>(
+        "SELECT active, inactive_reason FROM projects WHERE id = 'org/repo'"
+      )
+      .get();
+    expect(row!.active).toBe(0);
+    expect(row!.inactive_reason).toBe("pulls_disabled");
+    expect(result.failedProjects).toContain("org/repo");
+  });
+
   it("subscription fetch failure falls back to last successful SQLite snapshot", async () => {
     // resolveProjectSnapshot returns fallback (no syncResult) — collect succeeds
     const fallbackSnapshot: ProjectSnapshot = {

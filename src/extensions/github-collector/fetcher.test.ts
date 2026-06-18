@@ -50,9 +50,8 @@ mock.module("../../config/settings", () => ({
   getSettings: () => ({ github: { token: "test-token" } }),
 }));
 
-const { fetchMergedPRs, fetchRepoMetadata, fetchPRStats, RepoNotFoundError } = await import(
-  "./fetcher"
-);
+const { fetchMergedPRs, fetchRepoMetadata, fetchPRStats, RepoNotFoundError, PullsUnavailableError } =
+  await import("./fetcher");
 
 function makePR(overrides: {
   number: number;
@@ -233,27 +232,12 @@ describe("fetchMergedPRs", () => {
     expect(pr.changed_files).toBe(0);
   });
 
-  it("retries a transient 404 then succeeds", async () => {
-    installFakeTimers();
-    mockPullsList
-      .mockRejectedValueOnce(makeNotFoundError())
-      .mockResolvedValueOnce({ data: [] });
+  it("throws PullsUnavailableError on a pulls 404 without retrying", async () => {
+    // A 404 on the pulls endpoint means PRs are disabled — deterministic, so no retry.
+    mockPullsList.mockRejectedValueOnce(makeNotFoundError());
 
-    const result = await fetchMergedPRs("org", "repo", new Date());
-    expect(result).toHaveLength(0);
-    expect(mockPullsList.mock.calls).toHaveLength(2);
-  });
-
-  it("throws RepoNotFoundError after exhausting 404 retries", async () => {
-    installFakeTimers();
-    mockPullsList
-      .mockRejectedValueOnce(makeNotFoundError())
-      .mockRejectedValueOnce(makeNotFoundError())
-      .mockRejectedValueOnce(makeNotFoundError());
-
-    await expect(fetchMergedPRs("myorg", "myrepo", new Date())).rejects.toThrow(RepoNotFoundError);
-    // 1 initial + 2 retries = 3 attempts
-    expect(mockPullsList.mock.calls).toHaveLength(3);
+    await expect(fetchMergedPRs("myorg", "myrepo", new Date())).rejects.toThrow(PullsUnavailableError);
+    expect(mockPullsList.mock.calls).toHaveLength(1);
   });
 
   it("retries and succeeds after rate limit 403", async () => {
@@ -314,6 +298,17 @@ describe("fetchRepoMetadata", () => {
     expect(meta.description).toBeNull();
     expect(meta.language).toBeNull();
     expect(meta.topics).toEqual([]);
+  });
+
+  it("retries a transient 404 then succeeds", async () => {
+    installFakeTimers();
+    mockReposGet
+      .mockRejectedValueOnce(makeNotFoundError())
+      .mockResolvedValueOnce({ data: { description: null, language: null, topics: [] } });
+
+    const meta = await fetchRepoMetadata("org", "repo");
+    expect(meta.description).toBeNull();
+    expect(mockReposGet.mock.calls).toHaveLength(2);
   });
 
   it("throws RepoNotFoundError after exhausting 404 retries", async () => {

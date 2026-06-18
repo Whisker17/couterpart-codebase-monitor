@@ -1,7 +1,7 @@
 import type { PipelineContext, PipelineStage, StageResult } from "../runner";
 import { getDb } from "../../storage/db";
 import { resolveProjectSnapshot } from "../../config/projects";
-import { fetchMergedPRs, fetchRepoMetadata, fetchPRStats, RepoNotFoundError } from "../../extensions/github-collector/fetcher";
+import { fetchMergedPRs, fetchRepoMetadata, fetchPRStats, RepoNotFoundError, PullsUnavailableError } from "../../extensions/github-collector/fetcher";
 import { fetchAndStoreDiff } from "../../extensions/github-collector/diff-fetcher";
 import type { PRData, RepoMetadata, PRStats } from "../../extensions/github-collector/fetcher";
 import type { DiffResult } from "../../extensions/github-collector/diff-fetcher";
@@ -161,6 +161,13 @@ export async function execute(
         console.error(`[Collect] ALERT: ${err.message} — marking project inactive`);
         db.run(`UPDATE projects SET active = 0, inactive_reason = 'repo_not_found' WHERE id = ?`, [pid]);
         errors.push(`${pid}: repo not found (marked inactive)`);
+        failedProjects.push(pid);
+      } else if (err instanceof PullsUnavailableError) {
+        // Repo exists but exposes no PRs (pull requests disabled). Not an alert —
+        // there is simply nothing for a PR-based monitor to collect here.
+        console.warn(`[Collect] ${err.message} — marking project inactive (pulls_disabled)`);
+        db.run(`UPDATE projects SET active = 0, inactive_reason = 'pulls_disabled' WHERE id = ?`, [pid]);
+        errors.push(`${pid}: pull requests unavailable (marked inactive)`);
         failedProjects.push(pid);
       } else {
         const msg = `${pid}: ${err instanceof Error ? err.message : String(err)}`;

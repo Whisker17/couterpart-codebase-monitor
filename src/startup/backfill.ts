@@ -203,7 +203,9 @@ export async function runStartupBackfillIfNeeded(deps: StartupBackfillDeps = {})
   log.info(`[startup-backfill] Backfill needed (${rangeMode}) for ${range.since}..${range.until}: ${inspection.reasons.join(", ")}`);
 
   try {
-    const result = await (deps.runBackfill ?? runProductionBackfill)(range.since, range.until, false, {
+    // allowPartial: true — a few unreachable/PR-disabled repos must not abort
+    // analysis of everything else. Failed projects just make the day partial.
+    const result = await (deps.runBackfill ?? runProductionBackfill)(range.since, range.until, true, {
       resetAnalysisStatus: false,
     });
     if (result.anySkipped) {

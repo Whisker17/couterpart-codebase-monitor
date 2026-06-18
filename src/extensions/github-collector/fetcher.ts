@@ -36,6 +36,23 @@ export class RepoNotFoundError extends Error {
   }
 }
 
+// Distinct from RepoNotFoundError: the repository itself is reachable (repos.get
+// succeeds) but the pulls endpoint returns 404. GitHub does this when pull
+// requests are disabled on a repo (e.g. a public push-mirror). The repo is not
+// gone, it simply exposes no PRs — so there is nothing for a PR-based monitor to
+// collect, and retrying is pointless.
+export class PullsUnavailableError extends Error {
+  constructor(
+    public readonly org: string,
+    public readonly repo: string
+  ) {
+    super(
+      `Pull requests unavailable for ${org}/${repo} — the pulls endpoint returned 404 while the repository is reachable (pull requests are disabled on this repository)`
+    );
+    this.name = "PullsUnavailableError";
+  }
+}
+
 let _octokit: Octokit | null = null;
 
 function getOctokit(): Octokit {
@@ -64,11 +81,23 @@ const MAX_GITHUB_RETRIES = 3;
 // transient 404 doesn't deactivate a tracked repo for the whole run.
 const MAX_NOT_FOUND_RETRIES = 2;
 
+interface GitHubRetryOptions {
+  // Error to throw once a 404 is final. Defaults to RepoNotFoundError.
+  onNotFound?: (org: string, repo: string) => Error;
+  // Whether to retry a 404 before giving up. repos.get keeps this on (a repo
+  // 404 can be a transient blip under load); pulls.list turns it off — a 404
+  // there means pull requests are disabled, which is deterministic.
+  retryNotFound?: boolean;
+}
+
 async function withGitHubRetry<T>(
   fn: () => Promise<T>,
   org: string,
-  repo: string
+  repo: string,
+  opts: GitHubRetryOptions = {}
 ): Promise<T> {
+  const makeNotFound = opts.onNotFound ?? ((o, r) => new RepoNotFoundError(o, r));
+  const retryNotFound = opts.retryNotFound ?? true;
   let lastError: Error = new Error("unreachable");
 
   for (let attempt = 0; attempt <= MAX_GITHUB_RETRIES; attempt++) {
@@ -78,8 +107,8 @@ async function withGitHubRetry<T>(
       if (!(err instanceof RequestError)) throw err;
 
       if (err.status === 404) {
-        lastError = new RepoNotFoundError(org, repo);
-        if (attempt >= MAX_NOT_FOUND_RETRIES) break;
+        lastError = makeNotFound(org, repo);
+        if (!retryNotFound || attempt >= MAX_NOT_FOUND_RETRIES) break;
         const delay = 1_000 * (attempt + 1);
         console.warn(
           `[GitHub] ${org}/${repo}: 404 (attempt ${attempt + 1}/${MAX_NOT_FOUND_RETRIES + 1}); retrying in ${delay}ms in case it is a transient 404...`
@@ -129,7 +158,8 @@ export async function fetchMergedPRs(org: string, repo: string, since: Date): Pr
           page,
         }),
       org,
-      repo
+      repo,
+      { onNotFound: (o, r) => new PullsUnavailableError(o, r), retryNotFound: false }
     );
 
     const items = response.data;

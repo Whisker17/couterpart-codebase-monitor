@@ -281,7 +281,7 @@ describe("runStartupBackfillIfNeeded", () => {
     });
 
     expect(calls).toEqual([
-      { since: "2026-06-10", until: "2026-06-16", allowPartial: false, resetAnalysisStatus: false },
+      { since: "2026-06-10", until: "2026-06-16", allowPartial: true, resetAnalysisStatus: false },
     ]);
   });
 
