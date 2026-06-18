@@ -3,7 +3,7 @@
     "model": "claude-opus-4-6",
     "baseUrlEnvVar": "LLM_BASE_URL",
     "apiKeyEnvVar": "LLM_API_KEY",
-    "maxTokensPerCall": 4096,
+    "maxTokensPerCall": 8192,
     "diffTokenBudget": 8000,
     "maxManifestEntries": 100
   },

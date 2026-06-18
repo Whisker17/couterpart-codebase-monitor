@@ -35,7 +35,7 @@ describe("getSettings", () => {
     expect(s.llm.model).toBe("claude-opus-4-6");
     expect(s.llm.diffTokenBudget).toBe(8000);
     expect(s.llm.maxManifestEntries).toBe(100);
-    expect(s.llm.maxTokensPerCall).toBe(4096);
+    expect(s.llm.maxTokensPerCall).toBe(8192);
     expect(s.budget.monthlyCap).toBe(80);
     expect(s.budget.warningThreshold).toBe(0.8);
     expect(s.startup.backfill.enabled).toBe(true);

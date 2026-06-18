@@ -109,7 +109,10 @@ base/base 主要集中在 prover API 和文档维护。
     expect(visibleMarkdown).toContain("**base**");
     expect(visibleMarkdown).toContain("base/base 主要集中在 prover API 和文档维护。");
     expect(visibleMarkdown).toContain("**重点 PR 解读**");
-    expect(visibleMarkdown).toContain("<font color='red'>**1. [#3285 Move prover API]");
+    // Focused title is rebuilt from structured data: repo prefix + clickable PR link.
+    expect(visibleMarkdown).toContain(
+      "🔴 **[base/base #3285 Move prover API](https://github.com/base/base/pull/3285)**"
+    );
     expect(visibleMarkdown).not.toContain("工程判断");
     expect(visibleMarkdown).not.toContain("#3281 Fix docs");
     expect(visibleMarkdown).toContain("**全部 PR**");
@@ -520,7 +523,10 @@ base/base 当日 PR 较多。
       .map((el) => el.content)
       .join("\n");
     expect(visibleMarkdown).toContain("**重点 PR 解读**");
-    expect(visibleMarkdown).toContain("<font color='red'>**base/base #3145");
+    // Fallback also renders repo prefix + clickable PR link.
+    expect(visibleMarkdown).toContain(
+      "🔴 **[base/base #3145 refactor(precompiles): remove Default B20 variant](https://github.com/base/base/pull/3145)**"
+    );
     expect(visibleMarkdown).toContain("移除通用 Default B20 变体");
   });
 

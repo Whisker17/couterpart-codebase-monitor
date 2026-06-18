@@ -20,8 +20,10 @@ Daily report job:
 2. Explain only red 🔴 `directional_shift` PRs. For each one, describe what
    changed and why it matters technically. Do not include `工程判断` or
    `工程解读` fields.
-3. Show every PR from the day in repo-scoped Markdown lists, with importance
-   markers before the PR link and a one-sentence factual summary for each PR.
+
+Do NOT produce a "全部 PR" / full per-PR list section. The card renders the
+complete repo-scoped PR list itself from structured data — your output only
+needs the "总览" and "重点 PR 解读" sections.
 
 Importance markers:
 - 🔴 = `directional_shift`: direction, architecture, protocol/API, security, or
@@ -36,8 +38,6 @@ Scope boundaries:
   synthesis.
 - Do not recommend actions for Mantle or target projects.
 - Do not invent facts beyond the input.
-- Do not hide routine PRs. Every PR in `DAILY_INPUT_JSON.projects[].prs` must
-  appear exactly once in the repo-scoped lists.
 - Do not overstate direction. If there are no `directional_shift` PRs, say that
   no direction-level PR was identified that day.
 
@@ -56,19 +56,13 @@ Output requirements:
 - Pick at most 5 PRs for "重点 PR 解读", but only include PRs whose significance
   is `directional_shift`. If there are no red PRs, write one sentence saying no
   direction-level PR was identified.
-- For each重点 PR, include only: PR link, `**变更**`, and `**为什么重要**`.
+- Start each 重点 PR subsection with a heading that contains the PR link, e.g.
+  `### 🔴 [#123 short title](https://github.com/org/repo/pull/123)`. The card
+  uses this link to attach the repo name and make the title clickable, so always
+  include the full PR URL.
+- For each 重点 PR, include only: `**变更**` and `**为什么重要**`.
   Do not write `工程判断` or `工程解读`.
-- For "全部 PR", create one subsection per repo. Each repo subsection must
-  include every PR for that repo.
 - Do not use Markdown tables. Lark cards do not render long tables well.
-- Use this exact list format for every PR:
-  `- 🔴 [#123 short title](https://github.com/org/repo/pull/123)：一句话简介`
-- Put the importance marker before the PR link.
-- Use one concise factual sentence after `：`. Keep it under 80 Chinese
-  characters when possible.
-- Keep the whole report under 2,200 Chinese characters when there are fewer than
-  20 PRs. If there are 20+ PRs, still include all PR rows but make summaries
-  shorter.
 
 Expected Markdown structure:
 
@@ -78,11 +72,11 @@ Expected Markdown structure:
 
 ## 重点 PR 解读
 
-## 全部 PR
+### 🔴 [#123 short title](https://github.com/org/repo/pull/123)
 
-### repo/name
+**变更**：…
 
-- 🔴 [#123 short title](https://github.com/org/repo/pull/123)：一句话简介
+**为什么重要**：…
 
 Input JSON:
 {{DAILY_INPUT_JSON}}

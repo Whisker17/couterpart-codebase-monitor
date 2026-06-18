@@ -493,9 +493,36 @@ function stripEngineeringJudgment(markdown: string): string {
     .trim();
 }
 
+// Resolve a focused-PR markdown subsection back to its structured PR so the
+// title can show the repo and be a clickable link, independent of how the LLM
+// formatted the heading. Match by PR URL first (robust to PR-number collisions
+// across repos), then fall back to an unambiguous PR number.
+function findFocusedPr(
+  itemTitle: string,
+  projects: DailyPromptCardProject[] | undefined
+): { projectId: string; pr: DailyPromptCardPr } | null {
+  const all = (projects ?? []).flatMap((project) =>
+    project.prs.map((pr) => ({ projectId: project.projectId, pr }))
+  );
+  const byUrl = all.find((entry) => entry.pr.htmlUrl && itemTitle.includes(entry.pr.htmlUrl));
+  if (byUrl) return byUrl;
+  const prNumber = parsePrNumberFromMarkdown(itemTitle);
+  if (prNumber !== null) {
+    const matches = all.filter((entry) => entry.pr.prNumber === prNumber);
+    if (matches.length === 1) return matches[0]!;
+  }
+  return null;
+}
+
+function focusedPrTitle(projectId: string, pr: DailyPromptCardPr): string {
+  const label = `${projectId} #${pr.prNumber} ${pr.title}`;
+  return `${significanceBall(pr.significance)} **${markdownLink(label, pr.htmlUrl)}**`;
+}
+
 function renderFocusedPrSection(
   section: WeeklyPromptSection,
-  directionalNumbers: Set<number>
+  directionalNumbers: Set<number>,
+  projects: DailyPromptCardProject[] | undefined
 ): LarkElement | null {
   const redItems = splitMarkdownSubsections(section.content).filter((item) => {
     if (item.title.includes("🔴")) return true;
@@ -506,7 +533,12 @@ function renderFocusedPrSection(
 
   const body = redItems
     .map((item) => {
-      const title = `<font color='red'>**${item.title}**</font>`;
+      const found = findFocusedPr(item.title, projects);
+      // Build the title from structured data so the repo is always visible and
+      // the title links to the PR; fall back to the raw heading if unmatched.
+      const title = found
+        ? focusedPrTitle(found.projectId, found.pr)
+        : `<font color='red'>**${item.title}**</font>`;
       const content = normalizeLarkMarkdown(stripMarkdownDividers(stripEngineeringJudgment(item.content)));
       return [title, content].filter(Boolean).join("\n");
     })
@@ -533,7 +565,7 @@ function buildStructuredFocusedPrElement(projects: DailyPromptCardProject[] | un
     .map((pr) => {
       const projectId = projectByPr.get(pr.prNumber) ?? "unknown";
       return [
-        `<font color='red'>**${projectId} #${pr.prNumber} ${pr.title}**</font>`,
+        focusedPrTitle(projectId, pr),
         `**变更**：${truncateSummary(pr.summary, 140)}`,
       ].join("\n");
     })
@@ -572,7 +604,7 @@ export function buildDailyPromptCard(input: DailyPromptCardInput): LarkCard {
           elements.push(...buildAllPrElements(section));
         }
       } else if (isFocusedPrSection(section)) {
-        const focused = renderFocusedPrSection(section, redPrNumbers);
+        const focused = renderFocusedPrSection(section, redPrNumbers, input.projects);
         if (focused) {
           renderedFocusedPrSection = true;
           elements.push(focused);
